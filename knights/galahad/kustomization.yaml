@@ -1,0 +1,37 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../template
+
+patches:
+  - target:
+      kind: Deployment
+      name: knight-TEMPLATE
+    patch: |
+      - op: replace
+        path: /metadata/name
+        value: knight-galahad
+      - op: replace
+        path: /metadata/labels/app.kubernetes.io~1name
+        value: knight-galahad
+      - op: replace
+        path: /spec/selector/matchLabels/app.kubernetes.io~1name
+        value: knight-galahad
+      - op: replace
+        path: /spec/template/metadata/labels/app.kubernetes.io~1name
+        value: knight-galahad
+      - op: replace
+        path: /spec/template/spec/containers/1/env/1/value
+        value: "roundtable.knight.galahad.task"
+
+  - target:
+      kind: Service
+      name: knight-TEMPLATE
+    patch: |
+      - op: replace
+        path: /metadata/name
+        value: knight-galahad
+      - op: replace
+        path: /spec/selector/app.kubernetes.io~1name
+        value: knight-galahad
