@@ -113,24 +113,30 @@ roundtable.peer.*                    → Lead agent peer communication
 
 ## Pod Architecture
 
-Every knight runs as a two-container pod:
+Every knight runs as a three-container pod:
 
 ```mermaid
 graph LR
     subgraph Pod["Knight Pod"]
         OC["🧠 OpenClaw Gateway<br/><i>Agent runtime with<br/>personality, memory, skills</i>"]
         NB["🔌 nats-bridge<br/><i>NATS ↔ Webhook<br/>sidecar</i>"]
+        GS["📦 git-sync<br/><i>Skill delivery from<br/>arsenal repo</i>"]
     end
 
     subgraph External
         NATS["📡 NATS JetStream"]
         Redis["💾 Redis"]
+        GH["🐙 GitHub<br/>roundtable-arsenal"]
     end
 
     NATS <-->|"subscribe/publish"| NB
     NB <-->|"HTTP webhook"| OC
     OC -.->|"shared state"| Redis
+    GH -->|"git pull"| GS
+    GS -->|"volume mount"| OC
 ```
+
+Skills are delivered via [roundtable-arsenal](https://github.com/dapperdivers/roundtable-arsenal) — a separate repo synced into each knight by a `git-sync` sidecar. Push a skill to the arsenal repo → knights pick it up automatically. Each knight only loads skills for its domain via `extraDirs` config.
 
 ## Components
 
@@ -140,6 +146,7 @@ graph LR
 | **Knight Template** | Kustomize base for deploying any knight in any fleet | [`knights/template/`](knights/template/) |
 | **Galahad** | 🛡️ Example knight — Security & threat intelligence | [`knights/galahad/`](knights/galahad/) |
 | **NATS Skill** | OpenClaw skill for direct NATS pub/sub from lead agents | [`skills/nats-agent-bus/`](skills/nats-agent-bus/) |
+| **Arsenal** | Skills, protocols, and templates — git-synced into knights | [roundtable-arsenal](https://github.com/dapperdivers/roundtable-arsenal) |
 | **Infrastructure** | Flux HelmReleases for NATS, Redis, namespace | [`infrastructure/`](infrastructure/) |
 
 ## Example Knight Roster

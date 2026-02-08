@@ -68,17 +68,20 @@ graph TB
         subgraph Containers["Containers"]
             OC["🧠 OpenClaw Gateway<br/>───────────────<br/>SOUL.md · MEMORY.md<br/>Skills · Sub-agents<br/>Webhook: :18789"]
             NB["🔌 nats-bridge<br/>───────────────<br/>NATS subscriber<br/>HTTP poster<br/>Health: :8080"]
+            GS["📦 git-sync<br/>───────────────<br/>Arsenal repo sync<br/>Period: 300s"]
         end
         subgraph Volumes["Volumes"]
             WS["📂 workspace<br/>(PVC)"]
-            CFG["⚙️ config<br/>(ConfigMap)"]
+            SK["🗡️ skills<br/>(emptyDir)"]
         end
     end
 
+    GH["🐙 GitHub<br/>arsenal repo"] -->|"git pull"| GS
+    GS --> SK
     NATS["📡 NATS"] <-->|"sub/pub"| NB
     NB <-->|"POST /webhook<br/>GET /health"| OC
     OC --> WS
-    OC --> CFG
+    OC --> SK
     OC -.->|"shared state"| Redis["💾 Redis"]
 ```
 
@@ -90,6 +93,10 @@ The agent brain. Runs the OpenClaw runtime with:
 - Webhook endpoint at `:18789` for receiving tasks from the sidecar
 - Sub-agent spawning for parallel work within the knight's domain
 - Model configuration (can use lighter models like Sonnet/Haiku for cost efficiency)
+
+### Container: git-sync Sidecar
+
+Delivers skills from the [roundtable-arsenal](https://github.com/dapperdivers/roundtable-arsenal) repo. Syncs every 5 minutes via shallow git pull. Skills land in an `emptyDir` volume shared with the OpenClaw container. Each knight's `extraDirs` config determines which skill subdirectories it loads (e.g., `shared` + `security` for Galahad).
 
 ### Container: nats-bridge Sidecar
 

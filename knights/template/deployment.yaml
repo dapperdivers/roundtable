@@ -6,6 +6,7 @@ metadata:
   labels:
     app.kubernetes.io/name: knight-TEMPLATE
     app.kubernetes.io/component: knight
+    app.kubernetes.io/part-of: roundtable
 spec:
   replicas: 1
   selector:
@@ -16,9 +17,10 @@ spec:
       labels:
         app.kubernetes.io/name: knight-TEMPLATE
         app.kubernetes.io/component: knight
+        app.kubernetes.io/part-of: roundtable
     spec:
       containers:
-        # OpenClaw Agent Gateway
+        # OpenClaw Agent Gateway — the knight's brain
         - name: openclaw
           image: ghcr.io/openclaw/gateway:latest  # TODO: pin version
           ports:
@@ -27,9 +29,16 @@ spec:
           env:
             - name: OPENCLAW_CONFIG
               value: /workspace/config.yaml
+            # Skills loaded from git-synced arsenal repo
+            # Override SKILL_DOMAINS per knight to control which skills are available
+            - name: SKILL_DOMAINS
+              value: "shared"  # Override in kustomize patch: "shared,security" etc.
           volumeMounts:
             - name: workspace
               mountPath: /workspace
+            - name: skills
+              mountPath: /skills
+              readOnly: true
           resources:
             requests:
               cpu: 100m
@@ -37,7 +46,7 @@ spec:
             limits:
               memory: 512Mi
 
-        # NATS Bridge Sidecar
+        # NATS Bridge Sidecar — translates NATS <-> OpenClaw webhook
         - name: nats-bridge
           image: ghcr.io/dapperdivers/roundtable/nats-bridge:latest
           ports:
@@ -46,10 +55,16 @@ spec:
           env:
             - name: NATS_URL
               value: nats://nats.roundtable.svc:4222
+            - name: FLEET_ID
+              value: "FLEET_ID"  # Override per fleet
             - name: SUBSCRIBE_TOPICS
-              value: "roundtable.knight.TEMPLATE.task"
+              value: "FLEET_ID.tasks.DOMAIN.>"  # Override per knight
+            - name: PUBLISH_PREFIX
+              value: "FLEET_ID.results"
+            - name: AGENT_ID
+              value: "TEMPLATE"
             - name: OPENCLAW_WEBHOOK_URL
-              value: "http://localhost:18789/webhook"
+              value: "http://localhost:18789/hooks/nats"
           livenessProbe:
             httpGet:
               path: /healthz
@@ -63,7 +78,30 @@ spec:
             limits:
               memory: 64Mi
 
+        # Git-Sync Sidecar — delivers skills from arsenal repo
+        - name: git-sync
+          image: registry.k8s.io/git-sync/git-sync:v4.4.0
+          args:
+            - --repo=https://github.com/dapperdivers/roundtable-arsenal
+            - --root=/skills
+            - --period=300s
+            - --link=current
+            - --depth=1
+          volumeMounts:
+            - name: skills
+              mountPath: /skills
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 64Mi
+          securityContext:
+            readOnlyRootFilesystem: false
+
       volumes:
         - name: workspace
-          configMap:
-            name: knight-TEMPLATE-workspace
+          persistentVolumeClaim:
+            claimName: knight-TEMPLATE-workspace
+        - name: skills
+          emptyDir: {}
