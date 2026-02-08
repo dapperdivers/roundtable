@@ -8,8 +8,9 @@ The Round Table is a multi-agent AI platform built on three layers: **User-Facin
 graph TB
     subgraph UserLayer["User Layer"]
         direction LR
-        Derek["🧑 Derek"] <--> Tim["🔥 Tim"]
-        Drake["🧑 Drake"] <--> Munin["🪶 Munin"]
+        User["🧑 User"] <--> Tim["🔥 Tim"]
+        User B["🧑 User B"] <--> Munin["🪶 Munin"]
+        Tim <-->|"peer"| Munin
     end
 
     subgraph Transport["Transport Layer"]
@@ -45,8 +46,10 @@ These are full OpenClaw gateways with rich personalities, multi-channel support,
 
 | Agent | Model | Channels | Role |
 |-------|-------|----------|------|
-| 🔥 Tim | Claude Opus | Discord, Signal, etc. | Derek's primary agent. Orchestrates knights. |
-| 🪶 Munin | Configurable | Discord | Drake's agent. Tim's apprentice. |
+| 🔥 Tim | Claude Opus | Discord, Signal, etc. | Primary user's agent. Orchestrates knights. |
+| 🪶 Munin | Configurable | Discord | Secondary user's agent. Tim's apprentice. |
+
+**Peer Communication:** Tim and Munin communicate directly (currently HTTP, migrating to NATS) for task delegation, coordination, and knowledge sharing. They can also both publish/subscribe to the NATS bus independently.
 
 ### Knights (Specialist Agents)
 
@@ -120,7 +123,7 @@ stateDiagram-v2
 
 ```mermaid
 sequenceDiagram
-    participant D as 🧑 Derek
+    participant U as 🧑 User
     participant T as 🔥 Tim
     participant TN as 🔌 Tim's NATS Skill
     participant N as 📡 NATS JetStream
@@ -128,7 +131,7 @@ sequenceDiagram
     participant G as 🛡️ Galahad
     participant S as 🔧 Sub-agent
 
-    D->>T: "Morning briefing please"
+    U->>T: "Morning briefing please"
     
     Note over T: Tim decides which knights<br/>to query for briefing
 
@@ -151,7 +154,7 @@ sequenceDiagram
     Note over T: Tim also receives weather<br/>from Gawain, emails from<br/>Percival (parallel)
 
     T->>T: Synthesize all briefings
-    T->>D: "Good morning! Here's your briefing..." 🔥
+    T->>U: "Good morning! Here's your briefing..." 🔥
 ```
 
 ## NATS JetStream Configuration

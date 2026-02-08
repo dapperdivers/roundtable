@@ -13,8 +13,8 @@ Deploy specialized AI agents as independent Kubernetes pods, connected by a NATS
 ```mermaid
 graph TB
     subgraph Users["👥 User Layer"]
-        Derek["🧑 Derek"]
-        Drake["🧑 Drake"]
+        User["🧑 User"]
+        User B["🧑 User B"]
     end
 
     subgraph Core["🔥 Core Agents"]
@@ -37,8 +37,9 @@ graph TB
         Redis["Redis / Valkey"]
     end
 
-    Derek <--> Tim
-    Drake <--> Munin
+    User <--> Tim
+    User B <--> Munin
+    Tim <-->|"peer"| Munin
     Tim <--> NATS
     Munin <--> NATS
     NATS <--> Galahad
@@ -54,24 +55,25 @@ graph TB
 
 | Role | Agent | Interface | Purpose |
 |------|-------|-----------|---------|
-| 🧑 **Derek** | 🔥 Tim the Enchanter | Direct chat | Primary user. Tim is his JARVIS. |
-| 🧑 **Drake** | 🪶 Munin | Direct chat | Drake's agent. Also Tim's apprentice. |
+| 🧑 **User** | 🔥 Tim the Enchanter | Direct chat | Primary user. Tim is their JARVIS. |
+| 🧑 **User B** | 🪶 Munin | Direct chat | Secondary user's agent. Also Tim's apprentice. |
+| 🔥 **Tim** | 🪶 **Munin** | Peer (HTTP/NATS) | Lead agents communicate directly for coordination. |
 | 🤖 **Tim** | ⚔️ All Knights | NATS bus | Tim orchestrates. Knights never talk to users. |
 | ⚔️ **Knights** | 🔧 Sub-agents | Internal | Knights can spawn their own workers. |
 
-> **Key principle:** Derek and Drake never interact with knights directly. Tim synthesizes all knight outputs and presents them in his own voice.
+> **Key principle:** User and User B never interact with knights directly. Tim synthesizes all knight outputs and presents them in his own voice.
 
 ## How It Works
 
 ```mermaid
 sequenceDiagram
-    participant D as 🧑 Derek
+    participant U as 🧑 User
     participant T as 🔥 Tim
     participant N as 📡 NATS
     participant B as 🔌 nats-bridge
     participant K as 🛡️ Galahad
 
-    D->>T: "Give me a security briefing"
+    U->>T: "Give me a security briefing"
     T->>N: Publish → roundtable.tasks.security.briefing
     N->>B: Message delivered
     B->>K: POST /webhook (OpenClaw)
@@ -80,7 +82,7 @@ sequenceDiagram
     B->>N: Publish → roundtable.results.security.<task-id>
     N->>T: Result delivered
     T->>T: Synthesize, add judgment
-    T->>D: "Here's your briefing..." 🔥
+    T->>U: "Here's your briefing..." 🔥
 ```
 
 ## Pod Architecture

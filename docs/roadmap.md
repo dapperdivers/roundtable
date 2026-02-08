@@ -78,12 +78,12 @@ A dummy knight can receive a task from NATS, process it through OpenClaw, and re
   - Subscribe to results
   - Helper scripts for common patterns
 - [ ] **End-to-end security briefing**
-  - Tim requests briefing → Galahad produces it → Tim presents to Derek
+  - Tim requests briefing → Galahad produces it → Tim presents to User
   - Compared against current monolithic briefing quality
   - Latency benchmarked
 
 ### Success Criteria
-Derek asks Tim for a security briefing. Tim delegates to Galahad via NATS. Galahad analyzes threats and returns structured data. Tim synthesizes and presents. Derek doesn't know or care that Galahad was involved.
+User asks Tim for a security briefing. Tim delegates to Galahad via NATS. Galahad analyzes threats and returns structured data. Tim synthesizes and presents. User doesn't know or care that Galahad was involved.
 
 ---
 
@@ -100,7 +100,7 @@ Derek asks Tim for a security briefing. Tim delegates to Galahad via NATS. Galah
 - [ ] **Gawain (Intelligence)** deployed
   - Weather, news, market summaries
   - OSINT capabilities
-  - Relevance filtering (learns what Derek cares about)
+  - Relevance filtering (learns what User cares about)
 - [ ] **Redis shared state** operational
   - Agent registry (who's alive, capabilities)
   - Cross-knight context sharing
@@ -109,7 +109,7 @@ Derek asks Tim for a security briefing. Tim delegates to Galahad via NATS. Galah
   - Tim publishes parallel requests to Galahad + Percival + Gawain
   - Collects all results
   - Synthesizes into one coherent morning briefing
-  - Delivered via Derek's preferred channel
+  - Delivered via User's preferred channel
 
 ### Success Criteria
 Morning briefing pulls from 3+ knights in parallel, synthesized by Tim into a single coherent delivery. Adding a 4th source requires only deploying a new knight — no changes to Tim's config.
@@ -125,7 +125,7 @@ Morning briefing pulls from 3+ knights in parallel, synthesized by Tim into a si
 - [ ] **Proactive behaviors**
   - Knights trigger on events, not just requests (e.g., Galahad reacts to a new CVE alert)
   - Cron-based periodic tasks (Galahad scans feeds every 4 hours)
-  - Event-driven chains (Galahad finds critical CVE → notifies Tim → Tim alerts Derek)
+  - Event-driven chains (Galahad finds critical CVE → notifies Tim → Tim alerts User)
 - [ ] **Knight self-improvement**
   - Knights maintain MEMORY.md with domain knowledge
   - Learn from past tasks (what was useful, what wasn't)
@@ -137,7 +137,7 @@ Morning briefing pulls from 3+ knights in parallel, synthesized by Tim into a si
   - Prometheus metrics from nats-bridge
 - [ ] **Munin integration**
   - Munin can request knight services (through Tim or directly via NATS)
-  - Drake benefits from the Round Table without knowing it exists
+  - User B benefits from the Round Table without knowing it exists
 
 ### Success Criteria
 The system runs autonomously for a week. Knights proactively surface relevant info. If a knight dies, Tim notices and adapts. New knights can be added by commit + push with zero downtime.
