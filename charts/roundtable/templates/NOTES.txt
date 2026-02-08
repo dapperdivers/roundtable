@@ -1,0 +1,16 @@
+🏰 Knights of the Round Table — deployed!
+
+Namespace: {{ .Values.namespace }}
+
+Knights:
+{{- range $name, $knight := .Values.knights }}
+{{- if $knight.enabled }}
+  ⚔️  {{ $name }} ({{ $knight.domain }}) — fleet: {{ $knight.fleetId }}
+{{- end }}
+{{- end }}
+
+NATS: {{ if .Values.nats.enabled }}enabled{{ else }}disabled{{ end }}
+Redis: {{ if .Values.redis.enabled }}enabled{{ else }}disabled{{ end }}
+
+To check knight status:
+  kubectl get pods -n {{ .Values.namespace }} -l app.kubernetes.io/component=knight

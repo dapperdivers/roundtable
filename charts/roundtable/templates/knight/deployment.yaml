@@ -1,0 +1,115 @@
+{{- range $name, $knight := .Values.knights }}
+{{- if $knight.enabled }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: knight-{{ $name }}
+  namespace: {{ $.Values.namespace }}
+  labels:
+    {{- include "roundtable.knightLabels" (dict "ctx" $ "name" $name "knight" $knight) | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "roundtable.knightSelectorLabels" (dict "name" $name) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "roundtable.knightLabels" (dict "ctx" $ "name" $name "knight" $knight) | nindent 8 }}
+    spec:
+      containers:
+        # ── OpenClaw Gateway ──────────────────────────────────────────
+        - name: openclaw
+          image: {{ $knight.openclaw.image | default "ghcr.io/anthropics/openclaw:latest" }}
+          ports:
+            - name: openclaw
+              containerPort: {{ $knight.openclaw.port | default 18789 }}
+          env:
+            - name: KNIGHT_NAME
+              value: {{ $name }}
+            - name: KNIGHT_DOMAIN
+              value: {{ $knight.domain }}
+            - name: KNIGHT_FLEET
+              value: {{ $knight.fleetId }}
+            - name: KNIGHT_MODEL
+              value: {{ $knight.model | default "anthropic/claude-sonnet-4-5" }}
+          volumeMounts:
+            - name: workspace
+              mountPath: /home/node/workspace
+            - name: workspace-config
+              mountPath: /home/node/workspace/SOUL.md
+              subPath: SOUL.md
+            - name: workspace-config
+              mountPath: /home/node/workspace/AGENTS.md
+              subPath: AGENTS.md
+            - name: workspace-config
+              mountPath: /home/node/workspace/TOOLS.md
+              subPath: TOOLS.md
+            - name: skills
+              mountPath: /home/node/workspace/skills
+              readOnly: true
+          {{- with $knight.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+
+        # ── NATS Bridge Sidecar ───────────────────────────────────────
+        - name: nats-bridge
+          image: {{ $.Values.natsBridge.image }}
+          ports:
+            - name: bridge-health
+              containerPort: 8080
+          env:
+            - name: NATS_URL
+              value: nats://{{ include "roundtable.fullname" $ }}-nats:4222
+            - name: OPENCLAW_URL
+              value: http://localhost:{{ $knight.openclaw.port | default 18789 }}
+            - name: KNIGHT_NAME
+              value: {{ $name }}
+            - name: FLEET_ID
+              value: {{ $knight.fleetId }}
+            - name: SUBSCRIBE_SUBJECTS
+              value: {{ join "," $knight.subscribeTo | quote }}
+          {{- with $.Values.natsBridge.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: bridge-health
+            initialDelaySeconds: 5
+            periodSeconds: 30
+
+        # ── Git-Sync Sidecar ──────────────────────────────────────────
+        - name: git-sync
+          image: {{ $.Values.gitSync.image }}
+          env:
+            - name: GITSYNC_REPO
+              value: {{ $.Values.arsenal.repository }}
+            - name: GITSYNC_REF
+              value: {{ $.Values.arsenal.branch }}
+            - name: GITSYNC_ROOT
+              value: /skills
+            - name: GITSYNC_PERIOD
+              value: {{ $.Values.arsenal.syncPeriod | quote }}
+          volumeMounts:
+            - name: skills
+              mountPath: /skills
+          {{- with $.Values.gitSync.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+
+      volumes:
+        - name: workspace
+          persistentVolumeClaim:
+            claimName: knight-{{ $name }}-workspace
+        - name: workspace-config
+          configMap:
+            name: knight-{{ $name }}-workspace
+        - name: skills
+          emptyDir: {}
+{{- end }}
+{{- end }}

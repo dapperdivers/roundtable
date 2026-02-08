@@ -2,7 +2,7 @@
 
 ## System Overview
 
-The Round Table is a multi-agent AI platform built on three layers: **User-Facing Agents**, a **Message Bus**, and **Specialist Knights**. All deployed on Kubernetes via GitOps.
+The Round Table is a multi-agent AI platform built on three layers: **User-Facing Agents**, a **Message Bus**, and **Specialist Knights**. All deployed on Kubernetes via Helm.
 
 ```mermaid
 graph TB
@@ -36,18 +36,38 @@ graph TB
     KA1 & KA2 & KA3 & KB1 & KB2 -.-> PVC
 ```
 
+## Orchestration — Custom on NATS JetStream
+
+Rather than adopting an external orchestration framework, the Round Table uses **thin custom orchestration built directly on NATS JetStream**. This keeps the dependency surface minimal while incorporating proven design patterns from the orchestration ecosystem.
+
+### Design Patterns We Use
+
+| Pattern | Description | Implementation |
+|---------|-------------|----------------|
+| **Policy-before-dispatch** | Validate tasks against fleet policies before they reach knights | Custom NATS request-reply gate; lead agent checks policies before publishing to task subjects |
+| **Payload pointers** | Large payloads (scan results, reports) stored in NATS Object Store; messages carry lightweight references | NATS Object Store bucket per fleet; messages include `payloadRef` field pointing to stored object |
+| **Capability routing** | Knights declare their capabilities; tasks route to knights that match | Knight registration in Redis with capability tags; lead agent routes based on `domain` + `skillDomains` |
+| **Audit trail** | Every task lifecycle event persisted for observability and debugging | Dedicated `ROUNDTABLE_EVENTS` stream with 30-day retention; all state transitions published |
+
+### Why Custom?
+
+- **Zero additional dependencies** — NATS JetStream already provides streams, consumers, object store, and KV. We build on what's there.
+- **Full control** — Orchestration logic lives in the nats-bridge and lead agent. No black-box middleware.
+- **Right-sized** — We need routing, durability, and audit. We don't need workflow DAGs, approval chains, or multi-tenant billing.
+- **Evolvable** — Start simple, add sophistication as needed. The patterns are the same whether implemented in 200 lines of Go or a full framework.
+
 ## Agent Types
 
 ### Core Agents (User-Facing)
 
-These are full OpenClaw gateways with rich personalities, multi-channel support, and human interaction capabilities.
+Full OpenClaw gateways with rich personalities, multi-channel support, and human interaction capabilities.
 
 | Agent | Model | Channels | Role |
 |-------|-------|----------|------|
 | Lead Agent A | Configurable | Any OpenClaw channel | User A's agent. Orchestrates Fleet A's knights. |
 | Lead Agent B | Configurable | Any OpenClaw channel | User B's agent. Orchestrates Fleet B's knights. |
 
-**Peer Communication:** Lead agents communicate directly via `roundtable.peer.*` NATS topics (or HTTP) for task delegation, coordination, and knowledge sharing. Each lead agent also manages its own fleet via fleet-scoped topics.
+**Peer Communication:** Lead agents communicate directly via `roundtable.peer.*` NATS topics for task delegation, coordination, and knowledge sharing.
 
 ### Knights (Specialist Agents)
 
@@ -56,9 +76,9 @@ Full OpenClaw gateways with personality and memory, but **no human-facing channe
 Each knight has:
 - **SOUL.md** — Personality, domain expertise, behavioral guidelines
 - **MEMORY.md** — Accumulated domain knowledge
-- **Skills** — Domain-specific tools and scripts
+- **Skills** — Domain-specific tools and scripts (delivered via git-sync)
 - **Sub-agent capability** — Can spawn workers for complex tasks
-- **Model config** — Right-sized model for the domain (not everything needs Opus)
+- **Model config** — Right-sized model for the domain
 
 ## Pod Architecture
 
@@ -87,80 +107,15 @@ graph TB
 
 ### Container: OpenClaw Gateway
 
-The agent brain. Runs the OpenClaw runtime with:
-- Agent personality and memory (workspace mounted from PVC)
-- Skills for domain-specific tooling
-- Webhook endpoint at `:18789` for receiving tasks from the sidecar
-- Sub-agent spawning for parallel work within the knight's domain
-- Model configuration (can use lighter models like Sonnet/Haiku for cost efficiency)
-
-### Container: git-sync Sidecar
-
-Delivers skills from the [roundtable-arsenal](https://github.com/dapperdivers/roundtable-arsenal) repo. Syncs every 5 minutes via shallow git pull. Skills land in an `emptyDir` volume shared with the OpenClaw container. Each knight's `extraDirs` config determines which skill subdirectories it loads (e.g., `shared` + `security` for Galahad).
+The agent brain. Runs the OpenClaw runtime with workspace mounted from PVC, skills from git-sync volume, and a webhook endpoint at `:18789` for receiving tasks.
 
 ### Container: nats-bridge Sidecar
 
-The universal adapter. A small Go binary (~200 lines) that:
-1. Connects to NATS JetStream
-2. Subscribes to the knight's task topics
-3. Translates NATS messages → HTTP POST to OpenClaw webhook
-4. Captures OpenClaw responses → publishes to NATS result topics
-5. Exposes `/healthz` for K8s liveness probes
-6. Publishes periodic heartbeats to `fleet-id.heartbeat.<agent-id>`
+A small Go binary (~200 lines) that subscribes to NATS topics, translates messages to HTTP POSTs to OpenClaw, captures responses, and publishes results back to NATS.
 
-## Communication Flow
+### Container: git-sync Sidecar
 
-### Task Lifecycle
-
-```mermaid
-stateDiagram-v2
-    [*] --> Requested: Tim publishes task
-    Requested --> Claimed: Knight picks up
-    Claimed --> InProgress: Knight working
-    InProgress --> Completed: Success
-    InProgress --> Failed: Error
-    InProgress --> InProgress: Sub-agent spawned
-    Completed --> [*]: Tim receives result
-    Failed --> [*]: Tim receives error
-```
-
-### End-to-End Flow: Security Briefing
-
-```mermaid
-sequenceDiagram
-    participant U as 🧑 User
-    participant L as 🤖 Lead Agent
-    participant TN as 🔌 Lead Agent's NATS Skill
-    participant N as 📡 NATS JetStream
-    participant GB as 🔌 Galahad's Bridge
-    participant G as 🛡️ Galahad
-    participant S as 🔧 Sub-agent
-
-    U->>L: "Morning briefing please"
-    
-    Note over T: Tim decides which knights<br/>to query for briefing
-
-    L->>TN: Publish security briefing task
-    TN->>N: fleet-id.tasks.security.briefing
-
-    N->>GB: Message delivered
-    GB->>G: POST /webhook
-
-    Note over G: Galahad analyzes:<br/>RSS feeds, CVE databases,<br/>threat intel sources
-
-    G->>S: Spawn CVE analysis sub-agent
-    S->>G: CVE results
-
-    G->>GB: Briefing response
-    GB->>N: fleet-id.results.security.<task-id>
-    N->>TN: Result delivered
-    TN->>L: Security briefing data
-
-    Note over T: Tim also receives weather<br/>from Gawain, emails from<br/>Percival (parallel)
-
-    L->>L: Synthesize all briefings
-    L->>U: "Good morning! Here's your briefing..." 🔥
-```
+Delivers skills from [roundtable-arsenal](https://github.com/dapperdivers/roundtable-arsenal). Syncs periodically via shallow git pull into an emptyDir volume shared with OpenClaw.
 
 ## NATS JetStream Configuration
 
@@ -170,7 +125,7 @@ sequenceDiagram
 |--------|----------|-----------|---------|---------|
 | `ROUNDTABLE_TASKS` | `fleet-id.tasks.>` | WorkQueue | 24h | Task distribution |
 | `ROUNDTABLE_RESULTS` | `fleet-id.results.>` | Limits | 7d | Task results |
-| `ROUNDTABLE_EVENTS` | `roundtable.events.>` | Limits | 30d | System events, audit |
+| `ROUNDTABLE_EVENTS` | `roundtable.events.>` | Limits | 30d | System events, audit trail |
 | `ROUNDTABLE_HEARTBEAT` | `fleet-id.heartbeat.>` | Limits | 1h | Agent health |
 
 ### Consumers
@@ -180,89 +135,58 @@ Each knight gets a durable consumer on `ROUNDTABLE_TASKS` filtered to its domain
 - Percival: `fleet-id.tasks.comms.>`
 - Gawain: `fleet-id.tasks.intel.>`
 
-### Why NATS JetStream?
+## Deployment
 
-- **Lightweight** — Single binary, ~30MB RAM for homelab workloads
-- **Durable** — JetStream provides at-least-once delivery with ack
-- **K8s Native** — Helm chart, StatefulSet, works beautifully in cluster
-- **Subject Routing** — Hierarchical topics with wildcards (`>`, `*`)
-- **No Zookeeper** — Unlike Kafka, no external dependencies
+### Helm Chart
 
-## Redis / Valkey
+The entire stack is deployed via a single Helm chart at `charts/roundtable/`. Knights are defined declaratively in `values.yaml`:
 
-Shared state store for:
-- **Cross-knight context** — When Galahad's findings affect Gawain's intel
-- **Task deduplication** — Prevent duplicate work
-- **Agent registry** — Track which knights are alive and their capabilities
-- **Rate limiting** — Control LLM API costs across the fleet
-- **Shared memory** — Persistent facts accessible to all knights
-
-```mermaid
-graph LR
-    G["🛡️ Galahad"] -->|"SET threat:latest"| R["💾 Redis"]
-    W["🌤️ Gawain"] -->|"GET threat:latest"| R
-    T["🔥 Tim"] -->|"GET agent:registry"| R
-    P["📧 Percival"] -->|"LPUSH email:queue"| R
+```bash
+helm dependency update charts/roundtable/
+helm install roundtable charts/roundtable/ -n roundtable --create-namespace
 ```
 
-## Deployment Model
+Adding a knight = adding an entry to `values.yaml` + `helm upgrade`.
 
-### GitOps via Flux
+### What Gets Deployed
 
-```mermaid
-graph LR
-    GH["🐙 GitHub<br/>dapperdivers/roundtable"] -->|"Flux sync"| Flux["⚡ Flux CD"]
-    Flux -->|"apply"| NS["roundtable namespace"]
-    NS --> NATS["📡 NATS"]
-    NS --> Redis["💾 Redis"]
-    NS --> G["🛡️ Galahad"]
-    NS --> P["📧 Percival"]
-    NS --> More["➕ ..."]
-```
+For each enabled knight in `values.yaml`:
+- **Deployment** — 3-container pod (openclaw + nats-bridge + git-sync)
+- **Service** — Exposes openclaw and bridge-health ports
+- **PVC** — Persistent workspace storage
+- **ConfigMap** — Knight workspace files (SOUL.md, AGENTS.md, TOOLS.md)
 
-### Adding a Knight
-
-1. Copy `knights/template/` → `knights/<name>/`
-2. Customize `workspace/SOUL.md` with the knight's personality
-3. Set NATS topics in kustomization patch
-4. Choose model in OpenClaw config
-5. Commit, push, Flux deploys
-
-### Removing a Knight
-
-1. Delete the knight's directory
-2. Commit, push, Flux garbage collects the pod
+Plus shared infrastructure:
+- **NATS JetStream** — Subchart dependency
+- **Redis** — Subchart dependency
+- **Namespace** — Created by the chart
 
 ## Security Considerations
 
 - **Network Policies** — Knights can only reach NATS, Redis, and LLM API endpoints
-- **RBAC** — Each knight's ServiceAccount has minimal K8s permissions
-- **Secret Management** — LLM API keys via External Secrets (Infisical)
-- **No Human Channels** — Knights have no Discord/Signal bindings; they can't leak to users
+- **RBAC** — Minimal K8s permissions per knight ServiceAccount
+- **Secret Management** — LLM API keys via External Secrets
+- **No Human Channels** — Knights have no Discord/Signal bindings
 - **Audit Trail** — All NATS messages persisted in ROUNDTABLE_EVENTS stream
 
 ## Resource Planning
 
-Estimated resource footprint for a 5-knight deployment:
+Estimated footprint for a 5-knight deployment:
 
 | Component | CPU | Memory | Storage |
 |-----------|-----|--------|---------|
-| NATS JetStream | 100m | 128MB | 1Gi |
+| NATS JetStream | 100m | 128MB | 5Gi |
 | Redis | 100m | 256MB | 1Gi |
-| Knight (each) | 100m | 256MB | 1Gi workspace |
-| **Total (5 knights)** | **700m** | **1.7GB** | **8Gi** |
+| Knight (each) | 135m | ~320MB | 1Gi workspace |
+| **Total (5 knights)** | **875m** | **2GB** | **11Gi** |
 
 > Lightweight enough for any homelab. The real cost is LLM API tokens, not compute.
 
 ## Model Strategy
 
-Not every agent needs the same model. Match the model to the workload:
-
 | Role | Recommended Tier | Reasoning |
 |------|-----------------|-----------|
 | Lead Agent | Top-tier (e.g., Opus) | Complex reasoning, conversation, orchestration |
-| Analysis Knights (Security, Intel) | Mid-tier (e.g., Sonnet) | Judgment + synthesis, not conversation |
-| Triage Knights (Comms, Home Auto) | Lightweight (e.g., Haiku) | Classification, routing, simple commands |
+| Analysis Knights | Mid-tier (e.g., Sonnet) | Judgment + synthesis |
+| Triage Knights | Lightweight (e.g., Haiku) | Classification, routing |
 | Observability Knights | Lightweight (e.g., Haiku) | Pattern matching, alerting |
-
-Lead agents stay on the best model — they're the brain. Knights are the hands.
