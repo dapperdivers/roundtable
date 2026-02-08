@@ -1,78 +1,187 @@
 # Knights of the Round Table 🏰⚔️
 
-> A multi-agent AI platform for Kubernetes homelabs
+> *A multi-agent AI platform for Kubernetes homelabs*
 
-## Overview
+## The Vision
 
-The Round Table is an orchestration platform where specialized AI agents ("Knights") collaborate through a NATS JetStream message bus, deployed via GitOps on Kubernetes.
+Deploy specialized AI agents as independent Kubernetes pods, connected by a NATS JetStream message bus, orchestrated by a lead agent. Each "Knight" has its own personality, memory, skills, and judgment — but serves the realm invisibly.
 
-Each Knight is an [OpenClaw](https://github.com/anthropics/anthropic-cookbook) AI gateway with a unique personality, skillset, and area of responsibility. They communicate peer-to-peer through NATS topics, coordinated by a central enchanter.
+**You talk to the wizard. The wizard commands the knights. The knights do the work.**
 
 ## Architecture
 
+```mermaid
+graph TB
+    subgraph Users["👥 User Layer"]
+        Derek["🧑 Derek"]
+        Drake["🧑 Drake"]
+    end
+
+    subgraph Core["🔥 Core Agents"]
+        Tim["🔥 Tim the Enchanter<br/><i>Lead Agent · JARVIS</i>"]
+        Munin["🪶 Munin<br/><i>Apprentice Raven</i>"]
+    end
+
+    subgraph Bus["📡 Message Bus"]
+        NATS["NATS JetStream"]
+    end
+
+    subgraph Knights["⚔️ Knights of the Round Table"]
+        Galahad["🛡️ Galahad<br/><i>Security</i>"]
+        Percival["📧 Percival<br/><i>Communications</i>"]
+        Gawain["🌤️ Gawain<br/><i>Intelligence</i>"]
+        More["➕ ...extensible"]
+    end
+
+    subgraph State["💾 Shared State"]
+        Redis["Redis / Valkey"]
+    end
+
+    Derek <--> Tim
+    Drake <--> Munin
+    Tim <--> NATS
+    Munin <--> NATS
+    NATS <--> Galahad
+    NATS <--> Percival
+    NATS <--> Gawain
+    NATS <--> More
+    Galahad -.-> Redis
+    Percival -.-> Redis
+    Gawain -.-> Redis
 ```
-Derek (Human Lord) ──→ Tim the Enchanter (Lead Agent)
-                            │
-                      NATS JetStream
-                       ┌────┼────┐
-                       ▼    ▼    ▼
-                   Galahad  ...  Future Knights
-                  (Security)
 
-Drake (Derek's Son) ──→ Munin (Drake's Agent / Tim's Apprentice)
+## The Hierarchy
+
+| Role | Agent | Interface | Purpose |
+|------|-------|-----------|---------|
+| 🧑 **Derek** | 🔥 Tim the Enchanter | Direct chat | Primary user. Tim is his JARVIS. |
+| 🧑 **Drake** | 🪶 Munin | Direct chat | Drake's agent. Also Tim's apprentice. |
+| 🤖 **Tim** | ⚔️ All Knights | NATS bus | Tim orchestrates. Knights never talk to users. |
+| ⚔️ **Knights** | 🔧 Sub-agents | Internal | Knights can spawn their own workers. |
+
+> **Key principle:** Derek and Drake never interact with knights directly. Tim synthesizes all knight outputs and presents them in his own voice.
+
+## How It Works
+
+```mermaid
+sequenceDiagram
+    participant D as 🧑 Derek
+    participant T as 🔥 Tim
+    participant N as 📡 NATS
+    participant B as 🔌 nats-bridge
+    participant K as 🛡️ Galahad
+
+    D->>T: "Give me a security briefing"
+    T->>N: Publish → roundtable.tasks.security.briefing
+    N->>B: Message delivered
+    B->>K: POST /webhook (OpenClaw)
+    K->>K: Analyze threats, query feeds,<br/>spawn sub-agents if needed
+    K->>B: Response
+    B->>N: Publish → roundtable.results.security.<task-id>
+    N->>T: Result delivered
+    T->>T: Synthesize, add judgment
+    T->>D: "Here's your briefing..." 🔥
 ```
 
-### The Hierarchy
+## Pod Architecture
 
-- **Derek** → Commands **Tim the Enchanter**, the lead AI agent
-- **Drake** → Commands **Munin**, Tim's apprentice (a raven)
-- **Knights** → Serve Tim. They receive tasks via NATS, execute autonomously, and report back
-- Knights **never** interact with humans directly — Tim is the interface
+Every knight runs as a two-container pod:
 
-### How It Works
+```mermaid
+graph LR
+    subgraph Pod["Knight Pod"]
+        OC["🧠 OpenClaw Gateway<br/><i>Agent runtime with<br/>personality, memory, skills</i>"]
+        NB["🔌 nats-bridge<br/><i>NATS ↔ Webhook<br/>sidecar</i>"]
+    end
 
-1. Tim receives a request (or decides proactively) that needs a specialist
-2. Tim publishes a message to a NATS topic (e.g., `knight.galahad.task`)
-3. The Knight's **nats-bridge sidecar** receives the message and POSTs it to the local OpenClaw webhook
-4. The Knight processes the task and responds via NATS
-5. Tim receives the result and acts on it
+    subgraph External
+        NATS["📡 NATS JetStream"]
+        Redis["💾 Redis"]
+    end
+
+    NATS <-->|"subscribe/publish"| NB
+    NB <-->|"HTTP webhook"| OC
+    OC -.->|"shared state"| Redis
+```
 
 ## Components
 
-| Component | Description |
-|-----------|-------------|
-| **nats-bridge** | Go sidecar that bridges NATS ↔ OpenClaw webhooks |
-| **infrastructure/** | Flux HelmReleases for NATS, Redis, namespaces |
-| **knights/** | Kustomize-based Knight deployments |
-| **skills/** | OpenClaw skills shared across knights |
+| Component | Description | Location |
+|-----------|-------------|----------|
+| **nats-bridge** | Go sidecar — translates NATS messages ↔ OpenClaw webhook calls | [`nats-bridge/`](nats-bridge/) |
+| **Knight Template** | Kustomize base for deploying any knight | [`knights/template/`](knights/template/) |
+| **Galahad** | 🛡️ First knight — Security & threat intelligence | [`knights/galahad/`](knights/galahad/) |
+| **NATS Skill** | OpenClaw skill for direct NATS pub/sub from Tim/Munin | [`skills/nats-agent-bus/`](skills/nats-agent-bus/) |
+| **Infrastructure** | Flux HelmReleases for NATS, Redis, namespace | [`infrastructure/`](infrastructure/) |
 
-## Quick Start
+## Planned Knights
 
-> 🚧 TODO — Coming in Phase 2
+| Knight | Domain | Responsibilities |
+|--------|--------|-----------------|
+| 🛡️ **Galahad** | Security | Threat intel, CVE analysis, security briefings, RSS monitoring |
+| 📧 **Percival** | Communications | Email triage, notification routing, contact management |
+| 🌤️ **Gawain** | Intelligence | Weather, news, market data, OSINT gathering |
+| 📊 **Tristan** | Observability | Cluster health, alerting, capacity planning |
+| 🏠 **Lancelot** | Home Automation | Smart home orchestration, routines, energy management |
+| *More...* | *Extensible* | *Deploy a pod, subscribe to NATS, join the table* |
 
 ## Roadmap
 
-### Phase 1: Foundation ✅
-- [x] Project scaffold
-- [ ] NATS JetStream deployment
-- [ ] nats-bridge sidecar (build + deploy)
-- [ ] Knight template finalized
+### Phase 1: Foundation 🏗️
+- [x] Project scaffold and repo
+- [x] Architecture documentation
+- [ ] NATS JetStream deployed to `roundtable` namespace
+- [ ] nats-bridge sidecar built and tested
+- [ ] Message contract finalized
+- [ ] Knight Kustomize template validated
 
-### Phase 2: First Knight
+### Phase 2: First Knight ⚔️
 - [ ] Galahad (Security) fully operational
-- [ ] Tim ↔ Galahad communication verified
-- [ ] Task/response message contract defined
+- [ ] Tim ↔ Galahad communication via NATS verified
+- [ ] Security briefing workflow end-to-end
+- [ ] NATS skill installed on Tim's gateway
 
-### Phase 3: Expansion
-- [ ] Additional knights (Merlin, Percival, etc.)
-- [ ] Redis state store integration
+### Phase 3: Expansion 🌍
+- [ ] Percival (Communications) deployed
+- [ ] Gawain (Intelligence) deployed
+- [ ] Redis shared state integration
 - [ ] Cross-knight collaboration patterns
+- [ ] Daily briefing composed from multiple knights
 
-### Phase 4: Intelligence
-- [ ] Proactive knight behaviors
-- [ ] Event-driven triggers (webhooks, cron, alerts)
+### Phase 4: Intelligence 🧠
+- [ ] Proactive knight behaviors (event-driven triggers)
+- [ ] Knight self-improvement (memory, learning from past tasks)
+- [ ] Knight health monitoring and auto-recovery
 - [ ] Munin ↔ Knight communication
+- [ ] Performance tuning (model selection per knight)
+
+## Design Principles
+
+1. **Knights are specialized, not dumb** — Each has personality, judgment, memory, and can spawn sub-agents
+2. **NATS is the contract** — Anything that speaks the message format can be a knight
+3. **GitOps everything** — Deploy/remove knights with `kubectl apply/delete`
+4. **Users never see knights** — Tim is the interface; he synthesizes all output
+5. **Right model for the job** — Lighter models for knights that don't need heavy reasoning
+6. **Fail gracefully** — A dead knight doesn't crash the system; Tim adapts
+
+## Tech Stack
+
+- **Kubernetes** (Talos on Proxmox) — Runtime platform
+- **OpenClaw** — Agent runtime (personality, memory, skills, channels)
+- **NATS JetStream** — Message bus with durable streams
+- **Redis / Valkey** — Shared state store
+- **Go** — nats-bridge sidecar
+- **Flux** — GitOps deployment
+- **Claude** (Anthropic) — LLM backbone
+
+## Quick Start
+
+> 🚧 Coming in Phase 2 — once the infrastructure is deployed and Galahad is operational.
 
 ## License
 
 MIT — see [LICENSE](LICENSE)
+
+---
+
+*"There are some who call me... Tim." 🔥*
