@@ -6,24 +6,23 @@ The Round Table is a multi-agent AI platform built on three layers: **User-Facin
 
 ```mermaid
 graph TB
-    subgraph UserLayer["User Layer"]
-        direction LR
-        User["🧑 User"] <--> Tim["🔥 Tim"]
-        User B["🧑 User B"] <--> Munin["🪶 Munin"]
-        Tim <-->|"peer"| Munin
+    subgraph FleetA["Fleet A"]
+        UA["🧑 User A"] <--> LA["🤖 Lead Agent A"]
+        LA <-->|"fleet-a.tasks.*"| KA1["⚔️ Knight"]
+        LA <-->|"fleet-a.tasks.*"| KA2["⚔️ Knight"]
+        LA <-->|"fleet-a.tasks.*"| KA3["⚔️ Knight"]
     end
+
+    subgraph FleetB["Fleet B"]
+        UB["🧑 User B"] <--> LB["🤖 Lead Agent B"]
+        LB <-->|"fleet-b.tasks.*"| KB1["⚔️ Knight"]
+        LB <-->|"fleet-b.tasks.*"| KB2["⚔️ Knight"]
+    end
+
+    LA <-->|"roundtable.peer.*"| LB
 
     subgraph Transport["Transport Layer"]
-        NATS["📡 NATS JetStream<br/><i>Durable streams, at-least-once delivery</i>"]
-    end
-
-    subgraph KnightLayer["Knight Layer"]
-        direction LR
-        G["🛡️ Galahad"] 
-        P["📧 Percival"]
-        W["🌤️ Gawain"]
-        T2["📊 Tristan"]
-        L["🏠 Lancelot"]
+        NATS["📡 NATS JetStream<br/><i>Durable streams, fleet-scoped topics</i>"]
     end
 
     subgraph StateLayer["State Layer"]
@@ -31,11 +30,10 @@ graph TB
         PVC["📂 PVCs<br/><i>Agent workspaces</i>"]
     end
 
-    Tim <--> NATS
-    Munin <--> NATS
-    NATS <--> G & P & W & T2 & L
-    G & P & W & T2 & L -.-> Redis
-    G & P & W & T2 & L -.-> PVC
+    LA & LB <--> NATS
+    KA1 & KA2 & KA3 & KB1 & KB2 <--> NATS
+    KA1 & KA2 & KA3 & KB1 & KB2 -.-> Redis
+    KA1 & KA2 & KA3 & KB1 & KB2 -.-> PVC
 ```
 
 ## Agent Types
@@ -46,10 +44,10 @@ These are full OpenClaw gateways with rich personalities, multi-channel support,
 
 | Agent | Model | Channels | Role |
 |-------|-------|----------|------|
-| 🔥 Tim | Claude Opus | Discord, Signal, etc. | Primary user's agent. Orchestrates knights. |
-| 🪶 Munin | Configurable | Discord | Secondary user's agent. Tim's apprentice. |
+| Lead Agent A | Configurable | Any OpenClaw channel | User A's agent. Orchestrates Fleet A's knights. |
+| Lead Agent B | Configurable | Any OpenClaw channel | User B's agent. Orchestrates Fleet B's knights. |
 
-**Peer Communication:** Tim and Munin communicate directly (currently HTTP, migrating to NATS) for task delegation, coordination, and knowledge sharing. They can also both publish/subscribe to the NATS bus independently.
+**Peer Communication:** Lead agents communicate directly via `roundtable.peer.*` NATS topics (or HTTP) for task delegation, coordination, and knowledge sharing. Each lead agent also manages its own fleet via fleet-scoped topics.
 
 ### Knights (Specialist Agents)
 
@@ -101,7 +99,7 @@ The universal adapter. A small Go binary (~200 lines) that:
 3. Translates NATS messages → HTTP POST to OpenClaw webhook
 4. Captures OpenClaw responses → publishes to NATS result topics
 5. Exposes `/healthz` for K8s liveness probes
-6. Publishes periodic heartbeats to `roundtable.heartbeat.<agent-id>`
+6. Publishes periodic heartbeats to `fleet-id.heartbeat.<agent-id>`
 
 ## Communication Flow
 
@@ -124,19 +122,19 @@ stateDiagram-v2
 ```mermaid
 sequenceDiagram
     participant U as 🧑 User
-    participant T as 🔥 Tim
-    participant TN as 🔌 Tim's NATS Skill
+    participant L as 🤖 Lead Agent
+    participant TN as 🔌 Lead Agent's NATS Skill
     participant N as 📡 NATS JetStream
     participant GB as 🔌 Galahad's Bridge
     participant G as 🛡️ Galahad
     participant S as 🔧 Sub-agent
 
-    U->>T: "Morning briefing please"
+    U->>L: "Morning briefing please"
     
     Note over T: Tim decides which knights<br/>to query for briefing
 
-    T->>TN: Publish security briefing task
-    TN->>N: roundtable.tasks.security.briefing
+    L->>TN: Publish security briefing task
+    TN->>N: fleet-id.tasks.security.briefing
 
     N->>GB: Message delivered
     GB->>G: POST /webhook
@@ -147,14 +145,14 @@ sequenceDiagram
     S->>G: CVE results
 
     G->>GB: Briefing response
-    GB->>N: roundtable.results.security.<task-id>
+    GB->>N: fleet-id.results.security.<task-id>
     N->>TN: Result delivered
-    TN->>T: Security briefing data
+    TN->>L: Security briefing data
 
     Note over T: Tim also receives weather<br/>from Gawain, emails from<br/>Percival (parallel)
 
-    T->>T: Synthesize all briefings
-    T->>U: "Good morning! Here's your briefing..." 🔥
+    L->>L: Synthesize all briefings
+    L->>U: "Good morning! Here's your briefing..." 🔥
 ```
 
 ## NATS JetStream Configuration
@@ -163,17 +161,17 @@ sequenceDiagram
 
 | Stream | Subjects | Retention | Max Age | Purpose |
 |--------|----------|-----------|---------|---------|
-| `ROUNDTABLE_TASKS` | `roundtable.tasks.>` | WorkQueue | 24h | Task distribution |
-| `ROUNDTABLE_RESULTS` | `roundtable.results.>` | Limits | 7d | Task results |
+| `ROUNDTABLE_TASKS` | `fleet-id.tasks.>` | WorkQueue | 24h | Task distribution |
+| `ROUNDTABLE_RESULTS` | `fleet-id.results.>` | Limits | 7d | Task results |
 | `ROUNDTABLE_EVENTS` | `roundtable.events.>` | Limits | 30d | System events, audit |
-| `ROUNDTABLE_HEARTBEAT` | `roundtable.heartbeat.>` | Limits | 1h | Agent health |
+| `ROUNDTABLE_HEARTBEAT` | `fleet-id.heartbeat.>` | Limits | 1h | Agent health |
 
 ### Consumers
 
 Each knight gets a durable consumer on `ROUNDTABLE_TASKS` filtered to its domain:
-- Galahad: `roundtable.tasks.security.>`
-- Percival: `roundtable.tasks.comms.>`
-- Gawain: `roundtable.tasks.intel.>`
+- Galahad: `fleet-id.tasks.security.>`
+- Percival: `fleet-id.tasks.comms.>`
+- Gawain: `fleet-id.tasks.intel.>`
 
 ### Why NATS JetStream?
 
@@ -251,14 +249,13 @@ Estimated resource footprint for a 5-knight deployment:
 
 ## Model Strategy
 
-Not every knight needs Claude Opus. Match the model to the domain:
+Not every agent needs the same model. Match the model to the workload:
 
-| Knight | Recommended Model | Reasoning |
-|--------|------------------|-----------|
-| 🛡️ Galahad (Security) | Claude Sonnet | Analysis + judgment, not conversation |
-| 📧 Percival (Comms) | Claude Haiku | Email triage is mostly classification |
-| 🌤️ Gawain (Intel) | Claude Sonnet | Synthesis + summarization |
-| 📊 Tristan (Observability) | Claude Haiku | Pattern matching, alerting |
-| 🏠 Lancelot (Home Auto) | Claude Haiku | Simple command routing |
+| Role | Recommended Tier | Reasoning |
+|------|-----------------|-----------|
+| Lead Agent | Top-tier (e.g., Opus) | Complex reasoning, conversation, orchestration |
+| Analysis Knights (Security, Intel) | Mid-tier (e.g., Sonnet) | Judgment + synthesis, not conversation |
+| Triage Knights (Comms, Home Auto) | Lightweight (e.g., Haiku) | Classification, routing, simple commands |
+| Observability Knights | Lightweight (e.g., Haiku) | Pattern matching, alerting |
 
-Tim stays on Opus — he's the brain. Knights are the hands.
+Lead agents stay on the best model — they're the brain. Knights are the hands.

@@ -1,88 +1,114 @@
 # Knights of the Round Table 🏰⚔️
 
-> *A multi-agent AI platform for Kubernetes homelabs*
+> *A replicable multi-agent AI platform for Kubernetes*
 
 ## The Vision
 
-Deploy specialized AI agents as independent Kubernetes pods, connected by a NATS JetStream message bus, orchestrated by a lead agent. Each "Knight" has its own personality, memory, skills, and judgment — but serves the realm invisibly.
+A **framework for deploying agent fleets.** Each lead agent (user-facing) gets its own "Round Table" — a set of specialized knights that work invisibly behind the scenes. The platform is designed to be instantiated multiple times: one fleet per lead agent, sharing infrastructure but isolated in scope.
 
-**You talk to the wizard. The wizard commands the knights. The knights do the work.**
+**You talk to your agent. Your agent commands its knights. The knights do the work.**
+
+```
+User A → Lead Agent A → Agent A's Round Table (Knight 1, Knight 2, Knight 3...)
+User B → Lead Agent B → Agent B's Round Table (Knight 4, Knight 5, Knight 6...)
+                              ↕ shared NATS + Redis infrastructure
+```
 
 ## Architecture
 
 ```mermaid
 graph TB
-    subgraph Users["👥 User Layer"]
-        User["🧑 User"]
-        User B["🧑 User B"]
+    subgraph FleetA["🔥 Fleet A"]
+        UA["🧑 User A"] <--> LA["🤖 Lead Agent A"]
+        LA <--> KA1["⚔️ Knight"]
+        LA <--> KA2["⚔️ Knight"]
+        LA <--> KA3["⚔️ Knight"]
     end
 
-    subgraph Core["🔥 Core Agents"]
-        Tim["🔥 Tim the Enchanter<br/><i>Lead Agent · JARVIS</i>"]
-        Munin["🪶 Munin<br/><i>Apprentice Raven</i>"]
+    subgraph FleetB["🪶 Fleet B"]
+        UB["🧑 User B"] <--> LB["🤖 Lead Agent B"]
+        LB <--> KB1["⚔️ Knight"]
+        LB <--> KB2["⚔️ Knight"]
     end
 
-    subgraph Bus["📡 Message Bus"]
-        NATS["NATS JetStream"]
+    LA <-->|"peer"| LB
+
+    subgraph Infra["🏗️ Shared Infrastructure"]
+        NATS["📡 NATS JetStream"]
+        Redis["💾 Redis / Valkey"]
     end
 
-    subgraph Knights["⚔️ Knights of the Round Table"]
-        Galahad["🛡️ Galahad<br/><i>Security</i>"]
-        Percival["📧 Percival<br/><i>Communications</i>"]
-        Gawain["🌤️ Gawain<br/><i>Intelligence</i>"]
-        More["➕ ...extensible"]
-    end
-
-    subgraph State["💾 Shared State"]
-        Redis["Redis / Valkey"]
-    end
-
-    User <--> Tim
-    User B <--> Munin
-    Tim <-->|"peer"| Munin
-    Tim <--> NATS
-    Munin <--> NATS
-    NATS <--> Galahad
-    NATS <--> Percival
-    NATS <--> Gawain
-    NATS <--> More
-    Galahad -.-> Redis
-    Percival -.-> Redis
-    Gawain -.-> Redis
+    KA1 & KA2 & KA3 <--> NATS
+    KB1 & KB2 <--> NATS
+    LA & LB <--> NATS
+    KA1 & KA2 & KA3 & KB1 & KB2 -.-> Redis
 ```
 
-## The Hierarchy
+## Core Concepts
 
-| Role | Agent | Interface | Purpose |
-|------|-------|-----------|---------|
-| 🧑 **User** | 🔥 Tim the Enchanter | Direct chat | Primary user. Tim is their JARVIS. |
-| 🧑 **User B** | 🪶 Munin | Direct chat | Secondary user's agent. Also Tim's apprentice. |
-| 🔥 **Tim** | 🪶 **Munin** | Peer (HTTP/NATS) | Lead agents communicate directly for coordination. |
-| 🤖 **Tim** | ⚔️ All Knights | NATS bus | Tim orchestrates. Knights never talk to users. |
-| ⚔️ **Knights** | 🔧 Sub-agents | Internal | Knights can spawn their own workers. |
+| Concept | Description |
+|---------|-------------|
+| **Lead Agent** | A user-facing OpenClaw gateway. Has personality, memory, channels. Orchestrates its fleet. |
+| **Knight** | A specialized OpenClaw gateway. Has personality, memory, skills, sub-agent capability. Invisible to users. Reports to its lead agent via NATS. |
+| **Fleet** | A lead agent + its knights. Scoped by NATS topic prefix. |
+| **Peer Link** | Lead agents can communicate directly for coordination and delegation. |
+| **nats-bridge** | Sidecar that translates NATS messages ↔ OpenClaw webhook calls. Universal adapter. |
 
-> **Key principle:** User and User B never interact with knights directly. Tim synthesizes all knight outputs and presents them in his own voice.
+### The Hierarchy
+
+```mermaid
+graph TD
+    U["🧑 User"] --> L["🤖 Lead Agent<br/><i>user-facing, full personality</i>"]
+    L -->|"NATS"| K1["⚔️ Knight A<br/><i>specialized domain</i>"]
+    L -->|"NATS"| K2["⚔️ Knight B<br/><i>specialized domain</i>"]
+    L -->|"NATS"| K3["⚔️ Knight C<br/><i>specialized domain</i>"]
+    K1 -->|"spawn"| S1["🔧 Sub-agent"]
+    K2 -->|"spawn"| S2["🔧 Sub-agent"]
+    K2 -->|"spawn"| S3["🔧 Sub-agent"]
+    L <-->|"peer"| L2["🤖 Lead Agent B"]
+```
+
+- **Users** only talk to their lead agent
+- **Lead agents** orchestrate knights and can peer with other lead agents
+- **Knights** are autonomous within their domain, can spawn sub-agents
+- **Sub-agents** are ephemeral workers within a knight's session
 
 ## How It Works
 
 ```mermaid
 sequenceDiagram
     participant U as 🧑 User
-    participant T as 🔥 Tim
+    participant L as 🤖 Lead Agent
     participant N as 📡 NATS
     participant B as 🔌 nats-bridge
-    participant K as 🛡️ Galahad
+    participant K as ⚔️ Knight
 
-    U->>T: "Give me a security briefing"
-    T->>N: Publish → roundtable.tasks.security.briefing
+    U->>L: "Give me a security briefing"
+    L->>N: Publish → fleet-a.tasks.security.briefing
     N->>B: Message delivered
     B->>K: POST /webhook (OpenClaw)
     K->>K: Analyze threats, query feeds,<br/>spawn sub-agents if needed
     K->>B: Response
-    B->>N: Publish → roundtable.results.security.<task-id>
-    N->>T: Result delivered
-    T->>T: Synthesize, add judgment
-    T->>U: "Here's your briefing..." 🔥
+    B->>N: Publish → fleet-a.results.security.<task-id>
+    N->>L: Result delivered
+    L->>L: Synthesize, add judgment
+    L->>U: "Here's your briefing..."
+```
+
+## Fleet Isolation via NATS Topics
+
+Each fleet gets its own topic prefix, keeping agent groups isolated:
+
+```
+fleet-a.tasks.security.briefing      → Fleet A's security knight
+fleet-a.results.security.<id>        → Back to Fleet A's lead agent
+fleet-a.heartbeat.galahad            → Fleet A's knight health
+
+fleet-b.tasks.security.briefing      → Fleet B's security knight (different instance)
+fleet-b.results.security.<id>        → Back to Fleet B's lead agent
+
+roundtable.broadcast.*               → Cross-fleet announcements (shared)
+roundtable.peer.*                    → Lead agent peer communication
 ```
 
 ## Pod Architecture
@@ -111,12 +137,14 @@ graph LR
 | Component | Description | Location |
 |-----------|-------------|----------|
 | **nats-bridge** | Go sidecar — translates NATS messages ↔ OpenClaw webhook calls | [`nats-bridge/`](nats-bridge/) |
-| **Knight Template** | Kustomize base for deploying any knight | [`knights/template/`](knights/template/) |
-| **Galahad** | 🛡️ First knight — Security & threat intelligence | [`knights/galahad/`](knights/galahad/) |
-| **NATS Skill** | OpenClaw skill for direct NATS pub/sub from Tim/Munin | [`skills/nats-agent-bus/`](skills/nats-agent-bus/) |
+| **Knight Template** | Kustomize base for deploying any knight in any fleet | [`knights/template/`](knights/template/) |
+| **Galahad** | 🛡️ Example knight — Security & threat intelligence | [`knights/galahad/`](knights/galahad/) |
+| **NATS Skill** | OpenClaw skill for direct NATS pub/sub from lead agents | [`skills/nats-agent-bus/`](skills/nats-agent-bus/) |
 | **Infrastructure** | Flux HelmReleases for NATS, Redis, namespace | [`infrastructure/`](infrastructure/) |
 
-## Planned Knights
+## Example Knight Roster
+
+These are example specializations. Each fleet chooses which knights to deploy.
 
 | Knight | Domain | Responsibilities |
 |--------|--------|-----------------|
@@ -125,7 +153,23 @@ graph LR
 | 🌤️ **Gawain** | Intelligence | Weather, news, market data, OSINT gathering |
 | 📊 **Tristan** | Observability | Cluster health, alerting, capacity planning |
 | 🏠 **Lancelot** | Home Automation | Smart home orchestration, routines, energy management |
-| *More...* | *Extensible* | *Deploy a pod, subscribe to NATS, join the table* |
+| *Custom* | *Any domain* | *Deploy a pod, subscribe to NATS, join the table* |
+
+## Deploying a Fleet
+
+```bash
+# 1. Deploy shared infrastructure (once)
+kubectl apply -f infrastructure/
+
+# 2. Deploy a knight for your fleet
+cd knights/galahad
+FLEET_ID=fleet-a kustomize build . | kubectl apply -f -
+
+# 3. Install NATS skill on your lead agent
+cp -r skills/nats-agent-bus /path/to/agent/skills/
+
+# 4. Your lead agent can now dispatch tasks via NATS
+```
 
 ## Roadmap
 
@@ -135,50 +179,48 @@ graph LR
 - [ ] NATS JetStream deployed to `roundtable` namespace
 - [ ] nats-bridge sidecar built and tested
 - [ ] Message contract finalized
-- [ ] Knight Kustomize template validated
+- [ ] Fleet-scoped topic conventions validated
+- [ ] Knight Kustomize template with fleet parameterization
 
-### Phase 2: First Knight ⚔️
-- [ ] Galahad (Security) fully operational
-- [ ] Tim ↔ Galahad communication via NATS verified
-- [ ] Security briefing workflow end-to-end
-- [ ] NATS skill installed on Tim's gateway
+### Phase 2: First Fleet ⚔️
+- [ ] First knight (Galahad/Security) operational
+- [ ] Lead agent ↔ knight communication via NATS verified
+- [ ] End-to-end task workflow proven
+- [ ] NATS skill installed on lead agent
 
-### Phase 3: Expansion 🌍
-- [ ] Percival (Communications) deployed
-- [ ] Gawain (Intelligence) deployed
+### Phase 3: Multi-Fleet 🌍
+- [ ] Second fleet operational (proving replicability)
+- [ ] Peer communication between lead agents via NATS
 - [ ] Redis shared state integration
-- [ ] Cross-knight collaboration patterns
-- [ ] Daily briefing composed from multiple knights
+- [ ] Cross-knight collaboration within a fleet
+- [ ] Composite briefing from multiple knights
 
 ### Phase 4: Intelligence 🧠
 - [ ] Proactive knight behaviors (event-driven triggers)
 - [ ] Knight self-improvement (memory, learning from past tasks)
-- [ ] Knight health monitoring and auto-recovery
-- [ ] Munin ↔ Knight communication
+- [ ] Fleet health monitoring and auto-recovery
 - [ ] Performance tuning (model selection per knight)
 
 ## Design Principles
 
-1. **Knights are specialized, not dumb** — Each has personality, judgment, memory, and can spawn sub-agents
-2. **NATS is the contract** — Anything that speaks the message format can be a knight
-3. **GitOps everything** — Deploy/remove knights with `kubectl apply/delete`
-4. **Users never see knights** — Tim is the interface; he synthesizes all output
-5. **Right model for the job** — Lighter models for knights that don't need heavy reasoning
-6. **Fail gracefully** — A dead knight doesn't crash the system; Tim adapts
+1. **Replicable** — The platform deploys N fleets, not just one
+2. **Knights are specialized, not dumb** — Each has personality, judgment, memory, and can spawn sub-agents
+3. **NATS is the contract** — Anything that speaks the message format can be a knight
+4. **GitOps everything** — Deploy/remove knights and fleets with `kubectl apply/delete`
+5. **Users never see knights** — The lead agent is the interface; it synthesizes all output
+6. **Fleet isolation** — Topic prefixes keep agent groups separate
+7. **Right model for the job** — Lighter models for knights that don't need heavy reasoning
+8. **Fail gracefully** — A dead knight doesn't crash the fleet; the lead agent adapts
 
 ## Tech Stack
 
-- **Kubernetes** (Talos on Proxmox) — Runtime platform
+- **Kubernetes** — Runtime platform
 - **OpenClaw** — Agent runtime (personality, memory, skills, channels)
 - **NATS JetStream** — Message bus with durable streams
 - **Redis / Valkey** — Shared state store
 - **Go** — nats-bridge sidecar
 - **Flux** — GitOps deployment
-- **Claude** (Anthropic) — LLM backbone
-
-## Quick Start
-
-> 🚧 Coming in Phase 2 — once the infrastructure is deployed and Galahad is operational.
+- **Anthropic Claude** — LLM backbone (configurable per agent)
 
 ## License
 

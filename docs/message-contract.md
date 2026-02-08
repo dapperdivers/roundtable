@@ -12,8 +12,9 @@ Every message on the NATS bus follows this envelope:
 {
   "id": "550e8400-e29b-41d4-a716-446655440000",
   "version": "1.0",
+  "fleetId": "fleet-a",
   "type": "task.request",
-  "from": "tim",
+  "from": "lead-agent-a",
   "to": "galahad",
   "timestamp": "2026-02-08T15:00:00Z",
   "correlationId": "optional-parent-task-id",
@@ -30,6 +31,7 @@ Every message on the NATS bus follows this envelope:
 | `id` | UUID v4 | ✅ | Unique message identifier |
 | `version` | string | ✅ | Contract version (semver) |
 | `type` | string | ✅ | Message type (see below) |
+| `fleetId` | string | ✅ | Fleet identifier (scopes all topics) |
 | `from` | string | ✅ | Sender agent ID |
 | `to` | string | ⬚ | Target agent ID (omit for broadcast) |
 | `timestamp` | ISO-8601 | ✅ | When the message was created |
@@ -67,8 +69,8 @@ Published by Tim (or any orchestrating agent) to assign work.
 }
 ```
 
-**Topic:** `roundtable.tasks.<domain>.<action>`  
-**Example:** `roundtable.tasks.security.briefing`
+**Topic:** `fleet-id.tasks.<domain>.<action>`  
+**Example:** `fleet-id.tasks.security.briefing`
 
 ### `task.claimed`
 
@@ -89,7 +91,7 @@ Published by a knight when it picks up a task. Prevents duplicate processing.
 }
 ```
 
-**Topic:** `roundtable.events.task.claimed`
+**Topic:** `fleet-id.events.task.claimed`
 
 ### `task.progress`
 
@@ -114,7 +116,7 @@ Optional progress updates for long-running tasks.
 }
 ```
 
-**Topic:** `roundtable.events.task.progress`
+**Topic:** `fleet-id.events.task.progress`
 
 ### `task.result`
 
@@ -145,8 +147,8 @@ The final result of a completed task.
 }
 ```
 
-**Topic:** `roundtable.results.<domain>.<task-id>`  
-**Example:** `roundtable.results.security.550e8400`
+**Topic:** `fleet-id.results.<domain>.<task-id>`  
+**Example:** `fleet-id.results.security.550e8400`
 
 ### `task.failed`
 
@@ -170,7 +172,7 @@ When a knight cannot complete a task.
 }
 ```
 
-**Topic:** `roundtable.results.<domain>.<task-id>`
+**Topic:** `fleet-id.results.<domain>.<task-id>`
 
 ### `heartbeat`
 
@@ -194,7 +196,7 @@ Periodic health signal from each knight.
 }
 ```
 
-**Topic:** `roundtable.heartbeat.<agent-id>`  
+**Topic:** `fleet-id.heartbeat.<agent-id>`  
 **Frequency:** Every 60 seconds
 
 ## Task Lifecycle

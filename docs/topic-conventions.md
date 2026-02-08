@@ -1,49 +1,71 @@
 # NATS Topic Conventions
 
+## Fleet-Scoped Topics
+
+Every fleet (lead agent + its knights) operates under its own topic prefix, ensuring isolation:
+
+```
+<fleet-id>.tasks.<domain>.<action>        → Task dispatch within a fleet
+<fleet-id>.results.<domain>.<task-id>     → Results back to the fleet's lead agent
+<fleet-id>.heartbeat.<agent-id>           → Knight health within a fleet
+<fleet-id>.events.<event-type>            → Fleet-scoped system events
+
+roundtable.broadcast.*                    → Cross-fleet announcements
+roundtable.peer.<from>.<to>              → Lead agent peer communication
+```
+
+This means Fleet A's Galahad and Fleet B's Galahad are completely independent — same knight template, different fleet prefix, different instances.
+
 ## Topic Hierarchy
 
 ```mermaid
 graph TD
-    RT["roundtable"] --> Tasks["tasks"]
-    RT --> Results["results"]
-    RT --> Events["events"]
-    RT --> HB["heartbeat"]
-    RT --> Broadcast["broadcast"]
+    subgraph Fleet["&lt;fleet-id&gt;.*"]
+        FID["&lt;fleet-id&gt;"] --> Tasks["tasks"]
+        FID --> Results["results"]
+        FID --> Events["events"]
+        FID --> HB["heartbeat"]
 
-    Tasks --> TSec["security.*"]
-    Tasks --> TComms["comms.*"]
-    Tasks --> TIntel["intel.*"]
-    Tasks --> TObs["observability.*"]
-    Tasks --> THome["home.*"]
+        Tasks --> TSec["security.*"]
+        Tasks --> TComms["comms.*"]
+        Tasks --> TIntel["intel.*"]
+        Tasks --> TObs["observability.*"]
+        Tasks --> THome["home.*"]
 
-    Results --> RSec["security.<task-id>"]
-    Results --> RComms["comms.<task-id>"]
-    Results --> RIntel["intel.<task-id>"]
+        Results --> RSec["security.&lt;task-id&gt;"]
+        Results --> RComms["comms.&lt;task-id&gt;"]
 
-    Events --> ETClaimed["task.claimed"]
-    Events --> ETProgress["task.progress"]
-    Events --> ESystem["system.*"]
+        Events --> ETClaimed["task.claimed"]
+        Events --> ETProgress["task.progress"]
+        Events --> ESystem["system.*"]
 
-    HB --> HGal["galahad"]
-    HB --> HPer["percival"]
-    HB --> HGaw["gawain"]
+        HB --> HGal["galahad"]
+        HB --> HPer["percival"]
+        HB --> HGaw["gawain"]
+    end
+
+    subgraph Shared["roundtable.*"]
+        RT["roundtable"] --> Broadcast["broadcast.*"]
+        RT --> Peer["peer.&lt;from&gt;.&lt;to&gt;"]
+    end
 ```
 
 ## Subject Format
 
 ```
-roundtable.<category>.<domain>.<action|id>
+<fleet-id>.<category>.<domain>.<action|id>
 ```
 
 ### Categories
 
 | Category | Purpose | Pattern |
 |----------|---------|---------|
-| `tasks` | Task requests from orchestrator to knights | `roundtable.tasks.<domain>.<action>` |
-| `results` | Task results from knights back to orchestrator | `roundtable.results.<domain>.<task-id>` |
-| `events` | System events, lifecycle, progress | `roundtable.events.<event-type>` |
-| `heartbeat` | Agent health signals | `roundtable.heartbeat.<agent-id>` |
-| `broadcast` | Messages to all agents | `roundtable.broadcast.<topic>` |
+| `tasks` | Task requests from lead agent to knights | `<fleet-id>.tasks.<domain>.<action>` |
+| `results` | Task results from knights back to lead agent | `<fleet-id>.results.<domain>.<task-id>` |
+| `events` | Fleet system events, lifecycle, progress | `<fleet-id>.events.<event-type>` |
+| `heartbeat` | Agent health signals | `<fleet-id>.heartbeat.<agent-id>` |
+| `broadcast` | Cross-fleet announcements | `roundtable.broadcast.<topic>` |
+| `peer` | Lead agent peer communication | `roundtable.peer.<from>.<to>` |
 
 ## Domain Subjects
 
@@ -51,58 +73,58 @@ roundtable.<category>.<domain>.<action|id>
 
 | Subject | Direction | Description |
 |---------|-----------|-------------|
-| `roundtable.tasks.security.briefing` | Tim → Galahad | Daily security briefing |
-| `roundtable.tasks.security.cve-analysis` | Tim → Galahad | Deep dive on specific CVE |
-| `roundtable.tasks.security.threat-scan` | Tim → Galahad | Scan specific threat feeds |
-| `roundtable.tasks.security.incident` | Tim → Galahad | Analyze a security incident |
-| `roundtable.results.security.*` | Galahad → Tim | All security results |
+| `fleet-id.tasks.security.briefing` | Tim → Galahad | Daily security briefing |
+| `fleet-id.tasks.security.cve-analysis` | Tim → Galahad | Deep dive on specific CVE |
+| `fleet-id.tasks.security.threat-scan` | Tim → Galahad | Scan specific threat feeds |
+| `fleet-id.tasks.security.incident` | Tim → Galahad | Analyze a security incident |
+| `fleet-id.results.security.*` | Galahad → Tim | All security results |
 
 ### Communications (Percival)
 
 | Subject | Direction | Description |
 |---------|-----------|-------------|
-| `roundtable.tasks.comms.email-triage` | Tim → Percival | Scan and prioritize emails |
-| `roundtable.tasks.comms.email-draft` | Tim → Percival | Draft an email response |
-| `roundtable.tasks.comms.notifications` | Tim → Percival | Check notification channels |
-| `roundtable.results.comms.*` | Percival → Tim | All comms results |
+| `fleet-id.tasks.comms.email-triage` | Tim → Percival | Scan and prioritize emails |
+| `fleet-id.tasks.comms.email-draft` | Tim → Percival | Draft an email response |
+| `fleet-id.tasks.comms.notifications` | Tim → Percival | Check notification channels |
+| `fleet-id.results.comms.*` | Percival → Tim | All comms results |
 
 ### Intelligence (Gawain)
 
 | Subject | Direction | Description |
 |---------|-----------|-------------|
-| `roundtable.tasks.intel.weather` | Tim → Gawain | Weather report |
-| `roundtable.tasks.intel.news` | Tim → Gawain | News summary |
-| `roundtable.tasks.intel.market` | Tim → Gawain | Market/financial data |
-| `roundtable.tasks.intel.research` | Tim → Gawain | General research task |
-| `roundtable.results.intel.*` | Gawain → Tim | All intel results |
+| `fleet-id.tasks.intel.weather` | Tim → Gawain | Weather report |
+| `fleet-id.tasks.intel.news` | Tim → Gawain | News summary |
+| `fleet-id.tasks.intel.market` | Tim → Gawain | Market/financial data |
+| `fleet-id.tasks.intel.research` | Tim → Gawain | General research task |
+| `fleet-id.results.intel.*` | Gawain → Tim | All intel results |
 
 ### Observability (Tristan)
 
 | Subject | Direction | Description |
 |---------|-----------|-------------|
-| `roundtable.tasks.observability.health` | Tim → Tristan | Cluster health check |
-| `roundtable.tasks.observability.alert` | Tim → Tristan | Investigate an alert |
-| `roundtable.tasks.observability.capacity` | Tim → Tristan | Capacity planning report |
-| `roundtable.results.observability.*` | Tristan → Tim | All observability results |
+| `fleet-id.tasks.observability.health` | Tim → Tristan | Cluster health check |
+| `fleet-id.tasks.observability.alert` | Tim → Tristan | Investigate an alert |
+| `fleet-id.tasks.observability.capacity` | Tim → Tristan | Capacity planning report |
+| `fleet-id.results.observability.*` | Tristan → Tim | All observability results |
 
 ### Home Automation (Lancelot)
 
 | Subject | Direction | Description |
 |---------|-----------|-------------|
-| `roundtable.tasks.home.scene` | Tim → Lancelot | Activate a scene/routine |
-| `roundtable.tasks.home.status` | Tim → Lancelot | Home status report |
-| `roundtable.tasks.home.automation` | Tim → Lancelot | Manage automations |
-| `roundtable.results.home.*` | Lancelot → Tim | All home results |
+| `fleet-id.tasks.home.scene` | Tim → Lancelot | Activate a scene/routine |
+| `fleet-id.tasks.home.status` | Tim → Lancelot | Home status report |
+| `fleet-id.tasks.home.automation` | Tim → Lancelot | Manage automations |
+| `fleet-id.results.home.*` | Lancelot → Tim | All home results |
 
 ## System Events
 
 | Subject | Description |
 |---------|-------------|
-| `roundtable.events.task.claimed` | A knight claimed a task |
-| `roundtable.events.task.progress` | Task progress update |
-| `roundtable.events.system.knight-online` | A knight pod started |
-| `roundtable.events.system.knight-offline` | A knight pod stopped |
-| `roundtable.events.system.error` | System-level errors |
+| `fleet-id.events.task.claimed` | A knight claimed a task |
+| `fleet-id.events.task.progress` | Task progress update |
+| `fleet-id.events.system.knight-online` | A knight pod started |
+| `fleet-id.events.system.knight-offline` | A knight pod stopped |
+| `fleet-id.events.system.error` | System-level errors |
 
 ## Broadcast Subjects
 
@@ -119,7 +141,7 @@ roundtable.<category>.<domain>.<action|id>
 ```yaml
 name: ROUNDTABLE_TASKS
 subjects:
-  - "roundtable.tasks.>"
+  - "*.tasks.>"
 retention: workqueue      # Each message consumed once
 maxAge: 86400000000000    # 24h TTL (nanoseconds)
 storage: file
@@ -133,7 +155,7 @@ discard: old
 ```yaml
 name: ROUNDTABLE_RESULTS
 subjects:
-  - "roundtable.results.>"
+  - "*.results.>"
 retention: limits
 maxAge: 604800000000000   # 7 day retention
 storage: file
@@ -161,7 +183,7 @@ discard: old
 ```yaml
 name: ROUNDTABLE_HEARTBEAT
 subjects:
-  - "roundtable.heartbeat.>"
+  - "*.heartbeat.>"
 retention: limits
 maxAge: 3600000000000     # 1 hour (only recent heartbeats matter)
 maxMsgsPerSubject: 5      # Keep last 5 per agent
@@ -178,7 +200,7 @@ Each knight gets a durable pull consumer:
 # Example: Galahad's consumer
 name: galahad
 durableName: galahad
-filterSubject: "roundtable.tasks.security.>"
+filterSubject: "fleet-id.tasks.security.>"
 ackPolicy: explicit
 ackWait: 300000000000      # 5 minute ack timeout
 maxDeliver: 3              # Retry up to 3 times
@@ -187,20 +209,21 @@ deliverPolicy: all
 
 ## Wildcard Subscriptions
 
-Tim subscribes broadly to collect results:
-- `roundtable.results.>` — All results from all knights
-- `roundtable.heartbeat.>` — All heartbeats
-- `roundtable.events.>` — All system events
+A lead agent subscribes broadly within its fleet:
+- `<fleet-id>.results.>` — All results from its knights
+- `<fleet-id>.heartbeat.>` — All heartbeats from its knights
+- `<fleet-id>.events.>` — Fleet system events
+- `roundtable.peer.<fleet-id>` — Incoming peer messages
 
-Knights subscribe narrowly to their domain:
-- `roundtable.tasks.security.>` (Galahad)
-- `roundtable.tasks.comms.>` (Percival)
+Knights subscribe narrowly to their domain within their fleet:
+- `<fleet-id>.tasks.security.>` (Galahad)
+- `<fleet-id>.tasks.comms.>` (Percival)
 - etc.
 
 ## Adding a New Domain
 
 1. Choose a domain name (e.g., `finance`)
-2. Define task subjects: `roundtable.tasks.finance.<action>`
-3. Results auto-route to: `roundtable.results.finance.<task-id>`
+2. Define task subjects: `fleet-id.tasks.finance.<action>`
+3. Results auto-route to: `fleet-id.results.finance.<task-id>`
 4. Add domain to the knight's consumer filter
 5. No infrastructure changes needed — NATS subjects are dynamic
