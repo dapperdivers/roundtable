@@ -22,7 +22,7 @@ spec:
       containers:
         # OpenClaw Agent Gateway — the knight's brain
         - name: openclaw
-          image: ghcr.io/openclaw/gateway:latest  # TODO: pin version
+          image: ghcr.io/openclaw/openclaw:main
           ports:
             - containerPort: 18789
               name: gateway
@@ -48,7 +48,7 @@ spec:
 
         # NATS Bridge Sidecar — translates NATS <-> OpenClaw webhook
         - name: nats-bridge
-          image: ghcr.io/dapperdivers/roundtable/nats-bridge:latest
+          image: ghcr.io/dapperdivers/nats-bridge:latest
           ports:
             - containerPort: 8080
               name: health

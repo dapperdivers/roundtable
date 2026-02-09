@@ -8,6 +8,8 @@ metadata:
   namespace: {{ $.Values.namespace }}
   labels:
     {{- include "roundtable.knightLabels" (dict "ctx" $ "name" $name "knight" $knight) | nindent 4 }}
+  annotations:
+    reloader.stakater.com/auto: "true"
 spec:
   replicas: 1
   selector:
@@ -18,36 +20,72 @@ spec:
       labels:
         {{- include "roundtable.knightLabels" (dict "ctx" $ "name" $name "knight" $knight) | nindent 8 }}
     spec:
+      shareProcessNamespace: true
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
       containers:
         # ── OpenClaw Gateway ──────────────────────────────────────────
         - name: openclaw
-          image: {{ $knight.openclaw.image | default "ghcr.io/anthropics/openclaw:latest" }}
+          image: "{{ $.Values.openclaw.image.repository }}:{{ $.Values.openclaw.image.tag }}"
+          command:
+            - /bin/sh
+            - -c
+            - |
+              {{- $.Values.openclaw.command | nindent 14 }}
           ports:
             - name: openclaw
-              containerPort: {{ $knight.openclaw.port | default 18789 }}
+              containerPort: {{ $.Values.openclaw.port }}
           env:
+            - name: TZ
+              value: America/Chicago
+            - name: HOME
+              value: /home/node
+            - name: TERM
+              value: xterm-256color
+            - name: PATH
+              value: /home/node/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
             - name: KNIGHT_NAME
               value: {{ $name }}
             - name: KNIGHT_DOMAIN
               value: {{ $knight.domain }}
             - name: KNIGHT_FLEET
               value: {{ $knight.fleetId }}
-            - name: KNIGHT_MODEL
-              value: {{ $knight.model | default "anthropic/claude-sonnet-4-5" }}
+            {{- if $knight.chrome | default dict | dig "enabled" false }}
+            - name: BROWSER_WS_ENDPOINT
+              value: "ws://localhost:9222"
+            {{- end }}
+            # Gateway token from ExternalSecret
+            - name: CLAWDBOT_GATEWAY_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: roundtable-secrets
+                  key: {{ $knight.gatewayTokenKey | default (printf "ROUNDTABLE_%s_GATEWAY_TOKEN" ($name | upper)) }}
+            # API key from ExternalSecret
+            - name: ANTHROPIC_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: roundtable-secrets
+                  key: ROUNDTABLE_ANTHROPIC_API_KEY
           volumeMounts:
             - name: workspace
-              mountPath: /home/node/workspace
+              mountPath: /home/node/{{ $name }}
             - name: workspace-config
-              mountPath: /home/node/workspace/SOUL.md
+              mountPath: /home/node/{{ $name }}/SOUL.md
               subPath: SOUL.md
             - name: workspace-config
-              mountPath: /home/node/workspace/AGENTS.md
+              mountPath: /home/node/{{ $name }}/AGENTS.md
               subPath: AGENTS.md
             - name: workspace-config
-              mountPath: /home/node/workspace/TOOLS.md
+              mountPath: /home/node/{{ $name }}/TOOLS.md
               subPath: TOOLS.md
+            - name: openclaw-config
+              mountPath: /home/node/.openclaw/openclaw.json
+              subPath: openclaw.json
             - name: skills
-              mountPath: /home/node/workspace/skills
+              mountPath: /home/node/{{ $name }}/skills
               readOnly: true
           {{- with $knight.resources }}
           resources:
@@ -56,15 +94,15 @@ spec:
 
         # ── NATS Bridge Sidecar ───────────────────────────────────────
         - name: nats-bridge
-          image: {{ $.Values.natsBridge.image }}
+          image: "{{ $.Values.natsBridge.image.repository }}:{{ $.Values.natsBridge.image.tag }}"
           ports:
             - name: bridge-health
               containerPort: 8080
           env:
             - name: NATS_URL
-              value: nats://{{ include "roundtable.fullname" $ }}-nats:4222
+              value: nats://nats.{{ $.Values.namespace }}.svc:4222
             - name: OPENCLAW_URL
-              value: http://localhost:{{ $knight.openclaw.port | default 18789 }}
+              value: http://localhost:{{ $.Values.openclaw.port }}
             - name: KNIGHT_NAME
               value: {{ $name }}
             - name: FLEET_ID
@@ -84,7 +122,7 @@ spec:
 
         # ── Git-Sync Sidecar ──────────────────────────────────────────
         - name: git-sync
-          image: {{ $.Values.gitSync.image }}
+          image: "{{ $.Values.gitSync.image.repository }}:{{ $.Values.gitSync.image.tag }}"
           env:
             - name: GITSYNC_REPO
               value: {{ $.Values.arsenal.repository }}
@@ -102,6 +140,24 @@ spec:
             {{- toYaml . | nindent 12 }}
           {{- end }}
 
+        {{- if $knight.chrome | default dict | dig "enabled" false }}
+        # ── Chrome Sidecar ────────────────────────────────────────────
+        - name: chrome
+          image: "{{ $.Values.chrome.image.repository }}:{{ $.Values.chrome.image.tag }}"
+          command:
+            - chromium-browser
+            - --headless=new
+            - --disable-gpu
+            - --remote-debugging-address=0.0.0.0
+            - --remote-debugging-port=9222
+            - --no-sandbox
+            - --disable-dev-shm-usage
+          {{- with $.Values.chrome.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+        {{- end }}
+
       volumes:
         - name: workspace
           persistentVolumeClaim:
@@ -109,6 +165,9 @@ spec:
         - name: workspace-config
           configMap:
             name: knight-{{ $name }}-workspace
+        - name: openclaw-config
+          configMap:
+            name: knight-{{ $name }}-config
         - name: skills
           emptyDir: {}
 {{- end }}

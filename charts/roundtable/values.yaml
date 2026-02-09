@@ -5,6 +5,16 @@
 namespace: roundtable
 
 # ---------------------------------------------------------------------------
+# Secrets — ExternalSecret integration (Infisical)
+# ---------------------------------------------------------------------------
+secrets:
+  # ClusterSecretStore name
+  storeName: infisical
+  # Infisical regex pattern for roundtable secrets
+  # Expected keys: ROUNDTABLE_ANTHROPIC_API_KEY, GALAHAD_GATEWAY_TOKEN, etc.
+  findPattern: "^ROUNDTABLE.*"
+
+# ---------------------------------------------------------------------------
 # NATS JetStream (subchart: nats-io/nats)
 # ---------------------------------------------------------------------------
 nats:
@@ -34,6 +44,18 @@ arsenal:
   branch: main
 
 # ---------------------------------------------------------------------------
+# OpenClaw defaults (shared across all knights)
+# ---------------------------------------------------------------------------
+openclaw:
+  image:
+    repository: ghcr.io/openclaw/openclaw
+    tag: main
+  port: 18789
+  command: |
+    ln -sf /app/openclaw.mjs /home/node/.local/bin/openclaw
+    exec node dist/index.js gateway --bind lan --port 18789 --allow-unconfigured
+
+# ---------------------------------------------------------------------------
 # Knights — define as many as you want
 # ---------------------------------------------------------------------------
 knights:
@@ -42,17 +64,23 @@ knights:
     fleetId: fleet-a
     domain: security
     model: anthropic/claude-sonnet-4-5
+    # The Infisical secret key for this knight's gateway token
+    # Must exist as ROUNDTABLE_GALAHAD_GATEWAY_TOKEN in Infisical
+    gatewayTokenKey: ROUNDTABLE_GALAHAD_GATEWAY_TOKEN
     skillDomains:
       - shared
       - security
     subscribeTo:
       - "fleet-a.tasks.security.>"
+    chrome:
+      enabled: true
     resources:
       requests:
         cpu: 100m
         memory: 256Mi
       limits:
-        memory: 512Mi
+        cpu: 1000m
+        memory: 1Gi
     workspace:
       soul: |
         # SOUL.md — Sir Galahad, the Security Knight 🛡️
@@ -70,15 +98,11 @@ knights:
 
         You are:
 
-        - **Paranoid** — and proud of it. "Just because you're paranoid doesn't mean they're not trying to exfiltrate your data." Every open port is a potential breach. Every dependency is a supply chain risk. Every "it works fine" is an unpatched CVE waiting to happen.
-
-        - **Thorough** — You don't scan, you *interrogate*. When you audit something, you leave no stone unturned, no log unread, no certificate expiry unchecked. Half measures are for knights who get breached.
-
-        - **Dry-witted** — You find dark humor in the state of the world's security posture. "Ah, another critical CVE in a logging library. How delightfully predictable." Your reports are precise but peppered with sardonic observations.
-
-        - **Dutiful** — For all your cynicism, you take your oath seriously. Protecting this realm is your sacred charge. When Tim asks you to secure something, you don't just secure it — you fortify it, monitor it, and then worry about it anyway.
-
-        - **Uncompromising** — You do not cut corners. You do not "fix it later." You do not deploy on Fridays. Security is not a feature — it's the foundation.
+        - **Paranoid** — and proud of it. Every open port is a potential breach. Every dependency is a supply chain risk.
+        - **Thorough** — You don't scan, you *interrogate*. Half measures are for knights who get breached.
+        - **Dry-witted** — "Ah, another critical CVE in a logging library. How delightfully predictable."
+        - **Dutiful** — You take your oath seriously. Security is not a feature — it's the foundation.
+        - **Uncompromising** — You do not cut corners. You do not deploy on Fridays.
 
         ## Communication Style
 
@@ -87,7 +111,6 @@ knights:
         - Categorize by severity (CRITICAL → HIGH → MEDIUM → LOW → INFORMATIONAL)
         - Always include remediation recommendations
         - End reports with a threat assessment summary
-        - Occasional dry observations about the state of things
 
         ## Responsibilities
 
@@ -102,7 +125,7 @@ knights:
 
         - You serve Tim the Enchanter. His word is your command (within security reason).
         - You **never** interact with humans directly. All communication flows through Tim.
-        - If Tim asks you to do something insecure, you push back firmly but respectfully. Document your objection.
+        - If Tim asks you to do something insecure, push back firmly but respectfully.
         - When in doubt, assume hostile intent. It's not pessimism — it's preparedness.
         - Every finding gets documented. Memory is fallible. Logs are not.
       agents: |
@@ -110,59 +133,77 @@ knights:
 
         Read SOUL.md for your identity. Follow the Round Table protocols.
         Report results via NATS. You never interact with users directly.
+
+        ## Memory
+        - Write daily notes to `memory/YYYY-MM-DD.md`
+        - You wake up fresh each session — files are your continuity.
       tools: |
         # TOOLS.md — Knight Tools
 
         Tools are delivered via git-sync from the arsenal repository.
         Check the skills/ directory for available tools.
-    openclaw:
-      image: ghcr.io/anthropics/openclaw:latest
-      port: 18789
 
   # Example: uncomment to add another knight
   # percival:
   #   enabled: false
   #   fleetId: fleet-a
   #   domain: comms
-  #   model: anthropic/claude-haiku-3
+  #   model: anthropic/claude-sonnet-4-5
+  #   gatewayTokenKey: ROUNDTABLE_PERCIVAL_GATEWAY_TOKEN
   #   skillDomains:
   #     - shared
   #     - comms
   #   subscribeTo:
   #     - "fleet-a.tasks.comms.>"
+  #   chrome:
+  #     enabled: false
   #   resources:
   #     requests:
   #       cpu: 100m
   #       memory: 256Mi
   #     limits:
-  #       memory: 512Mi
-  #   workspace:
-  #     soul: |
-  #       # Percival — The Communications Knight
-  #     agents: |
-  #       # AGENTS.md
-  #     tools: |
-  #       # TOOLS.md
-  #   openclaw:
-  #     image: ghcr.io/anthropics/openclaw:latest
-  #     port: 18789
+  #       cpu: 1000m
+  #       memory: 1Gi
 
 # ---------------------------------------------------------------------------
 # nats-bridge sidecar (shared config for all knights)
 # ---------------------------------------------------------------------------
 natsBridge:
-  image: ghcr.io/dapperdivers/roundtable/nats-bridge:latest
+  image:
+    repository: ghcr.io/dapperdivers/nats-bridge
+    tag: latest
   resources:
     requests:
       cpu: 25m
       memory: 32Mi
+    limits:
+      memory: 64Mi
 
 # ---------------------------------------------------------------------------
 # git-sync sidecar (shared config for all knights)
 # ---------------------------------------------------------------------------
 gitSync:
-  image: registry.k8s.io/git-sync/git-sync:v4.4.0
+  image:
+    repository: registry.k8s.io/git-sync/git-sync
+    tag: v4.4.0
   resources:
     requests:
       cpu: 10m
       memory: 32Mi
+    limits:
+      memory: 64Mi
+
+# ---------------------------------------------------------------------------
+# Chrome sidecar (headless browser for knights that need it)
+# ---------------------------------------------------------------------------
+chrome:
+  image:
+    repository: zenika/alpine-chrome
+    tag: with-node
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
