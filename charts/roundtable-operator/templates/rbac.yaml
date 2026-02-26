@@ -1,0 +1,41 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "roundtable-operator.fullname" . }}
+  labels:
+    {{- include "roundtable-operator.labels" . | nindent 4 }}
+rules:
+  # Knight CRD management
+  - apiGroups: ["ai.roundtable.io"]
+    resources: ["knights", "knights/status", "knights/finalizers"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Managed resources
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims", "configmaps", "serviceaccounts"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Leader election
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Events
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "roundtable-operator.fullname" . }}
+  labels:
+    {{- include "roundtable-operator.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "roundtable-operator.fullname" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "roundtable-operator.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}

@@ -1,0 +1,60 @@
+{{- range $name, $spec := .Values.knights }}
+---
+apiVersion: ai.roundtable.io/v1alpha1
+kind: Knight
+metadata:
+  name: {{ $name }}
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "roundtable-operator.labels" $ | nindent 4 }}
+spec:
+  domain: {{ $spec.domain }}
+  {{- if $spec.model }}
+  model: {{ $spec.model }}
+  {{- end }}
+  {{- if $spec.image }}
+  image: {{ $spec.image }}
+  {{- end }}
+  skills:
+    {{- toYaml $spec.skills | nindent 4 }}
+  {{- if $spec.tools }}
+  tools:
+    {{- toYaml $spec.tools | nindent 4 }}
+  {{- end }}
+  nats:
+    {{- if $spec.nats }}
+    {{- toYaml $spec.nats | nindent 4 }}
+    {{- else }}
+    subjects:
+      - "fleet-a.tasks.{{ $spec.domain }}.>"
+    {{- end }}
+  {{- if $spec.vault }}
+  vault:
+    {{- toYaml $spec.vault | nindent 4 }}
+  {{- end }}
+  {{- if $spec.concurrency }}
+  concurrency: {{ $spec.concurrency }}
+  {{- end }}
+  {{- if $spec.taskTimeout }}
+  taskTimeout: {{ $spec.taskTimeout }}
+  {{- end }}
+  {{- if $spec.envFrom }}
+  envFrom:
+    {{- toYaml $spec.envFrom | nindent 4 }}
+  {{- end }}
+  {{- if $spec.env }}
+  env:
+    {{- toYaml $spec.env | nindent 4 }}
+  {{- end }}
+  {{- if $spec.prompt }}
+  prompt:
+    {{- toYaml $spec.prompt | nindent 4 }}
+  {{- end }}
+  {{- if $spec.resources }}
+  resources:
+    {{- toYaml $spec.resources | nindent 4 }}
+  {{- end }}
+  {{- if $spec.suspended }}
+  suspended: {{ $spec.suspended }}
+  {{- end }}
+{{- end }}

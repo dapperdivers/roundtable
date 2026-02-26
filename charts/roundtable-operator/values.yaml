@@ -1,0 +1,45 @@
+# Default values for roundtable-operator
+replicaCount: 1
+
+image:
+  repository: ghcr.io/dapperdivers/roundtable
+  tag: latest
+  pullPolicy: IfNotPresent
+
+serviceAccount:
+  create: true
+  name: roundtable-operator
+  annotations: {}
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 200m
+    memory: 128Mi
+
+# Leader election for HA
+leaderElect: true
+
+# Node selector, tolerations, affinity
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# Additional args to pass to the manager
+extraArgs: []
+
+# Knights to create alongside the operator
+# Example:
+# knights:
+#   galahad:
+#     domain: security
+#     model: claude-sonnet-4-20250514
+#     skills: [security, opencti, shared]
+#     tools:
+#       apt: [nmap, whois, dnsutils]
+#     nats:
+#       subjects: ["fleet-a.tasks.security.>"]
+#     taskTimeout: 300
+knights: {}
