@@ -35,7 +35,8 @@ jobs:
       - name: Setup envtest
         run: |
           go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest
-          setup-envtest use --bin-dir /usr/local/kubebuilder/bin
+          ENVTEST_ASSETS=$(setup-envtest use --print path)
+          echo "KUBEBUILDER_ASSETS=${ENVTEST_ASSETS}" >> $GITHUB_ENV
 
       - name: Test
         run: go test ./... -coverprofile cover.out
