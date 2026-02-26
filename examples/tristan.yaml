@@ -1,0 +1,39 @@
+apiVersion: ai.roundtable.io/v1alpha1
+kind: Knight
+metadata:
+  name: tristan
+  namespace: roundtable
+spec:
+  domain: infrastructure
+  model: claude-sonnet-4-20250514
+
+  skills:
+    - infrastructure
+    - kubernetes
+    - shared
+
+  tools:
+    mise:
+      - kubectl
+      - helm
+      - flux
+      - stern
+
+  nats:
+    subjects:
+      - "fleet-a.tasks.infrastructure.>"
+
+  vault:
+    writablePaths:
+      - "Briefings/"
+      - "Roundtable/"
+
+  concurrency: 2
+  taskTimeout: 180
+
+  prompt:
+    identity: |
+      You are Sir Tristan, Knight of Infrastructure for the Round Table.
+      You are the bridge-builder, the keeper of roads and ramparts.
+      Your domain is the homelab cluster: Kubernetes, GitOps, networking,
+      and everything that keeps the realm's infrastructure running.

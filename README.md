@@ -1,176 +1,144 @@
-# Knights of the Round Table 🏰⚔️
+# 🏰 Knights of the Round Table
 
-> *A replicable multi-agent AI platform for Kubernetes*
+**A Kubernetes Operator for Multi-Agent AI Orchestration**
 
-## The Vision
+> *"What... is your domain?" "Security!" "What... is your model?" "Claude!"*
+> *"What... is the airspeed velocity of an unladen swallow?"*
 
-A **framework for deploying agent fleets.** Each lead agent (user-facing) gets its own "Round Table" — a set of specialized knights that work invisibly behind the scenes. The platform is designed to be instantiated multiple times: one fleet per lead agent, sharing infrastructure but isolated in scope.
+## Overview
 
-**You talk to your agent. Your agent commands its knights. The knights do the work.**
+The Round Table operator manages AI agents ("Knights") as first-class Kubernetes resources. Each Knight is a specialized AI agent with its own domain expertise, tools, skills, and communication channels — all declared in a single YAML manifest.
 
+```yaml
+apiVersion: ai.roundtable.io/v1alpha1
+kind: Knight
+metadata:
+  name: galahad
+spec:
+  domain: security
+  model: claude-sonnet-4-20250514
+  skills: [security, opencti, shared]
+  tools:
+    apt: [nmap, whois, dnsutils]
+  nats:
+    subjects: ["fleet-a.tasks.security.>"]
+  taskTimeout: 300
 ```
-User A → Lead Agent A → Agent A's Round Table (Knight 1, Knight 2, Knight 3...)
-User B → Lead Agent B → Agent B's Round Table (Knight 4, Knight 5, Knight 6...)
-                              ↕ shared NATS + Redis infrastructure
-```
+
+`kubectl apply` → A fully wired AI agent appears in your cluster.
+
+## What It Does
+
+The operator watches `Knight` custom resources and reconciles them into:
+
+| Resource | Purpose |
+|----------|---------|
+| **Deployment** | Pi-knight runtime container + skill-filter sidecar |
+| **PVC** | Persistent workspace (memory, session state) |
+| **ConfigMap** | Tool definitions (`mise.toml`, `apt.txt`), prompt overrides |
+| **NATS Consumer** | JetStream durable consumer with configured filter subjects |
+| **ServiceAccount** | Per-knight RBAC (optional) |
 
 ## Architecture
 
-```mermaid
-graph TB
-    subgraph FleetA["🔥 Fleet A"]
-        UA["🧑 User A"] <--> LA["🤖 Lead Agent A"]
-        LA <--> KA1["⚔️ Knight"]
-        LA <--> KA2["⚔️ Knight"]
-        LA <--> KA3["⚔️ Knight"]
-    end
-
-    subgraph FleetB["🪶 Fleet B"]
-        UB["🧑 User B"] <--> LB["🤖 Lead Agent B"]
-        LB <--> KB1["⚔️ Knight"]
-        LB <--> KB2["⚔️ Knight"]
-    end
-
-    LA <-->|"peer"| LB
-
-    subgraph Infra["🏗️ Shared Infrastructure"]
-        NATS["📡 NATS JetStream"]
-        Redis["💾 Redis / Valkey"]
-    end
-
-    KA1 & KA2 & KA3 <--> NATS
-    KB1 & KB2 <--> NATS
-    LA & LB <--> NATS
-    KA1 & KA2 & KA3 & KB1 & KB2 -.-> Redis
+```
+┌─────────────────────────────────────────────────────┐
+│                   Round Table Operator               │
+│                                                      │
+│  Watches Knight CRs ──► Reconciles K8s Resources    │
+│                                                      │
+└──────────┬──────────────────────────────┬────────────┘
+           │                              │
+    ┌──────▼──────┐               ┌───────▼──────┐
+    │  Knight Pod  │               │  Knight Pod  │
+    │ ┌──────────┐ │               │ ┌──────────┐ │
+    │ │ pi-knight │ │    NATS      │ │ pi-knight │ │
+    │ │ runtime   │◄├──JetStream──►│ │ runtime   │ │
+    │ └──────────┘ │               │ └──────────┘ │
+    │ ┌──────────┐ │               │ ┌──────────┐ │
+    │ │  skill    │ │               │ │  skill    │ │
+    │ │  filter   │ │               │ │  filter   │ │
+    │ └──────────┘ │               │ └──────────┘ │
+    │      │       │               │      │       │
+    │  /vault (RO) │               │  /vault (RO) │
+    └──────────────┘               └──────────────┘
 ```
 
-### Orchestration
+## Custom Resources
 
-The Round Table uses **thin custom orchestration built directly on NATS JetStream** — no external orchestration framework. We borrow proven design patterns from the orchestration ecosystem:
+### Knight
 
-- **Policy-before-dispatch** — Tasks are validated against policies before reaching knights
-- **Payload pointers** — Large payloads stored in object store; messages carry references
-- **Capability routing** — Knights declare capabilities; tasks route to matching knights
-- **Audit trail** — Every task lifecycle event persisted in durable NATS streams
+A `Knight` represents a specialized AI agent with:
 
-This gives us full control over the orchestration layer with zero external dependencies beyond NATS itself.
+- **Domain** — area of expertise (security, infrastructure, finance, etc.)
+- **Model** — which AI model to use
+- **Skills** — filtered skill categories injected at deploy time
+- **Tools** — system packages (apt) and dev tools (mise) installed on startup
+- **NATS** — JetStream consumer configuration for task routing
+- **Vault** — shared knowledge base mount with granular write permissions
+- **Prompt** — customizable identity and instructions
 
-## Core Concepts
+See [examples/](./examples/) for complete manifests.
 
-| Concept | Description |
-|---------|-------------|
-| **Lead Agent** | A user-facing OpenClaw gateway. Has personality, memory, channels. Orchestrates its fleet. |
-| **Knight** | A specialized OpenClaw gateway. Has personality, memory, skills, sub-agent capability. Invisible to users. Reports to its lead agent via NATS. |
-| **Fleet** | A lead agent + its knights. Scoped by NATS topic prefix. |
-| **Peer Link** | Lead agents can communicate directly for coordination and delegation. |
-| **nats-bridge** | Sidecar that translates NATS messages ↔ OpenClaw webhook calls. Universal adapter. |
+### RoundTable (planned)
 
-## Pod Architecture
+Cluster-level configuration: NATS connection defaults, shared vault settings, global policies.
 
-Every knight runs as a three-container pod:
+### Chain (planned)
 
-| Container | Role |
-|-----------|------|
-| **OpenClaw Gateway** | Agent runtime — personality, memory, skills, webhook |
-| **nats-bridge** | NATS ↔ webhook sidecar |
-| **git-sync** | Pulls skills from the arsenal repository |
+Declarative event-driven agent chaining: "When Galahad finds a CVE, Tristan checks exposure."
 
-Skills are delivered via [roundtable-arsenal](https://github.com/dapperdivers/roundtable-arsenal) — a separate repo synced into each knight by git-sync. Push a skill → knights pick it up automatically.
-
-## Installation
-
-### Helm Chart (Recommended)
+## Quick Start
 
 ```bash
-# Add dependencies
-helm dependency update charts/roundtable/
+# Install CRDs
+make install
 
-# Install
-helm install roundtable charts/roundtable/ \
-  -n roundtable --create-namespace
+# Deploy the operator
+make deploy
 
-# Customize — add knights, change models, etc.
-helm install roundtable charts/roundtable/ \
-  -f my-values.yaml \
-  -n roundtable --create-namespace
+# Create a knight
+kubectl apply -f examples/galahad.yaml
+
+# Check status
+kubectl get knights
+NAME       DOMAIN     MODEL                    PHASE   READY   TASKS   AGE
+galahad    security   claude-sonnet-4-20250514   Ready   true    42      3d
 ```
 
-Knights are defined declaratively in `values.yaml`. Add a knight, `helm upgrade`, done.
+## Prerequisites
 
-See [`charts/roundtable/`](charts/roundtable/) for the full chart and value schema.
+- Kubernetes 1.28+
+- NATS with JetStream enabled
+- An AI model API key (Anthropic, etc.)
+- [pi-knight](https://github.com/dapperdivers/pi-knight) container image
 
-## Components
+## Development
 
-| Component | Description | Location |
-|-----------|-------------|----------|
-| **Helm Chart** | Full stack deployment — knights, NATS, Redis | [`charts/roundtable/`](charts/roundtable/) |
-| **nats-bridge** | Go sidecar — NATS ↔ OpenClaw webhook | [`nats-bridge/`](nats-bridge/) |
-| **Knight Template** | Legacy Kustomize base (see Helm chart) | [`knights/template/`](knights/template/) |
-| **Galahad** | 🛡️ Example knight — Security & threat intelligence | [`knights/galahad/`](knights/galahad/) |
-| **NATS Skill** | OpenClaw skill for direct NATS pub/sub | [`skills/nats-agent-bus/`](skills/nats-agent-bus/) |
-| **Arsenal** | Skills, protocols, templates — git-synced | [roundtable-arsenal](https://github.com/dapperdivers/roundtable-arsenal) |
+```bash
+# Generate CRD manifests
+make manifests
 
-## Example Knight Roster
+# Run locally against your cluster
+make run
 
-| Knight | Domain | Responsibilities |
-|--------|--------|-----------------|
-| 🛡️ **Galahad** | Security | Threat intel, CVE analysis, security briefings |
-| 📧 **Percival** | Communications | Email triage, notification routing |
-| 🌤️ **Gawain** | Intelligence | Weather, news, OSINT gathering |
-| 📊 **Tristan** | Observability | Cluster health, alerting |
-| 🏠 **Lancelot** | Home Automation | Smart home orchestration |
-| *Custom* | *Any domain* | *Define in values.yaml, deploy with Helm* |
+# Build the operator image
+make docker-build docker-push IMG=ghcr.io/dapperdivers/roundtable:latest
 
-## Tech Stack
+# Run tests
+make test
+```
 
-- **Kubernetes** — Runtime platform
-- **OpenClaw** — Agent runtime (personality, memory, skills, channels)
-- **NATS JetStream** — Message bus with durable streams + custom orchestration
-- **Redis / Valkey** — Shared state store
-- **Go** — nats-bridge sidecar
-- **Helm** — Deployment and configuration
-- **Anthropic Claude** — LLM backbone (configurable per agent)
+## Background
 
-## Roadmap
+Born from a homelab experiment in multi-agent AI orchestration. What started as Helm charts and manual wiring evolved into an operator because we kept asking: *"Why am I writing 5 resources for every new agent?"*
 
-### Phase 1: Foundation 🏗️
-- [x] Project scaffold and repo
-- [x] Architecture documentation
-- [x] Helm chart for full stack deployment
-- [ ] nats-bridge sidecar built and tested
-- [ ] Message contract finalized
-- [ ] Custom orchestration layer on NATS JetStream
-
-### Phase 2: First Fleet ⚔️
-- [ ] First knight (Galahad/Security) operational
-- [ ] Lead agent ↔ knight communication verified
-- [ ] End-to-end task workflow proven
-
-### Phase 3: Multi-Fleet 🌍
-- [ ] Second fleet operational
-- [ ] Peer communication between lead agents
-- [ ] Cross-knight collaboration within a fleet
-
-### Phase 4: Intelligence 🧠
-- [ ] Proactive knight behaviors
-- [ ] Knight self-improvement
-- [ ] Fleet health monitoring and auto-recovery
-
-## Design Principles
-
-1. **Replicable** — The platform deploys N fleets, not just one
-2. **Knights are specialized, not dumb** — Each has personality, judgment, memory
-3. **NATS is the contract** — Anything that speaks the message format can be a knight
-4. **Declarative** — Define knights in values.yaml, deploy with Helm
-5. **Users never see knights** — The lead agent synthesizes all output
-6. **Fleet isolation** — Topic prefixes keep agent groups separate
-7. **Right model for the job** — Lighter models for simpler knights
-8. **No external orchestration** — Thin custom layer on NATS JetStream
+The answer: you shouldn't have to. `kubectl apply -f knight.yaml` and go.
 
 ## License
 
-MIT — see [LICENSE](LICENSE)
+Apache 2.0
 
 ---
 
-*"There are some who call me... Tim." 🔥*
+*"We are the Knights of the Round Table. We dance whene'er we're able."* 🏰

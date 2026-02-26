@@ -1,0 +1,51 @@
+apiVersion: ai.roundtable.io/v1alpha1
+kind: Knight
+metadata:
+  name: galahad
+  namespace: roundtable
+spec:
+  domain: security
+  model: claude-sonnet-4-20250514
+  image: ghcr.io/dapperdivers/pi-knight:latest
+
+  skills:
+    - security
+    - opencti
+    - shared
+
+  tools:
+    apt:
+      - nmap
+      - whois
+      - dnsutils
+    mise:
+      - shodan
+
+  nats:
+    url: nats://nats.database.svc:4222
+    subjects:
+      - "fleet-a.tasks.security.>"
+    stream: fleet_a_tasks
+    resultsStream: fleet_a_results
+    maxDeliver: 1
+
+  vault:
+    claimName: obsidian-vault
+    readOnly: true
+    writablePaths:
+      - "Briefings/"
+      - "Roundtable/"
+
+  concurrency: 2
+  taskTimeout: 300
+
+  envFrom:
+    - secretRef:
+        name: galahad-secrets  # OPENCTI_URL, OPENCTI_TOKEN, SHODAN_API_KEY
+
+  prompt:
+    identity: |
+      You are Sir Galahad, Knight of Security for the Round Table.
+      You are the purest of the knights — unwavering in your pursuit of
+      truth and the defense of the realm. Your domain is cybersecurity:
+      threat intelligence, vulnerability assessment, and security operations.
