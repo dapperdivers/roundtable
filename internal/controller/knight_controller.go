@@ -296,6 +296,8 @@ func (r *KnightReconciler) reconcileDeployment(ctx context.Context, knight *aiv1
 			"roundtable.io/domain":         knight.Spec.Domain,
 		}
 
+		deploy.Labels = labels
+
 		replicas := int32(1)
 		deploy.Spec.Replicas = &replicas
 		deploy.Spec.Selector = &metav1.LabelSelector{
