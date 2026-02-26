@@ -32,6 +32,11 @@ jobs:
       - name: Build
         run: go build -o bin/manager cmd/main.go
 
+      - name: Setup envtest
+        run: |
+          go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest
+          setup-envtest use --bin-dir /usr/local/kubebuilder/bin
+
       - name: Test
         run: go test ./... -coverprofile cover.out
 
