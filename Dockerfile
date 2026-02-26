@@ -11,8 +11,14 @@ COPY go.sum go.sum
 # and so that source changes don't invalidate our downloaded layer
 RUN go mod download
 
+# Install controller-gen for code generation
+RUN go install sigs.k8s.io/controller-tools/cmd/controller-gen@v0.20.1
+
 # Copy the Go source (relies on .dockerignore to filter)
 COPY . .
+
+# Generate DeepCopy methods and CRD manifests
+RUN controller-gen object paths="./api/..."
 
 # Build
 # the GOARCH has no default value to allow the binary to be built according to the host where the command

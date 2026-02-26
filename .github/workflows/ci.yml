@@ -1,0 +1,71 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Generate DeepCopy
+        run: |
+          go install sigs.k8s.io/controller-tools/cmd/controller-gen@v0.20.1
+          controller-gen object paths="./api/..."
+
+      - name: Generate CRD Manifests
+        run: |
+          controller-gen crd rbac:roleName=manager-role webhook paths="./..." output:crd:artifacts:config=config/crd/bases
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Build
+        run: go build -o bin/manager cmd/main.go
+
+      - name: Test
+        run: go test ./... -coverprofile cover.out
+
+  docker:
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Generate code
+        run: |
+          go install sigs.k8s.io/controller-tools/cmd/controller-gen@v0.20.1
+          controller-gen object paths="./api/..."
+          controller-gen crd rbac:roleName=manager-role webhook paths="./..." output:crd:artifacts:config=config/crd/bases
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ghcr.io/dapperdivers/roundtable:latest
+            ghcr.io/dapperdivers/roundtable:${{ github.sha }}
