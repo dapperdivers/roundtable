@@ -139,7 +139,12 @@ type KnightWorkspace struct {
 
 // KnightTools defines system-level tools the knight needs installed.
 type KnightTools struct {
-	// apt is a list of apt packages to install (e.g., "nmap", "whois", "dnsutils").
+	// nix is a list of nixpkgs packages to install via Nix flakes (e.g., "nmap", "whois", "dnsutils").
+	// These get compiled into a flake.nix and built on first boot, cached on the Nix PVC.
+	// +optional
+	Nix []string `json:"nix,omitempty"`
+
+	// apt is a list of apt packages to install (fallback, requires root — prefer nix).
 	// +optional
 	Apt []string `json:"apt,omitempty"`
 
