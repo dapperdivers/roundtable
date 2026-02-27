@@ -163,13 +163,18 @@ var _ = Describe("Chain Controller", func() {
 		})
 
 		AfterEach(func() {
+			// Remove finalizer before delete so the object actually goes away
 			chain := &aiv1alpha1.Chain{}
 			if err := k8sClient.Get(ctx, chainNN, chain); err == nil {
+				chain.Finalizers = nil
+				_ = k8sClient.Update(ctx, chain)
 				k8sClient.Delete(ctx, chain)
 			}
 			for _, nn := range []types.NamespacedName{knightNN, knightNN2} {
 				knight := &aiv1alpha1.Knight{}
 				if err := k8sClient.Get(ctx, nn, knight); err == nil {
+					knight.Finalizers = nil
+					_ = k8sClient.Update(ctx, knight)
 					k8sClient.Delete(ctx, knight)
 				}
 			}
