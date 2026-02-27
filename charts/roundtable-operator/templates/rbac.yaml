@@ -5,9 +5,21 @@ metadata:
   labels:
     {{- include "roundtable-operator.labels" . | nindent 4 }}
 rules:
-  # Knight CRD management
+  # CRD management (Knights, Chains, Missions, RoundTables)
   - apiGroups: ["ai.roundtable.io"]
-    resources: ["knights", "knights/status", "knights/finalizers"]
+    resources:
+      - knights
+      - knights/status
+      - knights/finalizers
+      - chains
+      - chains/status
+      - chains/finalizers
+      - missions
+      - missions/status
+      - missions/finalizers
+      - roundtables
+      - roundtables/status
+      - roundtables/finalizers
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   # Managed resources
   - apiGroups: ["apps"]
