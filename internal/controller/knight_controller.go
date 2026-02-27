@@ -293,7 +293,7 @@ func (r *KnightReconciler) reconcilePVC(ctx context.Context, knight *aiv1alpha1.
 
 // ensureWorkspacePVC creates a new workspace PVC if one doesn't exist.
 func (r *KnightReconciler) ensureWorkspacePVC(ctx context.Context, knight *aiv1alpha1.Knight) error {
-	pvcName := fmt.Sprintf("knight-%s-workspace", knight.Name)
+	pvcName := knight.Name
 	pvc := &corev1.PersistentVolumeClaim{}
 	err := r.Get(ctx, types.NamespacedName{Name: pvcName, Namespace: knight.Namespace}, pvc)
 
@@ -395,7 +395,7 @@ func (r *KnightReconciler) buildPodSpec(knight *aiv1alpha1.Knight) corev1.PodSpe
 	configMapName := fmt.Sprintf("knight-%s-config", knight.Name)
 
 	// Determine workspace PVC name
-	pvcName := fmt.Sprintf("knight-%s-workspace", knight.Name)
+	pvcName := knight.Name
 	if knight.Spec.Workspace != nil && knight.Spec.Workspace.ExistingClaim != "" {
 		pvcName = knight.Spec.Workspace.ExistingClaim
 	}
