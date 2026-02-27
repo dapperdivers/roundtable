@@ -152,7 +152,7 @@ var _ = Describe("Knight Controller", func() {
 
 			// Should have 2 containers: knight + skill-filter
 			Expect(deploy.Spec.Template.Spec.Containers).To(HaveLen(2))
-			Expect(deploy.Spec.Template.Spec.Containers[0].Name).To(Equal("knight"))
+			Expect(deploy.Spec.Template.Spec.Containers[0].Name).To(Equal("app"))
 			Expect(deploy.Spec.Template.Spec.Containers[1].Name).To(Equal("skill-filter"))
 
 			// Check labels
