@@ -496,10 +496,22 @@ func (r *KnightReconciler) buildPodSpec(knight *aiv1alpha1.Knight) corev1.PodSpe
 
 	// Skill-filter sidecar — uses alpine with symlink script (matches working pattern)
 	skillCategories := strings.Join(knight.Spec.Skills, " ")
+	// Arsenal path: git-sync creates /arsenal/<repo-name> symlink
+	arsenalPath := "/arsenal"
+	if knight.Spec.Arsenal != nil {
+		// git-sync creates a worktree at /arsenal/<repo-basename>
+		repo := knight.Spec.Arsenal.Repo
+		if repo == "" {
+			repo = "https://github.com/dapperdivers/roundtable-arsenal"
+		}
+		parts := strings.Split(strings.TrimSuffix(repo, ".git"), "/")
+		arsenalPath = "/arsenal/" + parts[len(parts)-1]
+	}
+
 	skillFilterScript := fmt.Sprintf(`
-ARSENAL="/arsenal"
+ARSENAL="%s"
 TARGET="/skills"
-SKILL_CATEGORIES="%s"
+SKILL_CATEGORIES="%s"`, arsenalPath, skillCategories) + `
 EXPECTED=$(echo $SKILL_CATEGORIES | wc -w)
 LINKED=0
 while [ "$LINKED" -lt "$EXPECTED" ]; do
@@ -533,7 +545,7 @@ while true; do
     done
   fi
   sleep 60
-done`, skillCategories)
+done`
 
 	skillFilterContainer := corev1.Container{
 		Name:    "skill-filter",
@@ -559,13 +571,58 @@ done`, skillCategories)
 		},
 	}
 
+	// Git-sync sidecar for the skill arsenal
+	containers := []corev1.Container{knightContainer, skillFilterContainer}
+	if knight.Spec.Arsenal != nil {
+		arsenalRepo := knight.Spec.Arsenal.Repo
+		if arsenalRepo == "" {
+			arsenalRepo = "https://github.com/dapperdivers/roundtable-arsenal"
+		}
+		arsenalRef := knight.Spec.Arsenal.Ref
+		if arsenalRef == "" {
+			arsenalRef = "main"
+		}
+		arsenalPeriod := knight.Spec.Arsenal.Period
+		if arsenalPeriod == "" {
+			arsenalPeriod = "300s"
+		}
+		arsenalImage := knight.Spec.Arsenal.Image
+		if arsenalImage == "" {
+			arsenalImage = "registry.k8s.io/git-sync/git-sync:v4.4.0"
+		}
+
+		gitSyncContainer := corev1.Container{
+			Name:  "git-sync",
+			Image: arsenalImage,
+			Env: []corev1.EnvVar{
+				{Name: "GITSYNC_REPO", Value: arsenalRepo},
+				{Name: "GITSYNC_REF", Value: arsenalRef},
+				{Name: "GITSYNC_ROOT", Value: "/arsenal"},
+				{Name: "GITSYNC_PERIOD", Value: arsenalPeriod},
+			},
+			Resources: corev1.ResourceRequirements{
+				Requests: corev1.ResourceList{
+					corev1.ResourceMemory: resource.MustParse("32Mi"),
+					corev1.ResourceCPU:    resource.MustParse("10m"),
+				},
+				Limits: corev1.ResourceList{
+					corev1.ResourceMemory: resource.MustParse("64Mi"),
+				},
+			},
+			VolumeMounts: []corev1.VolumeMount{
+				{Name: "arsenal", MountPath: "/arsenal"},
+			},
+		}
+		containers = append(containers, gitSyncContainer)
+	}
+
 	// Pod security context — fsGroup 1000 for PVC write access
 	fsGroup := int64(1000)
 	runAsUser := int64(1000)
 	runAsGroup := int64(1000)
 
 	return corev1.PodSpec{
-		Containers:    []corev1.Container{knightContainer, skillFilterContainer},
+		Containers:    containers,
 		Volumes:       volumes,
 		EnableServiceLinks: boolPtr(false),
 		SecurityContext: &corev1.PodSecurityContext{

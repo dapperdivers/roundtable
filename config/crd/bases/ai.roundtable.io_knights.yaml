@@ -62,6 +62,26 @@ spec:
           spec:
             description: spec defines the desired state of Knight
             properties:
+              arsenal:
+                description: arsenal configures the skill arsenal git-sync sidecar.
+                properties:
+                  image:
+                    default: registry.k8s.io/git-sync/git-sync:v4.4.0
+                    description: image overrides the git-sync container image.
+                    type: string
+                  period:
+                    default: 300s
+                    description: period is how often to sync (e.g., "300s").
+                    type: string
+                  ref:
+                    default: main
+                    description: ref is the git ref to sync.
+                    type: string
+                  repo:
+                    default: https://github.com/dapperdivers/roundtable-arsenal
+                    description: repo is the git repository URL containing skills.
+                    type: string
+                type: object
               concurrency:
                 default: 2
                 description: concurrency is the maximum number of concurrent tasks

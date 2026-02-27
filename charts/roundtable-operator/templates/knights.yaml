@@ -50,6 +50,14 @@ spec:
   prompt:
     {{- toYaml $spec.prompt | nindent 4 }}
   {{- end }}
+  {{- if $spec.arsenal }}
+  arsenal:
+    {{- toYaml $spec.arsenal | nindent 4 }}
+  {{- end }}
+  {{- if $spec.workspace }}
+  workspace:
+    {{- toYaml $spec.workspace | nindent 4 }}
+  {{- end }}
   {{- if $spec.resources }}
   resources:
     {{- toYaml $spec.resources | nindent 4 }}

@@ -87,6 +87,10 @@ type KnightSpec struct {
 	// +optional
 	EnvFrom []corev1.EnvFromSource `json:"envFrom,omitempty"`
 
+	// arsenal configures the skill arsenal git-sync sidecar.
+	// +optional
+	Arsenal *KnightArsenal `json:"arsenal,omitempty"`
+
 	// workspace configures the knight's persistent workspace.
 	// +optional
 	Workspace *KnightWorkspace `json:"workspace,omitempty"`
@@ -95,6 +99,29 @@ type KnightSpec struct {
 	// +kubebuilder:default=false
 	// +optional
 	Suspended bool `json:"suspended,omitempty"`
+}
+
+// KnightArsenal configures the git-sync sidecar for the skill arsenal.
+type KnightArsenal struct {
+	// repo is the git repository URL containing skills.
+	// +kubebuilder:default="https://github.com/dapperdivers/roundtable-arsenal"
+	// +optional
+	Repo string `json:"repo,omitempty"`
+
+	// ref is the git ref to sync.
+	// +kubebuilder:default="main"
+	// +optional
+	Ref string `json:"ref,omitempty"`
+
+	// period is how often to sync (e.g., "300s").
+	// +kubebuilder:default="300s"
+	// +optional
+	Period string `json:"period,omitempty"`
+
+	// image overrides the git-sync container image.
+	// +kubebuilder:default="registry.k8s.io/git-sync/git-sync:v4.4.0"
+	// +optional
+	Image string `json:"image,omitempty"`
 }
 
 // KnightWorkspace configures the knight's persistent workspace storage.
