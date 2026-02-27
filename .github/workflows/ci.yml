@@ -72,6 +72,7 @@ jobs:
         with:
           context: .
           push: true
+          no-cache: true
           tags: |
             ghcr.io/dapperdivers/roundtable:latest
             ghcr.io/dapperdivers/roundtable:${{ github.sha }}
