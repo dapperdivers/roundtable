@@ -87,10 +87,27 @@ type KnightSpec struct {
 	// +optional
 	EnvFrom []corev1.EnvFromSource `json:"envFrom,omitempty"`
 
+	// workspace configures the knight's persistent workspace.
+	// +optional
+	Workspace *KnightWorkspace `json:"workspace,omitempty"`
+
 	// suspended, if true, scales the knight deployment to 0 replicas.
 	// +kubebuilder:default=false
 	// +optional
 	Suspended bool `json:"suspended,omitempty"`
+}
+
+// KnightWorkspace configures the knight's persistent workspace storage.
+type KnightWorkspace struct {
+	// existingClaim references an existing PVC to use instead of creating a new one.
+	// Useful for migrating existing knights to operator management.
+	// +optional
+	ExistingClaim string `json:"existingClaim,omitempty"`
+
+	// size is the storage request for auto-created PVCs.
+	// +kubebuilder:default="1Gi"
+	// +optional
+	Size string `json:"size,omitempty"`
 }
 
 // KnightTools defines system-level tools the knight needs installed.

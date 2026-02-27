@@ -29,6 +29,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	kutilintstr "k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -233,13 +234,24 @@ func (r *KnightReconciler) reconcileConfigMap(ctx context.Context, knight *aiv1a
 }
 
 // reconcilePVC creates the knight's persistent workspace volume.
+// Skips creation when spec.workspace.existingClaim is set (migration mode).
 func (r *KnightReconciler) reconcilePVC(ctx context.Context, knight *aiv1alpha1.Knight) error {
+	// If using an existing claim, skip PVC management
+	if knight.Spec.Workspace != nil && knight.Spec.Workspace.ExistingClaim != "" {
+		logf.FromContext(ctx).Info("Using existing PVC", "claim", knight.Spec.Workspace.ExistingClaim)
+		return nil
+	}
+
 	pvc := &corev1.PersistentVolumeClaim{}
 	pvcName := fmt.Sprintf("knight-%s-workspace", knight.Name)
 	err := r.Get(ctx, types.NamespacedName{Name: pvcName, Namespace: knight.Namespace}, pvc)
 
 	if apierrors.IsNotFound(err) {
-		// Create new PVC
+		storageSize := "1Gi"
+		if knight.Spec.Workspace != nil && knight.Spec.Workspace.Size != "" {
+			storageSize = knight.Spec.Workspace.Size
+		}
+
 		pvc = &corev1.PersistentVolumeClaim{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      pvcName,
@@ -255,7 +267,7 @@ func (r *KnightReconciler) reconcilePVC(ctx context.Context, knight *aiv1alpha1.
 				AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
 				Resources: corev1.VolumeResourceRequirements{
 					Requests: corev1.ResourceList{
-						corev1.ResourceStorage: resource.MustParse("1Gi"),
+						corev1.ResourceStorage: resource.MustParse(storageSize),
 					},
 				},
 			},
@@ -270,7 +282,6 @@ func (r *KnightReconciler) reconcilePVC(ctx context.Context, knight *aiv1alpha1.
 	} else if err != nil {
 		return fmt.Errorf("PVC get failed: %w", err)
 	}
-	// PVCs are immutable after creation — no update needed
 
 	return nil
 }
@@ -300,6 +311,9 @@ func (r *KnightReconciler) reconcileDeployment(ctx context.Context, knight *aiv1
 
 		replicas := int32(1)
 		deploy.Spec.Replicas = &replicas
+		deploy.Spec.Strategy = appsv1.DeploymentStrategy{
+			Type: appsv1.RecreateDeploymentStrategyType,
+		}
 		deploy.Spec.Selector = &metav1.LabelSelector{
 			MatchLabels: labels,
 		}
@@ -326,9 +340,15 @@ func (r *KnightReconciler) reconcileDeployment(ctx context.Context, knight *aiv1
 }
 
 // buildPodSpec constructs the complete pod spec for a knight.
+// Matches the proven deployment pattern from the working Helm-based knights.
 func (r *KnightReconciler) buildPodSpec(knight *aiv1alpha1.Knight) corev1.PodSpec {
 	configMapName := fmt.Sprintf("knight-%s-config", knight.Name)
+
+	// Determine workspace PVC name
 	pvcName := fmt.Sprintf("knight-%s-workspace", knight.Name)
+	if knight.Spec.Workspace != nil && knight.Spec.Workspace.ExistingClaim != "" {
+		pvcName = knight.Spec.Workspace.ExistingClaim
+	}
 
 	// Determine image
 	image := knight.Spec.Image
@@ -337,8 +357,8 @@ func (r *KnightReconciler) buildPodSpec(knight *aiv1alpha1.Knight) corev1.PodSpe
 	}
 
 	// Resource limits
-	memLimit := resource.MustParse("256Mi")
-	cpuLimit := resource.MustParse("200m")
+	memLimit := resource.MustParse("1Gi")
+	cpuLimit := resource.MustParse("1")
 	if knight.Spec.Resources != nil {
 		if !knight.Spec.Resources.Memory.IsZero() {
 			memLimit = knight.Spec.Resources.Memory
@@ -348,45 +368,29 @@ func (r *KnightReconciler) buildPodSpec(knight *aiv1alpha1.Knight) corev1.PodSpe
 		}
 	}
 
-	// Build environment variables
+	// Task timeout in milliseconds (pi-knight expects TASK_TIMEOUT_MS)
+	taskTimeoutMs := int64(knight.Spec.TaskTimeout) * 1000
+
+	// Build environment variables — matching pi-knight runtime expectations
 	env := []corev1.EnvVar{
-		{Name: "KNIGHT_NAME", Value: knight.Name},
-		{Name: "KNIGHT_DOMAIN", Value: knight.Spec.Domain},
+		{Name: "KNIGHT_NAME", Value: capitalizeFirst(knight.Name)},
 		{Name: "KNIGHT_MODEL", Value: knight.Spec.Model},
-		{Name: "KNIGHT_SKILLS", ValueFrom: &corev1.EnvVarSource{
-			ConfigMapKeyRef: &corev1.ConfigMapKeySelector{
-				LocalObjectReference: corev1.LocalObjectReference{Name: configMapName},
-				Key:                  "KNIGHT_SKILLS",
-			},
-		}},
 		{Name: "NATS_URL", Value: knight.Spec.NATS.URL},
-		{Name: "NATS_STREAM", Value: knight.Spec.NATS.Stream},
-		{Name: "NATS_RESULTS_STREAM", Value: knight.Spec.NATS.ResultsStream},
-		{Name: "NATS_FILTER_SUBJECTS", Value: strings.Join(knight.Spec.NATS.Subjects, ",")},
+		{Name: "SUBSCRIBE_TOPICS", Value: strings.Join(knight.Spec.NATS.Subjects, ",")},
 		{Name: "MAX_CONCURRENT_TASKS", Value: fmt.Sprintf("%d", knight.Spec.Concurrency)},
-		{Name: "TASK_TIMEOUT_SECONDS", Value: fmt.Sprintf("%d", knight.Spec.TaskTimeout)},
+		{Name: "TASK_TIMEOUT_MS", Value: fmt.Sprintf("%d", taskTimeoutMs)},
+		{Name: "METRICS_PORT", Value: "3000"},
+		{Name: "LOG_LEVEL", Value: "info"},
+		{Name: "TZ", Value: "America/Chicago"},
 	}
 
-	// Consumer name
-	consumerName := knight.Spec.NATS.ConsumerName
-	if consumerName == "" {
-		consumerName = fmt.Sprintf("knight-%s", knight.Name)
-	}
-	env = append(env, corev1.EnvVar{Name: "NATS_CONSUMER_NAME", Value: consumerName})
-
-	// Max deliver
-	env = append(env, corev1.EnvVar{
-		Name:  "NATS_MAX_DELIVER",
-		Value: fmt.Sprintf("%d", knight.Spec.NATS.MaxDeliver),
-	})
-
-	// Append user-defined env vars
+	// Append user-defined env vars (can override defaults)
 	env = append(env, knight.Spec.Env...)
 
-	// Volumes
+	// --- Volumes ---
 	volumes := []corev1.Volume{
 		{
-			Name: "workspace",
+			Name: "data",
 			VolumeSource: corev1.VolumeSource{
 				PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
 					ClaimName: pvcName,
@@ -401,12 +405,18 @@ func (r *KnightReconciler) buildPodSpec(knight *aiv1alpha1.Knight) corev1.PodSpe
 				},
 			},
 		},
+		// arsenal: git-sync populates skills here (emptyDir for now, git-sync initContainer future)
+		{Name: "arsenal", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+		// skills: skill-filter symlinks active categories here
+		{Name: "skills", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
 	}
 
 	// Volume mounts for the knight container
 	volumeMounts := []corev1.VolumeMount{
-		{Name: "workspace", MountPath: "/workspace"},
+		{Name: "data", MountPath: "/data"},
 		{Name: "config", MountPath: "/config", ReadOnly: true},
+		{Name: "arsenal", MountPath: "/arsenal", ReadOnly: true},
+		{Name: "skills", MountPath: "/skills", ReadOnly: true},
 	}
 
 	// Vault mount (if configured)
@@ -431,34 +441,30 @@ func (r *KnightReconciler) buildPodSpec(knight *aiv1alpha1.Knight) corev1.PodSpe
 			ReadOnly:  knight.Spec.Vault.ReadOnly,
 		})
 
-		// Writable subpaths get their own mounts
+		// Writable subpaths override the read-only base mount
 		for _, wp := range knight.Spec.Vault.WritablePaths {
-			safeName := "vault-rw-" + strings.ReplaceAll(strings.TrimSuffix(wp, "/"), "/", "-")
 			volumeMounts = append(volumeMounts, corev1.VolumeMount{
 				Name:      "vault",
-				MountPath: fmt.Sprintf("/vault/%s", wp),
-				SubPath:   wp,
+				MountPath: fmt.Sprintf("/vault/%s", strings.TrimSuffix(wp, "/")),
+				SubPath:   strings.TrimSuffix(wp, "/"),
 				ReadOnly:  false,
 			})
-			_ = safeName // name used for clarity in mount identification
 		}
 	}
 
-	// Security context
-	runAsNonRoot := true
-	readOnlyRootFS := false // pi-knight needs write access for tool installation
-	runAsUser := int64(1000)
+	// Health probe port
+	probePort := 3000
 
 	// Main knight container
 	knightContainer := corev1.Container{
-		Name:  "knight",
-		Image: image,
-		Env:   env,
+		Name:    "app",
+		Image:   image,
+		Env:     env,
 		EnvFrom: knight.Spec.EnvFrom,
 		Resources: corev1.ResourceRequirements{
 			Requests: corev1.ResourceList{
-				corev1.ResourceMemory: resource.MustParse("128Mi"),
-				corev1.ResourceCPU:    resource.MustParse("50m"),
+				corev1.ResourceMemory: resource.MustParse("256Mi"),
+				corev1.ResourceCPU:    resource.MustParse("100m"),
 			},
 			Limits: corev1.ResourceList{
 				corev1.ResourceMemory: memLimit,
@@ -466,59 +472,110 @@ func (r *KnightReconciler) buildPodSpec(knight *aiv1alpha1.Knight) corev1.PodSpe
 			},
 		},
 		VolumeMounts: volumeMounts,
-		SecurityContext: &corev1.SecurityContext{
-			RunAsNonRoot:             &runAsNonRoot,
-			RunAsUser:                &runAsUser,
-			ReadOnlyRootFilesystem:   &readOnlyRootFS,
-			AllowPrivilegeEscalation: boolPtr(false),
+		LivenessProbe: &corev1.Probe{
+			ProbeHandler: corev1.ProbeHandler{
+				HTTPGet: &corev1.HTTPGetAction{
+					Path: "/health",
+					Port: intstrPort(probePort),
+				},
+			},
+			InitialDelaySeconds: 15,
+			PeriodSeconds:       30,
+		},
+		ReadinessProbe: &corev1.Probe{
+			ProbeHandler: corev1.ProbeHandler{
+				HTTPGet: &corev1.HTTPGetAction{
+					Path: "/ready",
+					Port: intstrPort(probePort),
+				},
+			},
+			InitialDelaySeconds: 10,
+			PeriodSeconds:       15,
 		},
 	}
 
-	// Skill-filter sidecar
+	// Skill-filter sidecar — uses alpine with symlink script (matches working pattern)
+	skillCategories := strings.Join(knight.Spec.Skills, " ")
+	skillFilterScript := fmt.Sprintf(`
+ARSENAL="/arsenal"
+TARGET="/skills"
+SKILL_CATEGORIES="%s"
+EXPECTED=$(echo $SKILL_CATEGORIES | wc -w)
+LINKED=0
+while [ "$LINKED" -lt "$EXPECTED" ]; do
+  LINKED=0
+  if [ -d "$ARSENAL" ]; then
+    for cat in $SKILL_CATEGORIES; do
+      src="$ARSENAL/$cat"
+      dst="$TARGET/$cat"
+      if [ -d "$src" ] && [ ! -L "$dst" ]; then
+        ln -sf "$src" "$dst"
+        echo "Linked $cat"
+      fi
+      [ -L "$dst" ] && LINKED=$((LINKED + 1))
+    done
+  fi
+  [ "$LINKED" -lt "$EXPECTED" ] && sleep 2
+done
+echo "All categories linked ($LINKED/$EXPECTED)"
+while true; do
+  if [ -d "$ARSENAL" ]; then
+    for cat in $SKILL_CATEGORIES; do
+      src="$ARSENAL/$cat"
+      dst="$TARGET/$cat"
+      if [ -d "$src" ]; then
+        current=$(readlink "$dst" 2>/dev/null || echo "")
+        if [ "$current" != "$src" ]; then
+          ln -sf "$src" "$dst"
+          echo "Re-linked $cat"
+        fi
+      fi
+    done
+  fi
+  sleep 60
+done`, skillCategories)
+
 	skillFilterContainer := corev1.Container{
-		Name:  "skill-filter",
-		Image: "ghcr.io/dapperdivers/pi-knight:latest", // Same image, different entrypoint
+		Name:    "skill-filter",
+		Image:   "alpine:3.21",
 		Command: []string{"/bin/sh", "-c"},
-		Args: []string{
-			"echo 'Skill filter active for: $KNIGHT_SKILLS' && " +
-				"/app/scripts/skill-filter.sh && " +
-				"sleep infinity",
-		},
+		Args:    []string{skillFilterScript},
 		Env: []corev1.EnvVar{
-			{Name: "KNIGHT_SKILLS", ValueFrom: &corev1.EnvVarSource{
-				ConfigMapKeyRef: &corev1.ConfigMapKeySelector{
-					LocalObjectReference: corev1.LocalObjectReference{Name: configMapName},
-					Key:                  "KNIGHT_SKILLS",
-				},
-			}},
-			{Name: "KNIGHT_NAME", Value: knight.Name},
+			{Name: "SKILL_CATEGORIES", Value: skillCategories},
 		},
 		Resources: corev1.ResourceRequirements{
 			Requests: corev1.ResourceList{
-				corev1.ResourceMemory: resource.MustParse("32Mi"),
-				corev1.ResourceCPU:    resource.MustParse("10m"),
+				corev1.ResourceMemory: resource.MustParse("8Mi"),
+				corev1.ResourceCPU:    resource.MustParse("5m"),
 			},
 			Limits: corev1.ResourceList{
-				corev1.ResourceMemory: resource.MustParse("64Mi"),
+				corev1.ResourceMemory: resource.MustParse("16Mi"),
 				corev1.ResourceCPU:    resource.MustParse("50m"),
 			},
 		},
 		VolumeMounts: []corev1.VolumeMount{
-			{Name: "workspace", MountPath: "/workspace"},
-		},
-		SecurityContext: &corev1.SecurityContext{
-			RunAsNonRoot:             &runAsNonRoot,
-			RunAsUser:                &runAsUser,
-			ReadOnlyRootFilesystem:   &readOnlyRootFS,
-			AllowPrivilegeEscalation: boolPtr(false),
+			{Name: "arsenal", MountPath: "/arsenal", ReadOnly: true},
+			{Name: "skills", MountPath: "/skills"},
 		},
 	}
 
+	// Pod security context — fsGroup 1000 for PVC write access
+	fsGroup := int64(1000)
+	runAsUser := int64(1000)
+	runAsGroup := int64(1000)
+
 	return corev1.PodSpec{
-		Containers: []corev1.Container{knightContainer, skillFilterContainer},
-		Volumes:    volumes,
-		// Don't auto-mount service account token (security best practice)
-		AutomountServiceAccountToken: boolPtr(false),
+		Containers:    []corev1.Container{knightContainer, skillFilterContainer},
+		Volumes:       volumes,
+		EnableServiceLinks: boolPtr(false),
+		SecurityContext: &corev1.PodSecurityContext{
+			RunAsUser:           &runAsUser,
+			RunAsGroup:          &runAsGroup,
+			FSGroup:             &fsGroup,
+			FSGroupChangePolicy: fsGroupChangePolicyPtr(corev1.FSGroupChangeOnRootMismatch),
+		},
+		// Auto-mount SA token — knights may need it for in-cluster access
+		AutomountServiceAccountToken: boolPtr(true),
 	}
 }
 
@@ -599,9 +656,24 @@ func (r *KnightReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(r)
 }
 
-// Helper
+// Helpers
+func capitalizeFirst(s string) string {
+	if s == "" {
+		return s
+	}
+	return strings.ToUpper(s[:1]) + s[1:]
+}
+
 func boolPtr(b bool) *bool {
 	return &b
+}
+
+func fsGroupChangePolicyPtr(p corev1.PodFSGroupChangePolicy) *corev1.PodFSGroupChangePolicy {
+	return &p
+}
+
+func intstrPort(port int) kutilintstr.IntOrString {
+	return kutilintstr.FromInt32(int32(port))
 }
 
 // Ensure we don't import equality without using it

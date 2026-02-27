@@ -5,12 +5,11 @@ metadata:
   namespace: roundtable
 spec:
   domain: security
-  model: claude-sonnet-4-20250514
-  image: ghcr.io/dapperdivers/pi-knight:latest
+  model: anthropic/claude-sonnet-4-5
+  image: ghcr.io/dapperdivers/pi-knight:3ea8f80dcb2d5cd2b68eb4013f10b31c219d2681
 
   skills:
     - security
-    - opencti
     - shared
 
   tools:
@@ -30,18 +29,25 @@ spec:
     maxDeliver: 1
 
   vault:
-    claimName: obsidian-vault
+    claimName: roundtable-vault
     readOnly: true
     writablePaths:
       - "Briefings/"
       - "Roundtable/"
+
+  workspace:
+    existingClaim: galahad  # Adopt existing PVC from Helm deployment
+
+  resources:
+    memory: "1Gi"
+    cpu: "1"
 
   concurrency: 2
   taskTimeout: 300
 
   envFrom:
     - secretRef:
-        name: galahad-secrets  # OPENCTI_URL, OPENCTI_TOKEN, SHODAN_API_KEY
+        name: galahad-secret
 
   prompt:
     identity: |
