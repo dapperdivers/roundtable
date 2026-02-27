@@ -132,7 +132,7 @@ var _ = Describe("Knight Controller", func() {
 
 			pvc := &corev1.PersistentVolumeClaim{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name:      "knight-test-knight-workspace",
+				Name:      "test-knight",
 				Namespace: "default",
 			}, pvc)).To(Succeed())
 		})
