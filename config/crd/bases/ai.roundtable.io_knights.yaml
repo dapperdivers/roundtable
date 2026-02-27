@@ -438,6 +438,19 @@ spec:
                       type: string
                     type: array
                 type: object
+              workspace:
+                description: workspace configures the knight's persistent workspace.
+                properties:
+                  existingClaim:
+                    description: |-
+                      existingClaim references an existing PVC to use instead of creating a new one.
+                      Useful for migrating existing knights to operator management.
+                    type: string
+                  size:
+                    default: 1Gi
+                    description: size is the storage request for auto-created PVCs.
+                    type: string
+                type: object
             required:
             - domain
             - nats
