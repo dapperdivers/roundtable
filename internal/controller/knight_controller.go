@@ -241,51 +241,13 @@ func (r *KnightReconciler) reconcileConfigMap(ctx context.Context, knight *aiv1a
 // reconcilePVC creates the knight's persistent workspace volume.
 // Skips creation when spec.workspace.existingClaim is set (migration mode).
 func (r *KnightReconciler) reconcilePVC(ctx context.Context, knight *aiv1alpha1.Knight) error {
-	// If using an existing claim, skip PVC management
+	// Workspace PVC — skip if using an existing claim (migration mode)
 	if knight.Spec.Workspace != nil && knight.Spec.Workspace.ExistingClaim != "" {
 		logf.FromContext(ctx).Info("Using existing PVC", "claim", knight.Spec.Workspace.ExistingClaim)
-		return nil
-	}
-
-	pvc := &corev1.PersistentVolumeClaim{}
-	pvcName := fmt.Sprintf("knight-%s-workspace", knight.Name)
-	err := r.Get(ctx, types.NamespacedName{Name: pvcName, Namespace: knight.Namespace}, pvc)
-
-	if apierrors.IsNotFound(err) {
-		storageSize := "1Gi"
-		if knight.Spec.Workspace != nil && knight.Spec.Workspace.Size != "" {
-			storageSize = knight.Spec.Workspace.Size
-		}
-
-		pvc = &corev1.PersistentVolumeClaim{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      pvcName,
-				Namespace: knight.Namespace,
-				Labels: map[string]string{
-					"app.kubernetes.io/name":       "knight",
-					"app.kubernetes.io/instance":   knight.Name,
-					"app.kubernetes.io/managed-by": "roundtable-operator",
-					"roundtable.io/domain":         knight.Spec.Domain,
-				},
-			},
-			Spec: corev1.PersistentVolumeClaimSpec{
-				AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
-				Resources: corev1.VolumeResourceRequirements{
-					Requests: corev1.ResourceList{
-						corev1.ResourceStorage: resource.MustParse(storageSize),
-					},
-				},
-			},
-		}
-		if err := controllerutil.SetControllerReference(knight, pvc, r.Scheme); err != nil {
+	} else {
+		if err := r.ensureWorkspacePVC(ctx, knight); err != nil {
 			return err
 		}
-		if err := r.Create(ctx, pvc); err != nil {
-			return fmt.Errorf("PVC create failed: %w", err)
-		}
-		logf.FromContext(ctx).Info("PVC created", "name", pvcName)
-	} else if err != nil {
-		return fmt.Errorf("PVC get failed: %w", err)
 	}
 
 	// Create Nix PVC if tools.nix is configured
@@ -326,6 +288,51 @@ func (r *KnightReconciler) reconcilePVC(ctx context.Context, knight *aiv1alpha1.
 		}
 	}
 
+	return nil
+}
+
+// ensureWorkspacePVC creates a new workspace PVC if one doesn't exist.
+func (r *KnightReconciler) ensureWorkspacePVC(ctx context.Context, knight *aiv1alpha1.Knight) error {
+	pvcName := fmt.Sprintf("knight-%s-workspace", knight.Name)
+	pvc := &corev1.PersistentVolumeClaim{}
+	err := r.Get(ctx, types.NamespacedName{Name: pvcName, Namespace: knight.Namespace}, pvc)
+
+	if apierrors.IsNotFound(err) {
+		storageSize := "1Gi"
+		if knight.Spec.Workspace != nil && knight.Spec.Workspace.Size != "" {
+			storageSize = knight.Spec.Workspace.Size
+		}
+
+		pvc = &corev1.PersistentVolumeClaim{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      pvcName,
+				Namespace: knight.Namespace,
+				Labels: map[string]string{
+					"app.kubernetes.io/name":       "knight",
+					"app.kubernetes.io/instance":   knight.Name,
+					"app.kubernetes.io/managed-by": "roundtable-operator",
+					"roundtable.io/domain":         knight.Spec.Domain,
+				},
+			},
+			Spec: corev1.PersistentVolumeClaimSpec{
+				AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+				Resources: corev1.VolumeResourceRequirements{
+					Requests: corev1.ResourceList{
+						corev1.ResourceStorage: resource.MustParse(storageSize),
+					},
+				},
+			},
+		}
+		if err := controllerutil.SetControllerReference(knight, pvc, r.Scheme); err != nil {
+			return err
+		}
+		if err := r.Create(ctx, pvc); err != nil {
+			return fmt.Errorf("PVC create failed: %w", err)
+		}
+		logf.FromContext(ctx).Info("PVC created", "name", pvcName)
+	} else if err != nil {
+		return fmt.Errorf("PVC get failed: %w", err)
+	}
 	return nil
 }
 
