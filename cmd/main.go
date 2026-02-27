@@ -192,6 +192,20 @@ func main() {
 		setupLog.Error(err, "Failed to create controller", "controller", "Chain")
 		os.Exit(1)
 	}
+	if err := (&controller.RoundTableReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "Failed to create controller", "controller", "RoundTable")
+		os.Exit(1)
+	}
+	if err := (&controller.MissionReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "Failed to create controller", "controller", "Mission")
+		os.Exit(1)
+	}
 	// +kubebuilder:scaffold:builder
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
