@@ -21,6 +21,7 @@ rules:
 - apiGroups:
   - ai.roundtable.io
   resources:
+  - chains
   - knights
   verbs:
   - create
@@ -33,12 +34,14 @@ rules:
 - apiGroups:
   - ai.roundtable.io
   resources:
+  - chains/finalizers
   - knights/finalizers
   verbs:
   - update
 - apiGroups:
   - ai.roundtable.io
   resources:
+  - chains/status
   - knights/status
   verbs:
   - get
