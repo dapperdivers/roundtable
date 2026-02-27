@@ -75,7 +75,7 @@ type KnightSpec struct {
 	// taskTimeout is the default task timeout in seconds.
 	// +kubebuilder:default=120
 	// +kubebuilder:validation:Minimum=30
-	// +kubebuilder:validation:Maximum=600
+	// +kubebuilder:validation:Maximum=3600
 	// +optional
 	TaskTimeout int32 `json:"taskTimeout,omitempty"`
 

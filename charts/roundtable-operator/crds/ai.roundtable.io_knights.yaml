@@ -417,7 +417,7 @@ spec:
                 default: 120
                 description: taskTimeout is the default task timeout in seconds.
                 format: int32
-                maximum: 600
+                maximum: 3600
                 minimum: 30
                 type: integer
               tools:
