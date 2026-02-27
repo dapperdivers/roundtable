@@ -158,8 +158,8 @@ var _ = Describe("Knight Controller", func() {
 			// Check labels
 			Expect(deploy.Labels["roundtable.io/domain"]).To(Equal("security"))
 
-			// Check automount is disabled
-			Expect(*deploy.Spec.Template.Spec.AutomountServiceAccountToken).To(BeFalse())
+			// Check automount is enabled (knights may need in-cluster access)
+			Expect(*deploy.Spec.Template.Spec.AutomountServiceAccountToken).To(BeTrue())
 		})
 	})
 })
