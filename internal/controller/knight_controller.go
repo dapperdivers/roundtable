@@ -18,7 +18,10 @@ package controller
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -41,9 +44,20 @@ import (
 )
 
 const (
-	knightFinalizer = "ai.roundtable.io/finalizer"
-	fieldOwner      = "roundtable-operator"
+	knightFinalizer    = "ai.roundtable.io/finalizer"
+	fieldOwner         = "roundtable-operator"
+	nixToolsHashAnnotation = "roundtable.io/nix-tools-hash"
 )
+
+// nixToolsHash computes a deterministic hash of the Nix tool list.
+// Used to detect when tools change so stale Nix PVCs can be recycled.
+func nixToolsHash(tools []string) string {
+	sorted := make([]string, len(tools))
+	copy(sorted, tools)
+	sort.Strings(sorted)
+	h := sha256.Sum256([]byte(strings.Join(sorted, ",")))
+	return hex.EncodeToString(h[:8]) // 16-char hex prefix
+}
 
 // KnightReconciler reconciles a Knight object
 type KnightReconciler struct {
@@ -250,11 +264,31 @@ func (r *KnightReconciler) reconcilePVC(ctx context.Context, knight *aiv1alpha1.
 		}
 	}
 
-	// Create Nix PVC if tools.nix is configured
+	// Create Nix PVC if tools.nix is configured, recycle if tools changed
 	if knight.Spec.Tools != nil && len(knight.Spec.Tools.Nix) > 0 {
 		nixPVCName := fmt.Sprintf("knight-%s-nix", knight.Name)
+		currentHash := nixToolsHash(knight.Spec.Tools.Nix)
 		nixPVC := &corev1.PersistentVolumeClaim{}
 		err := r.Get(ctx, types.NamespacedName{Name: nixPVCName, Namespace: knight.Namespace}, nixPVC)
+
+		if err == nil {
+			// PVC exists — check if tools changed
+			existingHash := nixPVC.Annotations[nixToolsHashAnnotation]
+			if existingHash != "" && existingHash != currentHash {
+				logf.FromContext(ctx).Info("Nix tools changed — recycling PVC",
+					"name", nixPVCName,
+					"oldHash", existingHash,
+					"newHash", currentHash)
+				if err := r.Delete(ctx, nixPVC); err != nil {
+					return fmt.Errorf("Nix PVC delete for recycle failed: %w", err)
+				}
+				// Return early — next reconcile will create the fresh PVC
+				// The Deployment will be updated with the new hash annotation,
+				// triggering a rolling restart that waits for the new PVC.
+				return nil
+			}
+		}
+
 		if apierrors.IsNotFound(err) {
 			nixPVC = &corev1.PersistentVolumeClaim{
 				ObjectMeta: metav1.ObjectMeta{
@@ -265,6 +299,9 @@ func (r *KnightReconciler) reconcilePVC(ctx context.Context, knight *aiv1alpha1.
 						"app.kubernetes.io/instance":   knight.Name,
 						"app.kubernetes.io/managed-by": "roundtable-operator",
 						"roundtable.io/purpose":        "nix-store",
+					},
+					Annotations: map[string]string{
+						nixToolsHashAnnotation: currentHash,
 					},
 				},
 				Spec: corev1.PersistentVolumeClaimSpec{
@@ -282,7 +319,7 @@ func (r *KnightReconciler) reconcilePVC(ctx context.Context, knight *aiv1alpha1.
 			if err := r.Create(ctx, nixPVC); err != nil {
 				return fmt.Errorf("Nix PVC create failed: %w", err)
 			}
-			logf.FromContext(ctx).Info("Nix PVC created", "name", nixPVCName)
+			logf.FromContext(ctx).Info("Nix PVC created", "name", nixPVCName, "toolsHash", currentHash)
 		} else if err != nil {
 			return fmt.Errorf("Nix PVC get failed: %w", err)
 		}
@@ -369,11 +406,16 @@ func (r *KnightReconciler) reconcileDeployment(ctx context.Context, knight *aiv1
 		}
 
 		deploy.Spec.Template.ObjectMeta.Labels = labels
-		deploy.Spec.Template.ObjectMeta.Annotations = map[string]string{
+		podAnnotations := map[string]string{
 			"roundtable.io/model":    knight.Spec.Model,
 			"roundtable.io/skills":   strings.Join(knight.Spec.Skills, ","),
 			"roundtable.io/domain":   knight.Spec.Domain,
 		}
+		// Include tools hash so Deployment rolls when Nix tools change
+		if knight.Spec.Tools != nil && len(knight.Spec.Tools.Nix) > 0 {
+			podAnnotations[nixToolsHashAnnotation] = nixToolsHash(knight.Spec.Tools.Nix)
+		}
+		deploy.Spec.Template.ObjectMeta.Annotations = podAnnotations
 
 		// Build the pod spec
 		deploy.Spec.Template.Spec = r.buildPodSpec(knight)
