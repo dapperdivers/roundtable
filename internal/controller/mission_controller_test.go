@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -198,7 +199,7 @@ var _ = Describe("Mission Controller", func() {
 					{Name: "some-chain", Phase: "Active"},
 				},
 				TTL:     3600,
-				Timeout: 1, // 1 second timeout — will expire quickly
+				Timeout: 60, // minimum allowed timeout — will expire quickly
 			})
 		})
 
@@ -226,12 +227,19 @@ var _ = Describe("Mission Controller", func() {
 			// Briefing → Active (briefing publish will fail without NATS, but moves to Active)
 			_, _ = r.Reconcile(ctx, reconcile.Request{NamespacedName: missionNN})
 
-			// Wait for timeout
+			// Set startedAt to the past to trigger timeout immediately
+			mission := &aiv1alpha1.Mission{}
+			Expect(k8sClient.Get(ctx, missionNN, mission)).To(Succeed())
+			pastTime := metav1.NewTime(time.Now().Add(-120 * time.Second))
+			mission.Status.StartedAt = &pastTime
+			Expect(k8sClient.Status().Update(ctx, mission)).To(Succeed())
+
+			// Reconcile should detect timeout and fail
 			Eventually(func() aiv1alpha1.MissionPhase {
 				_, _ = r.Reconcile(ctx, reconcile.Request{NamespacedName: missionNN})
-				mission := &aiv1alpha1.Mission{}
-				_ = k8sClient.Get(ctx, missionNN, mission)
-				return mission.Status.Phase
+				m := &aiv1alpha1.Mission{}
+				_ = k8sClient.Get(ctx, missionNN, m)
+				return m.Status.Phase
 			}, "5s", "500ms").Should(Equal(aiv1alpha1.MissionPhaseFailed))
 		})
 	})
