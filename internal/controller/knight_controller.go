@@ -535,12 +535,19 @@ func (r *KnightReconciler) buildPodSpec(knight *aiv1alpha1.Knight) corev1.PodSpe
 			claimName = "obsidian-vault"
 		}
 
+		// PVC source must be ReadOnly=false when writablePaths exist,
+		// otherwise the kernel-level RO on the volume blocks ALL writes,
+		// even SubPath mounts marked ReadOnly=false.
+		pvcReadOnly := knight.Spec.Vault.ReadOnly
+		if len(knight.Spec.Vault.WritablePaths) > 0 {
+			pvcReadOnly = false
+		}
 		volumes = append(volumes, corev1.Volume{
 			Name: "vault",
 			VolumeSource: corev1.VolumeSource{
 				PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
 					ClaimName: claimName,
-					ReadOnly:  knight.Spec.Vault.ReadOnly,
+					ReadOnly:  pvcReadOnly,
 				},
 			},
 		})
