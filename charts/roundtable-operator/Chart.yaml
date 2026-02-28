@@ -2,8 +2,8 @@ apiVersion: v2
 name: roundtable-operator
 description: Knights of the Round Table — A Kubernetes Operator for Multi-Agent AI Orchestration
 type: application
-version: 0.1.0
-appVersion: "0.1.0"
+version: 0.2.0
+appVersion: "1.0.0"
 keywords:
   - ai
   - agents

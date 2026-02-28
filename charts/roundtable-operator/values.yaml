@@ -30,6 +30,39 @@ affinity: {}
 # Additional args to pass to the manager
 extraArgs: []
 
+# Global image settings for managed components
+images:
+  piKnight:
+    repository: ghcr.io/dapperdivers/pi-knight
+    tag: latest
+  dashboard:
+    repository: ghcr.io/dapperdivers/roundtable-ui
+    tag: latest
+
+# Dashboard (Round Table UI) — observability platform
+dashboard:
+  enabled: true
+  replicas: 1
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      memory: 128Mi
+  ingress:
+    enabled: false
+    className: ""
+    host: ""
+    annotations: {}
+  env:
+    NATS_URL: "nats://nats.database.svc:4222"
+    NAMESPACE: "roundtable"
+    FLEET_PREFIX: "fleet-a"
+    FLEET_STREAM: "fleet_a_results"
+  vault:
+    enabled: true
+    claimName: "roundtable-vault"
+
 # Knights to create alongside the operator
 # Example:
 # knights:
