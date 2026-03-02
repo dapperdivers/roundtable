@@ -62,7 +62,8 @@ func nixToolsHash(tools []string) string {
 // KnightReconciler reconciles a Knight object
 type KnightReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	Scheme       *runtime.Scheme
+	DefaultImage string // Default pi-knight image (set via DEFAULT_KNIGHT_IMAGE env var)
 }
 
 // +kubebuilder:rbac:groups=ai.roundtable.io,resources=knights,verbs=get;list;watch;create;update;patch;delete
@@ -442,8 +443,11 @@ func (r *KnightReconciler) buildPodSpec(knight *aiv1alpha1.Knight) corev1.PodSpe
 		pvcName = knight.Spec.Workspace.ExistingClaim
 	}
 
-	// Determine image
+	// Determine image — Knight CR overrides operator default
 	image := knight.Spec.Image
+	if image == "" {
+		image = r.DefaultImage
+	}
 	if image == "" {
 		image = "ghcr.io/dapperdivers/pi-knight:latest"
 	}

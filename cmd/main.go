@@ -179,8 +179,9 @@ func main() {
 	}
 
 	if err := (&controller.KnightReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:       mgr.GetClient(),
+		Scheme:       mgr.GetScheme(),
+		DefaultImage: os.Getenv("DEFAULT_KNIGHT_IMAGE"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "Knight")
 		os.Exit(1)

@@ -41,6 +41,9 @@ spec:
             {{- range .Values.extraArgs }}
             - {{ . }}
             {{- end }}
+          env:
+            - name: DEFAULT_KNIGHT_IMAGE
+              value: "{{ .Values.images.piKnight.repository }}:{{ .Values.images.piKnight.tag }}"
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           securityContext:
