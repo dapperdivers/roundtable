@@ -20,6 +20,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -27,7 +28,6 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -44,9 +44,10 @@ import (
 )
 
 const (
-	knightFinalizer    = "ai.roundtable.io/finalizer"
-	fieldOwner         = "roundtable-operator"
+	knightFinalizer        = "ai.roundtable.io/finalizer"
+	fieldOwner             = "roundtable-operator"
 	nixToolsHashAnnotation = "roundtable.io/nix-tools-hash"
+	specHashAnnotation     = "roundtable.io/spec-hash"
 )
 
 // nixToolsHash computes a deterministic hash of the Nix tool list.
@@ -57,6 +58,38 @@ func nixToolsHash(tools []string) string {
 	sort.Strings(sorted)
 	h := sha256.Sum256([]byte(strings.Join(sorted, ",")))
 	return hex.EncodeToString(h[:8]) // 16-char hex prefix
+}
+
+// deploymentSpecHash computes a deterministic hash of the desired deployment spec
+// fields (containers, volumes, labels, annotations) to detect actual changes.
+func deploymentSpecHash(deploy *appsv1.Deployment) string {
+	hashInput := struct {
+		Labels      map[string]string              `json:"labels"`
+		Annotations map[string]string              `json:"annotations"`
+		Spec        corev1.PodSpec                  `json:"spec"`
+		Replicas    *int32                          `json:"replicas"`
+		Strategy    appsv1.DeploymentStrategyType   `json:"strategy"`
+	}{
+		Labels:      deploy.Spec.Template.Labels,
+		Annotations: filterAnnotations(deploy.Spec.Template.Annotations),
+		Spec:        deploy.Spec.Template.Spec,
+		Replicas:    deploy.Spec.Replicas,
+		Strategy:    deploy.Spec.Strategy.Type,
+	}
+	data, _ := json.Marshal(hashInput)
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:8])
+}
+
+// filterAnnotations returns annotations without the spec-hash itself to avoid circular hashing.
+func filterAnnotations(annotations map[string]string) map[string]string {
+	filtered := make(map[string]string, len(annotations))
+	for k, v := range annotations {
+		if k != specHashAnnotation {
+			filtered[k] = v
+		}
+	}
+	return filtered
 }
 
 // KnightReconciler reconciles a Knight object
@@ -375,7 +408,47 @@ func (r *KnightReconciler) ensureWorkspacePVC(ctx context.Context, knight *aiv1a
 }
 
 // reconcileDeployment creates/updates the knight's Deployment.
+// Uses a spec hash annotation to avoid unnecessary updates that would trigger
+// a reconciliation hot loop.
 func (r *KnightReconciler) reconcileDeployment(ctx context.Context, knight *aiv1alpha1.Knight) error {
+	log := logf.FromContext(ctx)
+
+	// Build the desired state in a temporary deployment to compute the hash
+	desired := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      knight.Name,
+			Namespace: knight.Namespace,
+		},
+	}
+
+	labels := map[string]string{
+		"app.kubernetes.io/name":       "knight",
+		"app.kubernetes.io/instance":   knight.Name,
+		"app.kubernetes.io/managed-by": "roundtable-operator",
+		"roundtable.io/domain":         knight.Spec.Domain,
+	}
+
+	replicas := int32(1)
+	desired.Spec.Replicas = &replicas
+	desired.Spec.Strategy = appsv1.DeploymentStrategy{
+		Type: appsv1.RecreateDeploymentStrategyType,
+	}
+	desired.Spec.Template.ObjectMeta.Labels = labels
+	podAnnotations := map[string]string{
+		"roundtable.io/model":  knight.Spec.Model,
+		"roundtable.io/skills": strings.Join(knight.Spec.Skills, ","),
+		"roundtable.io/domain": knight.Spec.Domain,
+	}
+	if knight.Spec.Tools != nil && len(knight.Spec.Tools.Nix) > 0 {
+		podAnnotations[nixToolsHashAnnotation] = nixToolsHash(knight.Spec.Tools.Nix)
+	}
+	desired.Spec.Template.ObjectMeta.Annotations = podAnnotations
+	desired.Spec.Template.Spec = r.buildPodSpec(knight)
+
+	// Compute hash of desired state
+	desiredHash := deploymentSpecHash(desired)
+
+	// Fetch or create the deployment
 	deploy := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      knight.Name,
@@ -388,16 +461,19 @@ func (r *KnightReconciler) reconcileDeployment(ctx context.Context, knight *aiv1
 			return err
 		}
 
-		labels := map[string]string{
-			"app.kubernetes.io/name":       "knight",
-			"app.kubernetes.io/instance":   knight.Name,
-			"app.kubernetes.io/managed-by": "roundtable-operator",
-			"roundtable.io/domain":         knight.Spec.Domain,
+		// Check if the spec hash matches — if so, skip mutation
+		existingHash := ""
+		if deploy.Spec.Template.Annotations != nil {
+			existingHash = deploy.Spec.Template.Annotations[specHashAnnotation]
+		}
+		if existingHash == desiredHash {
+			// No changes needed — return without modifying the object
+			// so CreateOrUpdate sees no diff and reports "unchanged"
+			return nil
 		}
 
+		// Apply desired state
 		deploy.Labels = labels
-
-		replicas := int32(1)
 		deploy.Spec.Replicas = &replicas
 		deploy.Spec.Strategy = appsv1.DeploymentStrategy{
 			Type: appsv1.RecreateDeploymentStrategyType,
@@ -405,20 +481,12 @@ func (r *KnightReconciler) reconcileDeployment(ctx context.Context, knight *aiv1
 		deploy.Spec.Selector = &metav1.LabelSelector{
 			MatchLabels: labels,
 		}
-
 		deploy.Spec.Template.ObjectMeta.Labels = labels
-		podAnnotations := map[string]string{
-			"roundtable.io/model":    knight.Spec.Model,
-			"roundtable.io/skills":   strings.Join(knight.Spec.Skills, ","),
-			"roundtable.io/domain":   knight.Spec.Domain,
-		}
-		// Include tools hash so Deployment rolls when Nix tools change
-		if knight.Spec.Tools != nil && len(knight.Spec.Tools.Nix) > 0 {
-			podAnnotations[nixToolsHashAnnotation] = nixToolsHash(knight.Spec.Tools.Nix)
-		}
+
+		// Add spec hash to pod annotations
+		podAnnotations[specHashAnnotation] = desiredHash
 		deploy.Spec.Template.ObjectMeta.Annotations = podAnnotations
 
-		// Build the pod spec
 		deploy.Spec.Template.Spec = r.buildPodSpec(knight)
 
 		return nil
@@ -428,7 +496,7 @@ func (r *KnightReconciler) reconcileDeployment(ctx context.Context, knight *aiv1
 		return fmt.Errorf("deployment reconcile failed: %w", err)
 	}
 
-	logf.FromContext(ctx).Info("Deployment reconciled", "operation", op)
+	log.Info("Deployment reconciled", "operation", op)
 	return nil
 }
 
@@ -878,5 +946,4 @@ func intstrPort(port int) kutilintstr.IntOrString {
 	return kutilintstr.FromInt32(int32(port))
 }
 
-// Ensure we don't import equality without using it
-var _ = equality.Semantic
+// end of file
