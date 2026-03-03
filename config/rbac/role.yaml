@@ -23,6 +23,8 @@ rules:
   resources:
   - chains
   - knights
+  - missions
+  - roundtables
   verbs:
   - create
   - delete
@@ -36,6 +38,8 @@ rules:
   resources:
   - chains/finalizers
   - knights/finalizers
+  - missions/finalizers
+  - roundtables/finalizers
   verbs:
   - update
 - apiGroups:
@@ -43,6 +47,8 @@ rules:
   resources:
   - chains/status
   - knights/status
+  - missions/status
+  - roundtables/status
   verbs:
   - get
   - patch

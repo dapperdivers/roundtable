@@ -362,9 +362,9 @@ spec:
                             type: object
                           type: array
                         image:
-                          default: ghcr.io/dapperdivers/pi-knight:latest
-                          description: image is the container image for the knight
-                            runtime.
+                          description: |-
+                            image is the container image for the knight runtime.
+                            If empty, the operator uses DEFAULT_KNIGHT_IMAGE env var.
                           type: string
                         model:
                           default: claude-sonnet-4-20250514
