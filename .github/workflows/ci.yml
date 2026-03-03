@@ -76,3 +76,43 @@ jobs:
           tags: |
             ghcr.io/dapperdivers/roundtable:latest
             ghcr.io/dapperdivers/roundtable:${{ github.sha }}
+
+  helm:
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Generate CRD Manifests
+        run: |
+          go install sigs.k8s.io/controller-tools/cmd/controller-gen@v0.20.1
+          controller-gen crd rbac:roleName=manager-role webhook paths="./..." output:crd:artifacts:config=config/crd/bases
+
+      - name: Copy CRDs into chart
+        run: cp config/crd/bases/*.yaml charts/roundtable-operator/crds/
+
+      - name: Set chart version from SHA
+        run: |
+          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+          sed -i "s/^version:.*/version: 0.2.0-${SHORT_SHA}/" charts/roundtable-operator/Chart.yaml
+          sed -i "s/^appVersion:.*/appVersion: \"${{ github.sha }}\"/" charts/roundtable-operator/Chart.yaml
+          cat charts/roundtable-operator/Chart.yaml
+
+      - uses: azure/setup-helm@v4
+
+      - name: Login to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u ${{ github.actor }} --password-stdin
+
+      - name: Package and push chart
+        run: |
+          helm package charts/roundtable-operator
+          helm push roundtable-operator-*.tgz oci://ghcr.io/dapperdivers/charts
