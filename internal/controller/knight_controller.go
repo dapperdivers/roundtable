@@ -496,7 +496,10 @@ func (r *KnightReconciler) reconcileDeployment(ctx context.Context, knight *aiv1
 		return fmt.Errorf("deployment reconcile failed: %w", err)
 	}
 
-	log.Info("Deployment reconciled", "operation", op)
+	log.Info("Deployment reconciled", "operation", op,
+		"specImage", knight.Spec.Image,
+		"defaultImage", r.DefaultImage,
+		"resolvedImage", deploy.Spec.Template.Spec.Containers[0].Image)
 	return nil
 }
 
@@ -513,15 +516,12 @@ func (r *KnightReconciler) buildPodSpec(knight *aiv1alpha1.Knight) corev1.PodSpe
 
 	// Determine image — Knight CR overrides operator default
 	image := knight.Spec.Image
-	log.Info("Image resolution", "spec.image", knight.Spec.Image, "defaultImage", r.DefaultImage)
 	if image == "" {
 		image = r.DefaultImage
 	}
 	if image == "" {
 		image = "ghcr.io/dapperdivers/pi-knight:latest"
-		log.Info("WARNING: falling back to :latest — no spec.image or DEFAULT_KNIGHT_IMAGE set")
 	}
-	log.Info("Image selected", "image", image)
 
 	// Resource limits
 	memLimit := resource.MustParse("1Gi")
