@@ -513,12 +513,15 @@ func (r *KnightReconciler) buildPodSpec(knight *aiv1alpha1.Knight) corev1.PodSpe
 
 	// Determine image — Knight CR overrides operator default
 	image := knight.Spec.Image
+	log.Info("Image resolution", "spec.image", knight.Spec.Image, "defaultImage", r.DefaultImage)
 	if image == "" {
 		image = r.DefaultImage
 	}
 	if image == "" {
 		image = "ghcr.io/dapperdivers/pi-knight:latest"
+		log.Info("WARNING: falling back to :latest — no spec.image or DEFAULT_KNIGHT_IMAGE set")
 	}
+	log.Info("Image selected", "image", image)
 
 	// Resource limits
 	memLimit := resource.MustParse("1Gi")
