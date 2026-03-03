@@ -36,7 +36,7 @@ type KnightSpec struct {
 	Model string `json:"model,omitempty"`
 
 	// image is the container image for the knight runtime.
-	// +kubebuilder:default="ghcr.io/dapperdivers/pi-knight:latest"
+	// If empty, the operator uses DEFAULT_KNIGHT_IMAGE env var.
 	// +optional
 	Image string `json:"image,omitempty"`
 
