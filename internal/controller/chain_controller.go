@@ -407,7 +407,7 @@ func (r *ChainReconciler) reconcileRunning(ctx context.Context, chain *aiv1alpha
 			continue
 		}
 
-		taskID := fmt.Sprintf("chain-%s-%s-%d", chain.Name, step.Name, time.Now().UnixMilli())
+		taskID := fmt.Sprintf("chain-%s-%s.%d", chain.Name, step.Name, time.Now().UnixMilli())
 
 		payload := TaskPayload{
 			TaskID:    taskID,
