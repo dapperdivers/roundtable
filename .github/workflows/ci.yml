@@ -98,7 +98,11 @@ jobs:
           controller-gen crd rbac:roleName=manager-role webhook paths="./..." output:crd:artifacts:config=config/crd/bases
 
       - name: Copy CRDs into chart
-        run: cp config/crd/bases/*.yaml charts/roundtable-operator/crds/
+        run: |
+          # Only copy actual CRD manifests, exclude kustomization.yaml
+          for f in config/crd/bases/ai.roundtable.io_*.yaml; do
+            cp "$f" charts/roundtable-operator/crds/
+          done
 
       - name: Set chart version from SHA
         run: |
