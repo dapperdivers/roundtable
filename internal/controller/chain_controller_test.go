@@ -294,6 +294,41 @@ var _ = Describe("Chain Controller", func() {
 		})
 	})
 
+	Context("Generation Drift Reset", func() {
+		It("should reset Failed chain to Idle when spec changes", func() {
+			chain := &aiv1alpha1.Chain{
+				ObjectMeta: metav1.ObjectMeta{Name: chainName, Namespace: namespace},
+				Spec: aiv1alpha1.ChainSpec{
+					Steps: []aiv1alpha1.ChainStep{
+						{Name: "scan", KnightRef: knightName, Task: "scan"},
+					},
+					Timeout: 600,
+				},
+			}
+			Expect(k8sClient.Create(ctx, chain)).To(Succeed())
+
+			r := newReconciler()
+			// Initialize (adds finalizer + sets Idle)
+			_, _ = r.Reconcile(ctx, reconcile.Request{NamespacedName: chainNN})
+			_, _ = r.Reconcile(ctx, reconcile.Request{NamespacedName: chainNN})
+
+			// Simulate Failed state with old generation
+			updated := &aiv1alpha1.Chain{}
+			Expect(k8sClient.Get(ctx, chainNN, updated)).To(Succeed())
+			updated.Status.Phase = aiv1alpha1.ChainPhaseFailed
+			updated.Status.ObservedGeneration = updated.Generation - 1
+			Expect(k8sClient.Status().Update(ctx, updated)).To(Succeed())
+
+			// Reconcile should detect generation drift and reset to Idle
+			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: chainNN})
+			Expect(err).NotTo(HaveOccurred())
+
+			result := &aiv1alpha1.Chain{}
+			Expect(k8sClient.Get(ctx, chainNN, result)).To(Succeed())
+			Expect(result.Status.Phase).To(Equal(aiv1alpha1.ChainPhaseIdle))
+		})
+	})
+
 	Context("Step Status Initialization", func() {
 		It("should set all steps to Pending", func() {
 			r := newReconciler()

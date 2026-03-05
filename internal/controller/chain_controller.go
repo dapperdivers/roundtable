@@ -158,6 +158,18 @@ func (r *ChainReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		return ctrl.Result{}, r.Status().Update(ctx, chain)
 	}
 
+	// Reset to Idle when spec changes (generation drift) and chain is not running
+	if chain.Status.ObservedGeneration != chain.Generation &&
+		chain.Status.Phase != aiv1alpha1.ChainPhaseRunning {
+		logf.FromContext(ctx).Info("Spec changed, resetting chain to Idle",
+			"oldGen", chain.Status.ObservedGeneration,
+			"newGen", chain.Generation)
+		chain.Status.Phase = aiv1alpha1.ChainPhaseIdle
+		r.initStepStatuses(chain)
+		chain.Status.ObservedGeneration = chain.Generation
+		return ctrl.Result{}, r.Status().Update(ctx, chain)
+	}
+
 	switch chain.Status.Phase {
 	case aiv1alpha1.ChainPhaseIdle:
 		// Nothing to do unless triggered (manual trigger sets phase to Running externally)
