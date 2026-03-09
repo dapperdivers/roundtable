@@ -106,8 +106,10 @@ jobs:
 
       - name: Set chart version from SHA
         run: |
+          # Use epoch seconds for semver-friendly ordering (newer commit = higher version)
+          EPOCH=$(date +%s)
           SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
-          sed -i "s/^version:.*/version: 0.2.0-${SHORT_SHA}/" charts/roundtable-operator/Chart.yaml
+          sed -i "s/^version:.*/version: 0.2.0-${EPOCH}.${SHORT_SHA}/" charts/roundtable-operator/Chart.yaml
           sed -i "s/^appVersion:.*/appVersion: \"${{ github.sha }}\"/" charts/roundtable-operator/Chart.yaml
           cat charts/roundtable-operator/Chart.yaml
 
