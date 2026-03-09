@@ -311,6 +311,20 @@ func (r *ChainReconciler) initStepStatuses(chain *aiv1alpha1.Chain) {
 func (r *ChainReconciler) reconcileRunning(ctx context.Context, chain *aiv1alpha1.Chain) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
+	// Initialize step statuses and startedAt if missing (manual trigger via status patch)
+	if len(chain.Status.StepStatuses) == 0 {
+		log.Info("Initializing step statuses for manually triggered chain")
+		r.initStepStatuses(chain)
+		now := metav1.Now()
+		chain.Status.StartedAt = &now
+		chain.Status.ObservedGeneration = chain.Generation
+		return ctrl.Result{RequeueAfter: 1 * time.Second}, r.Status().Update(ctx, chain)
+	}
+	if chain.Status.StartedAt == nil {
+		now := metav1.Now()
+		chain.Status.StartedAt = &now
+	}
+
 	// Check overall timeout
 	if chain.Status.StartedAt != nil {
 		elapsed := time.Since(chain.Status.StartedAt.Time)
