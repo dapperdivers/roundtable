@@ -53,10 +53,41 @@ type TaskPayload struct {
 }
 
 // TaskResult is the JSON payload received from NATS for a completed step.
+// Supports both controller format (taskId/output) and pi-knight format (task_id/result).
 type TaskResult struct {
-	TaskID string `json:"taskId"`
-	Output string `json:"output,omitempty"`
-	Error  string `json:"error,omitempty"`
+	TaskID  string `json:"taskId"`
+	TaskID2 string `json:"task_id"`  // pi-knight uses snake_case
+	Output  string `json:"output,omitempty"`
+	Result  string `json:"result,omitempty"` // pi-knight uses "result" instead of "output"
+	Error   string `json:"error,omitempty"`
+	Success *bool  `json:"success,omitempty"` // pi-knight publishes success boolean
+}
+
+// GetTaskID returns the task ID from whichever field was populated.
+func (r *TaskResult) GetTaskID() string {
+	if r.TaskID != "" {
+		return r.TaskID
+	}
+	return r.TaskID2
+}
+
+// GetOutput returns the output from whichever field was populated.
+func (r *TaskResult) GetOutput() string {
+	if r.Output != "" {
+		return r.Output
+	}
+	return r.Result
+}
+
+// GetError returns the error, checking both explicit error field and success boolean.
+func (r *TaskResult) GetError() string {
+	if r.Error != "" {
+		return r.Error
+	}
+	if r.Success != nil && !*r.Success {
+		return "task reported failure"
+	}
+	return ""
 }
 
 // ChainReconciler reconciles a Chain object.
@@ -340,9 +371,11 @@ func (r *ChainReconciler) reconcileRunning(ctx context.Context, chain *aiv1alpha
 			if result != nil {
 				now := metav1.Now()
 				ss.CompletedAt = &now
-				if result.Error != "" {
+				resultErr := result.GetError()
+				resultOutput := result.GetOutput()
+				if resultErr != "" {
 					ss.Phase = aiv1alpha1.ChainStepPhaseFailed
-					ss.Error = result.Error
+					ss.Error = resultErr
 					// Check retry
 					if chain.Spec.RetryPolicy != nil && ss.Retries < chain.Spec.RetryPolicy.MaxRetries {
 						ss.Retries++
@@ -353,7 +386,7 @@ func (r *ChainReconciler) reconcileRunning(ctx context.Context, chain *aiv1alpha
 					}
 				} else {
 					ss.Phase = aiv1alpha1.ChainStepPhaseSucceeded
-					ss.Output = result.Output
+					ss.Output = resultOutput
 
 					// Best-effort artifact write if outputPath is set
 					if spec != nil && spec.OutputPath != "" {
@@ -361,7 +394,7 @@ func (r *ChainReconciler) reconcileRunning(ctx context.Context, chain *aiv1alpha
 						if err != nil {
 							log.Error(err, "Failed to render outputPath", "step", ss.Name)
 						} else {
-							if err := r.writeArtifact(ctx, chain, spec.Name, outputPath, result.Output); err != nil {
+							if err := r.writeArtifact(ctx, chain, spec.Name, outputPath, resultOutput); err != nil {
 								log.Error(err, "Failed to dispatch artifact write", "step", ss.Name, "path", outputPath)
 							} else {
 								log.Info("Dispatched artifact write", "step", ss.Name, "path", outputPath)
