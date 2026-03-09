@@ -106,10 +106,9 @@ jobs:
 
       - name: Set chart version from SHA
         run: |
-          # Use epoch seconds for semver-friendly ordering (newer commit = higher version)
-          EPOCH=$(date +%s)
           SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
-          sed -i "s/^version:.*/version: 0.2.0-${EPOCH}.${SHORT_SHA}/" charts/roundtable-operator/Chart.yaml
+          # Don't use pre-release tags — they cause semver ordering headaches with Flux
+          # Chart version stays at base (e.g., 0.3.0), image tag identifies the build
           sed -i "s/^appVersion:.*/appVersion: \"${{ github.sha }}\"/" charts/roundtable-operator/Chart.yaml
           cat charts/roundtable-operator/Chart.yaml
 
