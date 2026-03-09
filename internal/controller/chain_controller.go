@@ -362,6 +362,13 @@ func (r *ChainReconciler) reconcileRunning(ctx context.Context, chain *aiv1alpha
 	for i := range chain.Status.StepStatuses {
 		ss := &chain.Status.StepStatuses[i]
 		if ss.Phase == aiv1alpha1.ChainStepPhaseRunning {
+			// Skip polling if no taskID — step was set to Running by a previous
+			// operator version or before the status was persisted. Requeue will
+			// handle it once the taskID is saved.
+			if ss.TaskID == "" {
+				log.Info("Step running but no taskID — skipping poll, will requeue", "step", ss.Name)
+				continue
+			}
 			// Check per-step timeout
 			spec := specMap[ss.Name]
 			if ss.StartedAt != nil && spec != nil {
