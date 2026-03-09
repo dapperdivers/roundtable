@@ -68,6 +68,12 @@ spec:
                 description: input provides initial data passed to the first step(s)
                   as JSON.
                 type: string
+              outputKnight:
+                default: gawain
+                description: |-
+                  outputKnight is the knight responsible for writing chain artifacts when steps have outputPath set.
+                  Defaults to "gawain" if not specified.
+                type: string
               retryPolicy:
                 description: retryPolicy configures retry behavior for failed steps.
                 properties:
@@ -126,6 +132,12 @@ spec:
                       description: |-
                         outputKey is the key name under which this step's output is stored for downstream steps.
                         Defaults to the step name if not specified.
+                      type: string
+                    outputPath:
+                      description: |-
+                        outputPath is an optional file path where this step's output should be written.
+                        Supports Go template variables: {{ .Date }} (YYYY-MM-DD), {{ .Chain }} (chain name), {{ .Step }} (step name).
+                        When set, the controller dispatches a write task to the outputKnight after the step succeeds.
                       type: string
                     task:
                       description: |-

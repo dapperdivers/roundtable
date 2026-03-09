@@ -329,6 +329,69 @@ var _ = Describe("Chain Controller", func() {
 		})
 	})
 
+	Context("Output Path Rendering", func() {
+		It("should render template variables in outputPath", func() {
+			r := newReconciler()
+			chain := &aiv1alpha1.Chain{
+				ObjectMeta: metav1.ObjectMeta{Name: "morning-briefing", Namespace: namespace},
+			}
+			step := &aiv1alpha1.ChainStep{
+				Name:       "synthesize",
+				KnightRef:  knightName,
+				Task:       "synthesize",
+				OutputPath: "/briefings/{{ .Date }}/{{ .Chain }}/{{ .Step }}.md",
+			}
+
+			result, err := r.renderOutputPath(chain, step)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(ContainSubstring(chain.Name))
+			Expect(result).To(ContainSubstring(step.Name))
+			// Date should be YYYY-MM-DD format
+			Expect(result).To(MatchRegexp(`\d{4}-\d{2}-\d{2}`))
+		})
+
+		It("should return plain path unchanged", func() {
+			r := newReconciler()
+			chain := &aiv1alpha1.Chain{
+				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: namespace},
+			}
+			step := &aiv1alpha1.ChainStep{
+				Name:       "step1",
+				OutputPath: "/static/path/output.md",
+			}
+
+			result, err := r.renderOutputPath(chain, step)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(Equal("/static/path/output.md"))
+		})
+	})
+
+	Context("Artifact Output Knight Default", func() {
+		It("should default outputKnight to gawain", func() {
+			chain := &aiv1alpha1.Chain{
+				Spec: aiv1alpha1.ChainSpec{},
+			}
+			knightName := chain.Spec.OutputKnight
+			if knightName == "" {
+				knightName = "gawain"
+			}
+			Expect(knightName).To(Equal("gawain"))
+		})
+
+		It("should use specified outputKnight", func() {
+			chain := &aiv1alpha1.Chain{
+				Spec: aiv1alpha1.ChainSpec{
+					OutputKnight: "lancelot",
+				},
+			}
+			knightName := chain.Spec.OutputKnight
+			if knightName == "" {
+				knightName = "gawain"
+			}
+			Expect(knightName).To(Equal("lancelot"))
+		})
+	})
+
 	Context("Step Status Initialization", func() {
 		It("should set all steps to Pending", func() {
 			r := newReconciler()

@@ -354,6 +354,20 @@ func (r *ChainReconciler) reconcileRunning(ctx context.Context, chain *aiv1alpha
 				} else {
 					ss.Phase = aiv1alpha1.ChainStepPhaseSucceeded
 					ss.Output = result.Output
+
+					// Best-effort artifact write if outputPath is set
+					if spec != nil && spec.OutputPath != "" {
+						outputPath, err := r.renderOutputPath(chain, spec)
+						if err != nil {
+							log.Error(err, "Failed to render outputPath", "step", ss.Name)
+						} else {
+							if err := r.writeArtifact(ctx, chain, spec.Name, outputPath, result.Output); err != nil {
+								log.Error(err, "Failed to dispatch artifact write", "step", ss.Name, "path", outputPath)
+							} else {
+								log.Info("Dispatched artifact write", "step", ss.Name, "path", outputPath)
+							}
+						}
+					}
 				}
 			}
 		}
@@ -705,6 +719,74 @@ func (r *ChainReconciler) removeCronEntry(nn types.NamespacedName) {
 		}
 		delete(r.cronEntries, key)
 	}
+}
+
+// renderOutputPath renders template variables in the outputPath.
+func (r *ChainReconciler) renderOutputPath(chain *aiv1alpha1.Chain, step *aiv1alpha1.ChainStep) (string, error) {
+	path := step.OutputPath
+	if !strings.Contains(path, "{{") {
+		return path, nil
+	}
+
+	data := map[string]string{
+		"Date":  time.Now().UTC().Format("2006-01-02"),
+		"Chain": chain.Name,
+		"Step":  step.Name,
+	}
+
+	tmpl, err := template.New("outputPath").Parse(path)
+	if err != nil {
+		return "", err
+	}
+
+	var buf bytes.Buffer
+	if err := tmpl.Execute(&buf, data); err != nil {
+		return "", err
+	}
+	return buf.String(), nil
+}
+
+// writeArtifact dispatches a write task to the outputKnight.
+func (r *ChainReconciler) writeArtifact(ctx context.Context, chain *aiv1alpha1.Chain, stepName, outputPath, content string) error {
+	if err := r.ensureNATS(); err != nil {
+		return err
+	}
+
+	knightName := chain.Spec.OutputKnight
+	if knightName == "" {
+		knightName = "gawain"
+	}
+
+	// Get knight to find its domain
+	knight := &aiv1alpha1.Knight{}
+	if err := r.Get(ctx, types.NamespacedName{Name: knightName, Namespace: chain.Namespace}, knight); err != nil {
+		return fmt.Errorf("output knight %q not found: %w", knightName, err)
+	}
+
+	taskID := fmt.Sprintf("chain-%s-%s-artifact.%d", chain.Name, stepName, time.Now().UnixMilli())
+
+	// The task instructs the knight to write the content to the path
+	task := fmt.Sprintf("Write the following content to the file at path '%s'. Create any missing directories. Write ONLY the content below, do not modify or summarize it.\n\n---\n%s", outputPath, content)
+
+	payload := TaskPayload{
+		TaskID:    taskID,
+		ChainName: chain.Name,
+		StepName:  stepName + "-artifact",
+		Task:      task,
+	}
+
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("marshal artifact payload: %w", err)
+	}
+
+	subject := fmt.Sprintf("fleet-a.tasks.%s.%s", knight.Spec.Domain, knightName)
+	_, err = r.js.Publish(subject, data)
+	if err != nil {
+		return fmt.Errorf("NATS publish artifact to %s: %w", subject, err)
+	}
+
+	return nil
 }
 
 // SetupWithManager sets up the controller with the Manager.

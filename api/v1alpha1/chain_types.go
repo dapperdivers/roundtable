@@ -48,6 +48,12 @@ type ChainSpec struct {
 	// +optional
 	Input string `json:"input,omitempty"`
 
+	// outputKnight is the knight responsible for writing chain artifacts when steps have outputPath set.
+	// Defaults to "gawain" if not specified.
+	// +kubebuilder:default="gawain"
+	// +optional
+	OutputKnight string `json:"outputKnight,omitempty"`
+
 	// roundTableRef references the RoundTable this chain belongs to.
 	// If omitted, the chain operates in the default namespace NATS prefix.
 	// +optional
@@ -95,6 +101,12 @@ type ChainStep struct {
 	// Defaults to the step name if not specified.
 	// +optional
 	OutputKey string `json:"outputKey,omitempty"`
+
+	// outputPath is an optional file path where this step's output should be written.
+	// Supports Go template variables: {{ .Date }} (YYYY-MM-DD), {{ .Chain }} (chain name), {{ .Step }} (step name).
+	// When set, the controller dispatches a write task to the outputKnight after the step succeeds.
+	// +optional
+	OutputPath string `json:"outputPath,omitempty"`
 
 	// continueOnFailure allows downstream steps to proceed even if this step fails.
 	// +kubebuilder:default=false
