@@ -647,19 +647,29 @@ func (r *ChainReconciler) publishTask(ctx context.Context, domain, knightName st
 
 // pollResult checks for a result message for a given chain step.
 func (r *ChainReconciler) pollResult(ctx context.Context, chainName, stepName string) (*TaskResult, error) {
+	log := logf.FromContext(ctx)
+
 	if err := r.ensureNATS(); err != nil {
 		return nil, err
 	}
 
-	// Subscribe to result subject with a short timeout
+	// Subscribe to result subject, explicitly binding to the results stream
 	subject := fmt.Sprintf("fleet-a.results.chain-%s-%s.*", chainName, stepName)
-	sub, err := r.js.SubscribeSync(subject, nats.OrderedConsumer())
+	sub, err := r.js.SubscribeSync(subject,
+		nats.OrderedConsumer(),
+		nats.BindStream("fleet_a_results"),
+	)
 	if err != nil {
-		return nil, fmt.Errorf("NATS subscribe %s failed: %w", subject, err)
+		// Fallback: try without BindStream (auto-detect)
+		log.Info("BindStream failed, trying auto-detect", "error", err.Error())
+		sub, err = r.js.SubscribeSync(subject, nats.OrderedConsumer())
+		if err != nil {
+			return nil, fmt.Errorf("NATS subscribe %s failed: %w", subject, err)
+		}
 	}
 	defer sub.Unsubscribe()
 
-	msg, err := sub.NextMsg(500 * time.Millisecond)
+	msg, err := sub.NextMsg(2 * time.Second)
 	if err != nil {
 		if err == nats.ErrTimeout {
 			return nil, nil // No result yet
@@ -667,10 +677,15 @@ func (r *ChainReconciler) pollResult(ctx context.Context, chainName, stepName st
 		return nil, fmt.Errorf("NATS next msg: %w", err)
 	}
 
+	log.Info("Received result message", "subject", msg.Subject, "dataLen", len(msg.Data))
+
 	var result TaskResult
 	if err := json.Unmarshal(msg.Data, &result); err != nil {
+		log.Error(err, "Failed to unmarshal result", "subject", msg.Subject, "rawPreview", string(msg.Data[:min(200, len(msg.Data))]))
 		return nil, fmt.Errorf("unmarshal result: %w", err)
 	}
+
+	log.Info("Parsed result", "taskId", result.GetTaskID(), "outputLen", len(result.GetOutput()), "error", result.GetError())
 
 	return &result, nil
 }
