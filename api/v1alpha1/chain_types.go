@@ -162,6 +162,11 @@ type ChainStepStatus struct {
 	// +optional
 	Phase ChainStepPhase `json:"phase,omitempty"`
 
+	// taskID is the unique NATS task identifier for this step's current execution.
+	// Used to poll for the exact result message, preventing stale result replay.
+	// +optional
+	TaskID string `json:"taskId,omitempty"`
+
 	// startedAt is when the step began execution.
 	// +optional
 	StartedAt *metav1.Time `json:"startedAt,omitempty"`

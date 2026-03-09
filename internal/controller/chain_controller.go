@@ -377,7 +377,7 @@ func (r *ChainReconciler) reconcileRunning(ctx context.Context, chain *aiv1alpha
 			}
 
 			// Try to get result from NATS
-			result, err := r.pollResult(ctx, chain.Name, ss.Name)
+			result, err := r.pollResult(ctx, chain.Name, ss.Name, ss.TaskID)
 			if err != nil {
 				log.Error(err, "Failed to poll result", "step", ss.Name)
 				continue
@@ -497,6 +497,7 @@ func (r *ChainReconciler) reconcileRunning(ctx context.Context, chain *aiv1alpha
 		now := metav1.Now()
 		ss.Phase = aiv1alpha1.ChainStepPhaseRunning
 		ss.StartedAt = &now
+		ss.TaskID = taskID
 		log.Info("Published step task", "step", step.Name, "taskId", taskID, "knight", step.KnightRef)
 	}
 
@@ -660,15 +661,22 @@ func (r *ChainReconciler) publishTask(ctx context.Context, domain, knightName st
 }
 
 // pollResult checks for a result message for a given chain step.
-func (r *ChainReconciler) pollResult(ctx context.Context, chainName, stepName string) (*TaskResult, error) {
+// If taskID is provided, polls for that exact result subject; otherwise falls back to wildcard.
+func (r *ChainReconciler) pollResult(ctx context.Context, chainName, stepName, taskID string) (*TaskResult, error) {
 	log := logf.FromContext(ctx)
 
 	if err := r.ensureNATS(); err != nil {
 		return nil, err
 	}
 
-	// Subscribe to result subject, explicitly binding to the results stream
-	subject := fmt.Sprintf("fleet-a.results.chain-%s-%s.*", chainName, stepName)
+	// Use exact taskID subject when available (prevents stale result replay)
+	var subject string
+	if taskID != "" {
+		subject = fmt.Sprintf("fleet-a.results.%s", taskID)
+	} else {
+		subject = fmt.Sprintf("fleet-a.results.chain-%s-%s.*", chainName, stepName)
+	}
+
 	sub, err := r.js.SubscribeSync(subject,
 		nats.OrderedConsumer(),
 		nats.BindStream("fleet_a_results"),
