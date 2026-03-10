@@ -725,19 +725,31 @@ func (r *ChainReconciler) pollResult(ctx context.Context, nc natsConfig, chainNa
 		subject = fmt.Sprintf("%s.results.chain-%s-%s.*", nc.SubjectPrefix, chainName, stepName)
 	}
 
+	// Use ephemeral consumer with explicit ack (compatible with both Limits and WorkQueue retention)
+	consumerName := fmt.Sprintf("chain-poll-%s-%s-%d", chainName, stepName, time.Now().UnixMilli())
 	sub, err := r.js.SubscribeSync(subject,
-		nats.OrderedConsumer(),
+		nats.Durable(consumerName),
+		nats.AckExplicit(),
 		nats.BindStream(nc.ResultsStream),
+		nats.DeliverAll(),
 	)
 	if err != nil {
 		// Fallback: try without BindStream (auto-detect)
 		log.Info("BindStream failed, trying auto-detect", "error", err.Error())
-		sub, err = r.js.SubscribeSync(subject, nats.OrderedConsumer())
+		sub, err = r.js.SubscribeSync(subject,
+			nats.Durable(consumerName),
+			nats.AckExplicit(),
+			nats.DeliverAll(),
+		)
 		if err != nil {
 			return nil, fmt.Errorf("NATS subscribe %s failed: %w", subject, err)
 		}
 	}
-	defer sub.Unsubscribe()
+	defer func() {
+		_ = sub.Unsubscribe()
+		// Clean up ephemeral consumer
+		_ = r.js.DeleteConsumer(nc.ResultsStream, consumerName)
+	}()
 
 	msg, err := sub.NextMsg(2 * time.Second)
 	if err != nil {
@@ -745,6 +757,11 @@ func (r *ChainReconciler) pollResult(ctx context.Context, nc natsConfig, chainNa
 			return nil, nil // No result yet
 		}
 		return nil, fmt.Errorf("NATS next msg: %w", err)
+	}
+
+	// Ack the message (required for WorkQueue retention)
+	if err := msg.Ack(); err != nil {
+		log.Error(err, "Failed to ack result message")
 	}
 
 	log.Info("Received result message", "subject", msg.Subject, "dataLen", len(msg.Data))
