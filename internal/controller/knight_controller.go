@@ -535,6 +535,9 @@ func (r *KnightReconciler) buildPodSpec(knight *aiv1alpha1.Knight) corev1.PodSpe
 		{Name: "KNIGHT_NAME", Value: capitalizeFirst(knight.Name)},
 		{Name: "KNIGHT_MODEL", Value: knight.Spec.Model},
 		{Name: "NATS_URL", Value: knight.Spec.NATS.URL},
+		{Name: "NATS_TASKS_STREAM", Value: knight.Spec.NATS.Stream},
+		{Name: "NATS_RESULTS_STREAM", Value: knight.Spec.NATS.ResultsStream},
+		{Name: "NATS_RESULTS_PREFIX", Value: deriveResultsPrefix(knight.Spec.NATS.Subjects)},
 		{Name: "SUBSCRIBE_TOPICS", Value: strings.Join(knight.Spec.NATS.Subjects, ",")},
 		{Name: "MAX_CONCURRENT_TASKS", Value: fmt.Sprintf("%d", knight.Spec.Concurrency)},
 		{Name: "TASK_TIMEOUT_MS", Value: fmt.Sprintf("%d", taskTimeoutMs)},
@@ -820,6 +823,8 @@ done`
 			FSGroup:             &fsGroup,
 			FSGroupChangePolicy: fsGroupChangePolicyPtr(corev1.FSGroupChangeOnRootMismatch),
 		},
+		// Use knight-specific ServiceAccount if configured, otherwise namespace default
+		ServiceAccountName: knight.Spec.ServiceAccountName,
 		// Auto-mount SA token — knights may need it for in-cluster access
 		AutomountServiceAccountToken: boolPtr(true),
 	}
@@ -928,6 +933,20 @@ func (r *KnightReconciler) SetupWithManager(mgr ctrl.Manager) error {
 }
 
 // Helpers
+// deriveResultsPrefix extracts the NATS subject prefix for results from task subjects.
+// e.g., ["fleet-a.tasks.security.>"] → "fleet-a.results"
+//       ["chelonian.tasks.frontend.>"] → "chelonian.results"
+func deriveResultsPrefix(subjects []string) string {
+	if len(subjects) == 0 {
+		return "fleet-a.results"
+	}
+	parts := strings.Split(subjects[0], ".")
+	if len(parts) >= 2 {
+		return parts[0] + ".results"
+	}
+	return "fleet-a.results"
+}
+
 func capitalizeFirst(s string) string {
 	if s == "" {
 		return s

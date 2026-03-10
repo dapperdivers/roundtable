@@ -53,6 +53,11 @@ type KnightSpec struct {
 	// +kubebuilder:validation:Required
 	NATS KnightNATS `json:"nats"`
 
+	// serviceAccountName is the name of the ServiceAccount to use for the knight pod.
+	// If empty, the namespace default ServiceAccount is used.
+	// +optional
+	ServiceAccountName string `json:"serviceAccountName,omitempty"`
+
 	// vault configures the shared Obsidian vault mount.
 	// +optional
 	Vault *KnightVault `json:"vault,omitempty"`
