@@ -20,11 +20,8 @@ import (
 	"context"
 	"fmt"
 	"strconv"
-	"strings"
-	"sync"
 	"time"
 
-	"github.com/nats-io/nats.go"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -33,6 +30,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	aiv1alpha1 "github.com/dapperdivers/roundtable/api/v1alpha1"
+	natspkg "github.com/dapperdivers/roundtable/pkg/nats"
 )
 
 // RoundTableReconciler reconciles a RoundTable object.
@@ -40,9 +38,7 @@ type RoundTableReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
 
-	nc *nats.Conn
-	js nats.JetStreamContext
-	mu sync.Mutex
+	natsClient natspkg.Client
 }
 
 // +kubebuilder:rbac:groups=ai.roundtable.io,resources=roundtables,verbs=get;list;watch;create;update;patch;delete
@@ -258,87 +254,52 @@ func (r *RoundTableReconciler) countActiveMissions(ctx context.Context, rt *aiv1
 
 // ensureStreams creates or verifies JetStream streams for this RoundTable.
 func (r *RoundTableReconciler) ensureStreams(ctx context.Context, rt *aiv1alpha1.RoundTable) error {
-	if err := r.ensureNATSConnection(rt.Spec.NATS.URL); err != nil {
-		return err
+	log := logf.FromContext(ctx)
+
+	// Ensure NATS client is initialized
+	if r.natsClient == nil {
+		url := rt.Spec.NATS.URL
+		if url == "" {
+			url = "nats://nats.database.svc:4222"
+		}
+		config := natspkg.DefaultConfig()
+		config.URL = url
+		r.natsClient = natspkg.NewClient(config, log)
 	}
 
-	retention := nats.WorkQueuePolicy
+	// Map retention policy string to enum
+	retention := natspkg.RetentionWorkQueue
 	switch rt.Spec.NATS.StreamRetention {
 	case "Limits":
-		retention = nats.LimitsPolicy
+		retention = natspkg.RetentionLimits
 	case "Interest":
-		retention = nats.InterestPolicy
+		retention = natspkg.RetentionInterest
 	}
 
-	prefix := strings.ReplaceAll(rt.Spec.NATS.SubjectPrefix, "-", "_")
-
 	// Tasks stream
-	tasksStreamName := rt.Spec.NATS.TasksStream
-	tasksSubject := fmt.Sprintf("%s.tasks.>", rt.Spec.NATS.SubjectPrefix)
-	if err := r.ensureStream(tasksStreamName, tasksSubject, retention, prefix); err != nil {
+	tasksSubject := natspkg.StreamSubject(rt.Spec.NATS.SubjectPrefix, "tasks")
+	tasksStreamConfig := natspkg.StreamConfig{
+		Name:      rt.Spec.NATS.TasksStream,
+		Subjects:  []string{tasksSubject},
+		Retention: retention,
+		Storage:   natspkg.StorageFile,
+	}
+	if err := r.natsClient.CreateStream(tasksStreamConfig); err != nil {
 		return fmt.Errorf("tasks stream: %w", err)
 	}
 
 	// Results stream
-	resultsStreamName := rt.Spec.NATS.ResultsStream
-	resultsSubject := fmt.Sprintf("%s.results.>", rt.Spec.NATS.SubjectPrefix)
-	if err := r.ensureStream(resultsStreamName, resultsSubject, retention, prefix); err != nil {
+	resultsSubject := natspkg.StreamSubject(rt.Spec.NATS.SubjectPrefix, "results")
+	resultsStreamConfig := natspkg.StreamConfig{
+		Name:      rt.Spec.NATS.ResultsStream,
+		Subjects:  []string{resultsSubject},
+		Retention: retention,
+		Storage:   natspkg.StorageFile,
+	}
+	if err := r.natsClient.CreateStream(resultsStreamConfig); err != nil {
 		return fmt.Errorf("results stream: %w", err)
 	}
 
-	return nil
-}
-
-// ensureStream creates a JetStream stream if it doesn't exist.
-func (r *RoundTableReconciler) ensureStream(name, subject string, retention nats.RetentionPolicy, _ string) error {
-	_, err := r.js.StreamInfo(name)
-	if err == nil {
-		return nil // stream already exists
-	}
-
-	_, err = r.js.AddStream(&nats.StreamConfig{
-		Name:      name,
-		Subjects:  []string{subject},
-		Retention: retention,
-		Storage:   nats.FileStorage,
-	})
-	if err != nil {
-		return fmt.Errorf("failed to create stream %s: %w", name, err)
-	}
-
-	return nil
-}
-
-// ensureNATSConnection connects to NATS if not already connected.
-func (r *RoundTableReconciler) ensureNATSConnection(natsURL string) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	if r.nc != nil && r.nc.IsConnected() {
-		return nil
-	}
-
-	if natsURL == "" {
-		natsURL = "nats://nats.database.svc:4222"
-	}
-
-	nc, err := nats.Connect(natsURL,
-		nats.RetryOnFailedConnect(true),
-		nats.MaxReconnects(-1),
-		nats.ReconnectWait(2*time.Second),
-	)
-	if err != nil {
-		return fmt.Errorf("NATS connect failed: %w", err)
-	}
-
-	js, err := nc.JetStream()
-	if err != nil {
-		nc.Close()
-		return fmt.Errorf("JetStream context failed: %w", err)
-	}
-
-	r.nc = nc
-	r.js = js
 	return nil
 }
 

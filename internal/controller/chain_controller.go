@@ -26,7 +26,6 @@ import (
 	"text/template"
 	"time"
 
-	"github.com/nats-io/nats.go"
 	"github.com/robfig/cron/v3"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -37,58 +36,12 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	aiv1alpha1 "github.com/dapperdivers/roundtable/api/v1alpha1"
+	natspkg "github.com/dapperdivers/roundtable/pkg/nats"
 )
 
 const (
 	chainFinalizer = "ai.roundtable.io/chain-finalizer"
-	natsURL        = "nats://nats.database.svc:4222"
 )
-
-// TaskPayload is the JSON payload published to NATS for a chain step.
-type TaskPayload struct {
-	TaskID    string `json:"taskId"`
-	ChainName string `json:"chainName"`
-	StepName  string `json:"stepName"`
-	Task      string `json:"task"`
-}
-
-// TaskResult is the JSON payload received from NATS for a completed step.
-// Supports both controller format (taskId/output) and pi-knight format (task_id/result).
-type TaskResult struct {
-	TaskID  string `json:"taskId"`
-	TaskID2 string `json:"task_id"`  // pi-knight uses snake_case
-	Output  string `json:"output,omitempty"`
-	Result  string `json:"result,omitempty"` // pi-knight uses "result" instead of "output"
-	Error   string `json:"error,omitempty"`
-	Success *bool  `json:"success,omitempty"` // pi-knight publishes success boolean
-}
-
-// GetTaskID returns the task ID from whichever field was populated.
-func (r *TaskResult) GetTaskID() string {
-	if r.TaskID != "" {
-		return r.TaskID
-	}
-	return r.TaskID2
-}
-
-// GetOutput returns the output from whichever field was populated.
-func (r *TaskResult) GetOutput() string {
-	if r.Output != "" {
-		return r.Output
-	}
-	return r.Result
-}
-
-// GetError returns the error, checking both explicit error field and success boolean.
-func (r *TaskResult) GetError() string {
-	if r.Error != "" {
-		return r.Error
-	}
-	if r.Success != nil && !*r.Success {
-		return "task reported failure"
-	}
-	return ""
-}
 
 // natsConfig holds resolved NATS configuration for a chain's target RoundTable.
 type natsConfig struct {
@@ -109,10 +62,9 @@ type ChainReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
 
-	nc   *nats.Conn
-	js   nats.JetStreamContext
-	mu   sync.Mutex
-	cron *cron.Cron
+	natsClient natspkg.Client
+	cron       *cron.Cron
+	mu         sync.Mutex
 	// cronEntries maps chain namespace/name to cron entry ID
 	cronEntries map[string]cron.EntryID
 }
@@ -511,7 +463,7 @@ func (r *ChainReconciler) reconcileRunning(ctx context.Context, chain *aiv1alpha
 
 		taskID := fmt.Sprintf("chain-%s-%s.%d", chain.Name, step.Name, time.Now().UnixMilli())
 
-		payload := TaskPayload{
+		payload := natspkg.TaskPayload{
 			TaskID:    taskID,
 			ChainName: chain.Name,
 			StepName:  step.Name,
@@ -640,33 +592,20 @@ func (r *ChainReconciler) renderTemplate(chain *aiv1alpha1.Chain, taskStr string
 	return buf.String(), nil
 }
 
-// ensureNATS connects to NATS if not already connected.
-func (r *ChainReconciler) ensureNATS() error {
+// ensureNATS ensures the NATS client is initialized and connected.
+func (r *ChainReconciler) ensureNATS(ctx context.Context) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if r.nc != nil && r.nc.IsConnected() {
+	if r.natsClient != nil && r.natsClient.IsConnected() {
 		return nil
 	}
 
-	nc, err := nats.Connect(natsURL,
-		nats.RetryOnFailedConnect(true),
-		nats.MaxReconnects(-1),
-		nats.ReconnectWait(2*time.Second),
-	)
-	if err != nil {
-		return fmt.Errorf("NATS connect failed: %w", err)
-	}
+	log := logf.FromContext(ctx)
+	config := natspkg.DefaultConfig()
+	r.natsClient = natspkg.NewClient(config, log)
 
-	js, err := nc.JetStream()
-	if err != nil {
-		nc.Close()
-		return fmt.Errorf("JetStream context failed: %w", err)
-	}
-
-	r.nc = nc
-	r.js = js
-	return nil
+	return r.natsClient.Connect()
 }
 
 // resolveNATSConfig looks up the chain's RoundTable and returns the NATS configuration.
@@ -689,74 +628,54 @@ func (r *ChainReconciler) resolveNATSConfig(ctx context.Context, chain *aiv1alph
 }
 
 // publishTask publishes a task to NATS JetStream.
-func (r *ChainReconciler) publishTask(ctx context.Context, nc natsConfig, domain, knightName string, payload TaskPayload) error {
-	if err := r.ensureNATS(); err != nil {
+func (r *ChainReconciler) publishTask(ctx context.Context, nc natsConfig, domain, knightName string, payload natspkg.TaskPayload) error {
+	if err := r.ensureNATS(ctx); err != nil {
 		return err
 	}
 
-	data, err := json.Marshal(payload)
-	if err != nil {
-		return fmt.Errorf("marshal task payload: %w", err)
-	}
-
-	subject := fmt.Sprintf("%s.tasks.%s.%s", nc.SubjectPrefix, domain, knightName)
-	_, err = r.js.Publish(subject, data)
-	if err != nil {
-		return fmt.Errorf("NATS publish to %s failed: %w", subject, err)
-	}
-
-	return nil
+	subject := natspkg.TaskSubject(nc.SubjectPrefix, domain, knightName)
+	return r.natsClient.PublishJSON(subject, payload)
 }
 
 // pollResult checks for a result message for a given chain step.
 // If taskID is provided, polls for that exact result subject; otherwise falls back to wildcard.
-func (r *ChainReconciler) pollResult(ctx context.Context, nc natsConfig, chainName, stepName, taskID string) (*TaskResult, error) {
+func (r *ChainReconciler) pollResult(ctx context.Context, nc natsConfig, chainName, stepName, taskID string) (*natspkg.TaskResult, error) {
 	log := logf.FromContext(ctx)
 
-	if err := r.ensureNATS(); err != nil {
+	if err := r.ensureNATS(ctx); err != nil {
 		return nil, err
 	}
 
 	// Use exact taskID subject when available (prevents stale result replay)
 	var subject string
 	if taskID != "" {
-		subject = fmt.Sprintf("%s.results.%s", nc.SubjectPrefix, taskID)
+		subject = natspkg.ResultSubject(nc.SubjectPrefix, taskID)
 	} else {
-		subject = fmt.Sprintf("%s.results.chain-%s-%s.*", nc.SubjectPrefix, chainName, stepName)
+		taskPrefix := fmt.Sprintf("chain-%s-%s", chainName, stepName)
+		subject = natspkg.ResultSubjectWildcard(nc.SubjectPrefix, taskPrefix)
 	}
 
 	// Use ephemeral consumer with explicit ack (compatible with both Limits and WorkQueue retention)
-	consumerName := fmt.Sprintf("chain-poll-%s-%s-%d", chainName, stepName, time.Now().UnixMilli())
-	sub, err := r.js.SubscribeSync(subject,
-		nats.Durable(consumerName),
-		nats.AckExplicit(),
-		nats.BindStream(nc.ResultsStream),
-		nats.DeliverAll(),
+	consumerName := natspkg.ChainConsumerName(chainName, stepName)
+	
+	msg, err := r.natsClient.PollMessage(subject, 2*time.Second,
+		natspkg.WithDurable(consumerName),
+		natspkg.WithAckExplicit(),
+		natspkg.WithBindStream(nc.ResultsStream),
+		natspkg.WithDeliverAll(),
+		natspkg.WithFallbackAutoDetect(),
 	)
-	if err != nil {
-		// Fallback: try without BindStream (auto-detect)
-		log.Info("BindStream failed, trying auto-detect", "error", err.Error())
-		sub, err = r.js.SubscribeSync(subject,
-			nats.Durable(consumerName),
-			nats.AckExplicit(),
-			nats.DeliverAll(),
-		)
-		if err != nil {
-			return nil, fmt.Errorf("NATS subscribe %s failed: %w", subject, err)
-		}
-	}
+	
+	// Clean up ephemeral consumer
 	defer func() {
-		_ = sub.Unsubscribe()
-		// Clean up ephemeral consumer
-		_ = r.js.DeleteConsumer(nc.ResultsStream, consumerName)
+		_ = r.natsClient.DeleteConsumer(nc.ResultsStream, consumerName)
 	}()
 
-	msg, err := sub.NextMsg(2 * time.Second)
 	if err != nil {
-		if err == nats.ErrTimeout {
-			return nil, nil // No result yet
-		}
-		return nil, fmt.Errorf("NATS next msg: %w", err)
+		return nil, err
+	}
+	if msg == nil {
+		return nil, nil // Timeout, no result yet
 	}
 
 	// Ack the message (required for WorkQueue retention)
@@ -766,7 +685,7 @@ func (r *ChainReconciler) pollResult(ctx context.Context, nc natsConfig, chainNa
 
 	log.Info("Received result message", "subject", msg.Subject, "dataLen", len(msg.Data))
 
-	var result TaskResult
+	var result natspkg.TaskResult
 	if err := json.Unmarshal(msg.Data, &result); err != nil {
 		log.Error(err, "Failed to unmarshal result", "subject", msg.Subject, "rawPreview", string(msg.Data[:min(200, len(msg.Data))]))
 		return nil, fmt.Errorf("unmarshal result: %w", err)
@@ -883,7 +802,7 @@ func (r *ChainReconciler) renderOutputPath(chain *aiv1alpha1.Chain, step *aiv1al
 
 // writeArtifact dispatches a write task to the outputKnight.
 func (r *ChainReconciler) writeArtifact(ctx context.Context, nc natsConfig, chain *aiv1alpha1.Chain, stepName, outputPath, content string) error {
-	if err := r.ensureNATS(); err != nil {
+	if err := r.ensureNATS(ctx); err != nil {
 		return err
 	}
 
@@ -903,25 +822,15 @@ func (r *ChainReconciler) writeArtifact(ctx context.Context, nc natsConfig, chai
 	// The task instructs the knight to write the content to the path
 	task := fmt.Sprintf("Write the following content to the file at path '%s'. Create any missing directories. Write ONLY the content below, do not modify or summarize it.\n\n---\n%s", outputPath, content)
 
-	payload := TaskPayload{
+	payload := natspkg.TaskPayload{
 		TaskID:    taskID,
 		ChainName: chain.Name,
 		StepName:  stepName + "-artifact",
 		Task:      task,
 	}
 
-	data, err := json.Marshal(payload)
-	if err != nil {
-		return fmt.Errorf("marshal artifact payload: %w", err)
-	}
-
-	subject := fmt.Sprintf("%s.tasks.%s.%s", nc.SubjectPrefix, knight.Spec.Domain, knightName)
-	_, err = r.js.Publish(subject, data)
-	if err != nil {
-		return fmt.Errorf("NATS publish artifact to %s: %w", subject, err)
-	}
-
-	return nil
+	subject := natspkg.TaskSubject(nc.SubjectPrefix, knight.Spec.Domain, knightName)
+	return r.natsClient.PublishJSON(subject, payload)
 }
 
 // SetupWithManager sets up the controller with the Manager.
