@@ -90,6 +90,20 @@ func (r *TaskResult) GetError() string {
 	return ""
 }
 
+// natsConfig holds resolved NATS configuration for a chain's target RoundTable.
+type natsConfig struct {
+	SubjectPrefix string // e.g. "fleet-a" or "chelonian"
+	TasksStream   string // e.g. "fleet_a_tasks" or "chelonian_tasks"
+	ResultsStream string // e.g. "fleet_a_results" or "chelonian_results"
+}
+
+// defaultNATSConfig is the fallback when no RoundTable is specified.
+var defaultNATSConfig = natsConfig{
+	SubjectPrefix: "fleet-a",
+	TasksStream:   "fleet_a_tasks",
+	ResultsStream: "fleet_a_results",
+}
+
 // ChainReconciler reconciles a Chain object.
 type ChainReconciler struct {
 	client.Client
@@ -107,6 +121,7 @@ type ChainReconciler struct {
 // +kubebuilder:rbac:groups=ai.roundtable.io,resources=chains/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=ai.roundtable.io,resources=chains/finalizers,verbs=update
 // +kubebuilder:rbac:groups=ai.roundtable.io,resources=knights,verbs=get;list;watch
+// +kubebuilder:rbac:groups=ai.roundtable.io,resources=roundtables,verbs=get;list;watch
 
 func (r *ChainReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	chain := &aiv1alpha1.Chain{}
@@ -311,6 +326,13 @@ func (r *ChainReconciler) initStepStatuses(chain *aiv1alpha1.Chain) {
 func (r *ChainReconciler) reconcileRunning(ctx context.Context, chain *aiv1alpha1.Chain) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
+	// Resolve NATS config from the chain's RoundTable reference
+	nc, err := r.resolveNATSConfig(ctx, chain)
+	if err != nil {
+		log.Error(err, "Failed to resolve NATS config for chain")
+		return ctrl.Result{}, err
+	}
+
 	// Initialize step statuses and startedAt if missing (manual trigger via status patch)
 	if len(chain.Status.StepStatuses) == 0 {
 		log.Info("Initializing step statuses for manually triggered chain")
@@ -384,7 +406,7 @@ func (r *ChainReconciler) reconcileRunning(ctx context.Context, chain *aiv1alpha
 			}
 
 			// Try to get result from NATS
-			result, err := r.pollResult(ctx, chain.Name, ss.Name, ss.TaskID)
+			result, err := r.pollResult(ctx, nc, chain.Name, ss.Name, ss.TaskID)
 			if err != nil {
 				log.Error(err, "Failed to poll result", "step", ss.Name)
 				continue
@@ -415,7 +437,7 @@ func (r *ChainReconciler) reconcileRunning(ctx context.Context, chain *aiv1alpha
 						if err != nil {
 							log.Error(err, "Failed to render outputPath", "step", ss.Name)
 						} else {
-							if err := r.writeArtifact(ctx, chain, spec.Name, outputPath, resultOutput); err != nil {
+							if err := r.writeArtifact(ctx, nc, chain, spec.Name, outputPath, resultOutput); err != nil {
 								log.Error(err, "Failed to dispatch artifact write", "step", ss.Name, "path", outputPath)
 							} else {
 								log.Info("Dispatched artifact write", "step", ss.Name, "path", outputPath)
@@ -496,7 +518,7 @@ func (r *ChainReconciler) reconcileRunning(ctx context.Context, chain *aiv1alpha
 			Task:      taskStr,
 		}
 
-		if err := r.publishTask(ctx, knight.Spec.Domain, step.KnightRef, payload); err != nil {
+		if err := r.publishTask(ctx, nc, knight.Spec.Domain, step.KnightRef, payload); err != nil {
 			log.Error(err, "Failed to publish task", "step", step.Name)
 			continue
 		}
@@ -647,8 +669,27 @@ func (r *ChainReconciler) ensureNATS() error {
 	return nil
 }
 
+// resolveNATSConfig looks up the chain's RoundTable and returns the NATS configuration.
+// Falls back to defaultNATSConfig if no roundTableRef is specified.
+func (r *ChainReconciler) resolveNATSConfig(ctx context.Context, chain *aiv1alpha1.Chain) (natsConfig, error) {
+	if chain.Spec.RoundTableRef == "" {
+		return defaultNATSConfig, nil
+	}
+
+	rt := &aiv1alpha1.RoundTable{}
+	if err := r.Get(ctx, types.NamespacedName{Name: chain.Spec.RoundTableRef, Namespace: chain.Namespace}, rt); err != nil {
+		return natsConfig{}, fmt.Errorf("RoundTable %q not found: %w", chain.Spec.RoundTableRef, err)
+	}
+
+	return natsConfig{
+		SubjectPrefix: rt.Spec.NATS.SubjectPrefix,
+		TasksStream:   rt.Spec.NATS.TasksStream,
+		ResultsStream: rt.Spec.NATS.ResultsStream,
+	}, nil
+}
+
 // publishTask publishes a task to NATS JetStream.
-func (r *ChainReconciler) publishTask(ctx context.Context, domain, knightName string, payload TaskPayload) error {
+func (r *ChainReconciler) publishTask(ctx context.Context, nc natsConfig, domain, knightName string, payload TaskPayload) error {
 	if err := r.ensureNATS(); err != nil {
 		return err
 	}
@@ -658,7 +699,7 @@ func (r *ChainReconciler) publishTask(ctx context.Context, domain, knightName st
 		return fmt.Errorf("marshal task payload: %w", err)
 	}
 
-	subject := fmt.Sprintf("fleet-a.tasks.%s.%s", domain, knightName)
+	subject := fmt.Sprintf("%s.tasks.%s.%s", nc.SubjectPrefix, domain, knightName)
 	_, err = r.js.Publish(subject, data)
 	if err != nil {
 		return fmt.Errorf("NATS publish to %s failed: %w", subject, err)
@@ -669,7 +710,7 @@ func (r *ChainReconciler) publishTask(ctx context.Context, domain, knightName st
 
 // pollResult checks for a result message for a given chain step.
 // If taskID is provided, polls for that exact result subject; otherwise falls back to wildcard.
-func (r *ChainReconciler) pollResult(ctx context.Context, chainName, stepName, taskID string) (*TaskResult, error) {
+func (r *ChainReconciler) pollResult(ctx context.Context, nc natsConfig, chainName, stepName, taskID string) (*TaskResult, error) {
 	log := logf.FromContext(ctx)
 
 	if err := r.ensureNATS(); err != nil {
@@ -679,14 +720,14 @@ func (r *ChainReconciler) pollResult(ctx context.Context, chainName, stepName, t
 	// Use exact taskID subject when available (prevents stale result replay)
 	var subject string
 	if taskID != "" {
-		subject = fmt.Sprintf("fleet-a.results.%s", taskID)
+		subject = fmt.Sprintf("%s.results.%s", nc.SubjectPrefix, taskID)
 	} else {
-		subject = fmt.Sprintf("fleet-a.results.chain-%s-%s.*", chainName, stepName)
+		subject = fmt.Sprintf("%s.results.chain-%s-%s.*", nc.SubjectPrefix, chainName, stepName)
 	}
 
 	sub, err := r.js.SubscribeSync(subject,
 		nats.OrderedConsumer(),
-		nats.BindStream("fleet_a_results"),
+		nats.BindStream(nc.ResultsStream),
 	)
 	if err != nil {
 		// Fallback: try without BindStream (auto-detect)
@@ -824,7 +865,7 @@ func (r *ChainReconciler) renderOutputPath(chain *aiv1alpha1.Chain, step *aiv1al
 }
 
 // writeArtifact dispatches a write task to the outputKnight.
-func (r *ChainReconciler) writeArtifact(ctx context.Context, chain *aiv1alpha1.Chain, stepName, outputPath, content string) error {
+func (r *ChainReconciler) writeArtifact(ctx context.Context, nc natsConfig, chain *aiv1alpha1.Chain, stepName, outputPath, content string) error {
 	if err := r.ensureNATS(); err != nil {
 		return err
 	}
@@ -857,7 +898,7 @@ func (r *ChainReconciler) writeArtifact(ctx context.Context, chain *aiv1alpha1.C
 		return fmt.Errorf("marshal artifact payload: %w", err)
 	}
 
-	subject := fmt.Sprintf("fleet-a.tasks.%s.%s", knight.Spec.Domain, knightName)
+	subject := fmt.Sprintf("%s.tasks.%s.%s", nc.SubjectPrefix, knight.Spec.Domain, knightName)
 	_, err = r.js.Publish(subject, data)
 	if err != nil {
 		return fmt.Errorf("NATS publish artifact to %s: %w", subject, err)
