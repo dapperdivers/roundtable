@@ -651,6 +651,18 @@ func (r *KnightReconciler) buildPodSpec(knight *aiv1alpha1.Knight) corev1.PodSpe
 			},
 		},
 		VolumeMounts: volumeMounts,
+		// Startup probe: generous timeout for Nix flake builds (up to 10 min)
+		StartupProbe: &corev1.Probe{
+			ProbeHandler: corev1.ProbeHandler{
+				HTTPGet: &corev1.HTTPGetAction{
+					Path: "/health",
+					Port: intstrPort(probePort),
+				},
+			},
+			InitialDelaySeconds: 5,
+			PeriodSeconds:       10,
+			FailureThreshold:    60, // 10 minutes (60 * 10s)
+		},
 		LivenessProbe: &corev1.Probe{
 			ProbeHandler: corev1.ProbeHandler{
 				HTTPGet: &corev1.HTTPGetAction{
@@ -658,8 +670,7 @@ func (r *KnightReconciler) buildPodSpec(knight *aiv1alpha1.Knight) corev1.PodSpe
 					Port: intstrPort(probePort),
 				},
 			},
-			InitialDelaySeconds: 15,
-			PeriodSeconds:       30,
+			PeriodSeconds: 30,
 		},
 		ReadinessProbe: &corev1.Probe{
 			ProbeHandler: corev1.ProbeHandler{
@@ -668,8 +679,7 @@ func (r *KnightReconciler) buildPodSpec(knight *aiv1alpha1.Knight) corev1.PodSpe
 					Port: intstrPort(probePort),
 				},
 			},
-			InitialDelaySeconds: 10,
-			PeriodSeconds:       15,
+			PeriodSeconds: 15,
 		},
 	}
 
