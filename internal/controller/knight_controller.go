@@ -523,17 +523,9 @@ func (r *KnightReconciler) buildPodSpec(knight *aiv1alpha1.Knight) corev1.PodSpe
 		image = "ghcr.io/dapperdivers/pi-knight:latest"
 	}
 
-	// Resource limits
-	memLimit := resource.MustParse("1Gi")
-	cpuLimit := resource.MustParse("1")
-	if knight.Spec.Resources != nil {
-		if !knight.Spec.Resources.Memory.IsZero() {
-			memLimit = knight.Spec.Resources.Memory
-		}
-		if !knight.Spec.Resources.CPU.IsZero() {
-			cpuLimit = knight.Spec.Resources.CPU
-		}
-	}
+	// Resource requests only — no limits.
+	// Nix flake builds need burst memory; runtime is ~256Mi.
+	// Following onedr0p pattern: requests for scheduling, no limits for flexibility.
 
 	// Task timeout in milliseconds (pi-knight expects TASK_TIMEOUT_MS)
 	taskTimeoutMs := int64(knight.Spec.TaskTimeout) * 1000
@@ -656,10 +648,6 @@ func (r *KnightReconciler) buildPodSpec(knight *aiv1alpha1.Knight) corev1.PodSpe
 			Requests: corev1.ResourceList{
 				corev1.ResourceMemory: resource.MustParse("256Mi"),
 				corev1.ResourceCPU:    resource.MustParse("100m"),
-			},
-			Limits: corev1.ResourceList{
-				corev1.ResourceMemory: memLimit,
-				corev1.ResourceCPU:    cpuLimit,
 			},
 		},
 		VolumeMounts: volumeMounts,
