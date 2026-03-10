@@ -228,6 +228,10 @@ type MissionStatus struct {
 	// +optional
 	TotalCost string `json:"totalCost,omitempty"`
 
+	// costBreakdown provides per-knight cost information for this mission.
+	// +optional
+	CostBreakdown []MissionKnightCost `json:"costBreakdown,omitempty"`
+
 	// observedGeneration is the most recent generation observed by the controller.
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
@@ -307,6 +311,20 @@ type KnightSpecOverrides struct {
 	// concurrency overrides max concurrent tasks.
 	// +optional
 	Concurrency *int32 `json:"concurrency,omitempty"`
+}
+
+// MissionKnightCost tracks per-knight cost information for a mission.
+type MissionKnightCost struct {
+	// name is the knight's name.
+	Name string `json:"name"`
+
+	// costUSD is the cost in USD for this knight during the mission.
+	// +optional
+	CostUSD string `json:"costUSD,omitempty"`
+
+	// ephemeral indicates whether this knight was created ephemerally for this mission.
+	// +optional
+	Ephemeral bool `json:"ephemeral,omitempty"`
 }
 
 // MissionChainStatus tracks a chain's status within the mission.

@@ -1528,6 +1528,28 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              costBreakdown:
+                description: costBreakdown provides per-knight cost information for
+                  this mission.
+                items:
+                  description: MissionKnightCost tracks per-knight cost information
+                    for a mission.
+                  properties:
+                    costUSD:
+                      description: costUSD is the cost in USD for this knight during
+                        the mission.
+                      type: string
+                    ephemeral:
+                      description: ephemeral indicates whether this knight was created
+                        ephemerally for this mission.
+                      type: boolean
+                    name:
+                      description: name is the knight's name.
+                      type: string
+                  required:
+                  - name
+                  type: object
+                type: array
               expiresAt:
                 description: expiresAt is when the mission will be auto-cleaned based
                   on TTL.
