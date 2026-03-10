@@ -67,6 +67,11 @@ type ChainSpec struct {
 	// retryPolicy configures retry behavior for failed steps.
 	// +optional
 	RetryPolicy *ChainRetryPolicy `json:"retryPolicy,omitempty"`
+
+	// missionRef is set by the mission controller when creating mission-scoped chains.
+	// The chain controller uses this to resolve NATS config from the mission's RoundTable.
+	// +optional
+	MissionRef string `json:"missionRef,omitempty"`
 }
 
 // ChainStep defines a single step in the pipeline.

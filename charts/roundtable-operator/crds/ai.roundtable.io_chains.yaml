@@ -68,6 +68,11 @@ spec:
                 description: input provides initial data passed to the first step(s)
                   as JSON.
                 type: string
+              missionRef:
+                description: |-
+                  missionRef is set by the mission controller when creating mission-scoped chains.
+                  The chain controller uses this to resolve NATS config from the mission's RoundTable.
+                type: string
               outputKnight:
                 default: gawain
                 description: |-

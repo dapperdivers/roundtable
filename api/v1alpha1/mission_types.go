@@ -17,6 +17,7 @@ limitations under the License.
 package v1alpha1
 
 import (
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -78,6 +79,41 @@ type MissionSpec struct {
 	// when the mission starts.
 	// +optional
 	Briefing string `json:"briefing,omitempty"`
+
+	// knightTemplates defines reusable knight configurations that can be referenced
+	// by MissionKnight entries. Allows defining a template once and instantiating
+	// multiple ephemeral knights from it.
+	// +optional
+	KnightTemplates []MissionKnightTemplate `json:"knightTemplates,omitempty"`
+
+	// costBudgetUSD is the maximum cost for this mission. When exceeded, the mission
+	// is failed and cleanup begins. "0" means inherit from parent RoundTable.
+	// +kubebuilder:default="0"
+	// +optional
+	CostBudgetUSD string `json:"costBudgetUSD,omitempty"`
+
+	// secrets references secrets to mount into all ephemeral knight pods.
+	// Used for mission-specific credentials (e.g., target system access).
+	// +optional
+	Secrets []corev1.LocalObjectReference `json:"secrets,omitempty"`
+
+	// recruitExisting, if true, allows the mission to use non-ephemeral knights
+	// from the parent RoundTable alongside ephemeral ones.
+	// When false (default), only ephemeral knights participate.
+	// +kubebuilder:default=false
+	// +optional
+	RecruitExisting bool `json:"recruitExisting,omitempty"`
+
+	// roundTableTemplate overrides defaults for the ephemeral RoundTable created
+	// for this mission. If nil, sensible defaults are used.
+	// +optional
+	RoundTableTemplate *MissionRoundTableTemplate `json:"roundTableTemplate,omitempty"`
+
+	// retainResults, if true, copies mission results to a ConfigMap before cleanup.
+	// The ConfigMap persists beyond mission deletion for post-mortem analysis.
+	// +kubebuilder:default=true
+	// +optional
+	RetainResults bool `json:"retainResults,omitempty"`
 }
 
 // MissionKnight references a knight participating in a mission.
@@ -99,6 +135,16 @@ type MissionKnight struct {
 	// ephemeralSpec defines the spec for an ephemeral knight. Only used when ephemeral=true.
 	// +optional
 	EphemeralSpec *KnightSpec `json:"ephemeralSpec,omitempty"`
+
+	// templateRef references a MissionKnightTemplate by name.
+	// Only used when ephemeral=true. Mutually exclusive with ephemeralSpec.
+	// +optional
+	TemplateRef string `json:"templateRef,omitempty"`
+
+	// specOverrides allows patching specific fields when using templateRef.
+	// Applied as a strategic merge patch on top of the template spec.
+	// +optional
+	SpecOverrides *KnightSpecOverrides `json:"specOverrides,omitempty"`
 }
 
 // MissionChainRef references a chain to execute within the mission.
@@ -119,17 +165,19 @@ type MissionChainRef struct {
 }
 
 // MissionPhase represents the current lifecycle phase of the Mission.
-// +kubebuilder:validation:Enum=Assembling;Briefing;Active;Succeeded;Failed;Expired;CleaningUp
+// +kubebuilder:validation:Enum=Pending;Provisioning;Assembling;Briefing;Active;Succeeded;Failed;Expired;CleaningUp
 type MissionPhase string
 
 const (
-	MissionPhaseAssembling MissionPhase = "Assembling"
-	MissionPhaseBriefing   MissionPhase = "Briefing"
-	MissionPhaseActive     MissionPhase = "Active"
-	MissionPhaseSucceeded  MissionPhase = "Succeeded"
-	MissionPhaseFailed     MissionPhase = "Failed"
-	MissionPhaseExpired    MissionPhase = "Expired"
-	MissionPhaseCleaningUp MissionPhase = "CleaningUp"
+	MissionPhasePending      MissionPhase = "Pending"
+	MissionPhaseProvisioning MissionPhase = "Provisioning"
+	MissionPhaseAssembling   MissionPhase = "Assembling"
+	MissionPhaseBriefing     MissionPhase = "Briefing"
+	MissionPhaseActive       MissionPhase = "Active"
+	MissionPhaseSucceeded    MissionPhase = "Succeeded"
+	MissionPhaseFailed       MissionPhase = "Failed"
+	MissionPhaseExpired      MissionPhase = "Expired"
+	MissionPhaseCleaningUp   MissionPhase = "CleaningUp"
 )
 
 // MissionKnightStatus tracks the status of a knight within the mission.
@@ -189,6 +237,90 @@ type MissionStatus struct {
 	// +listMapKey=type
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+
+	// roundTableName is the name of the ephemeral RoundTable created for this mission.
+	// +optional
+	RoundTableName string `json:"roundTableName,omitempty"`
+
+	// natsTasksStream is the JetStream stream name for mission tasks.
+	// +optional
+	NATSTasksStream string `json:"natsTasksStream,omitempty"`
+
+	// natsResultsStream is the JetStream stream name for mission results.
+	// +optional
+	NATSResultsStream string `json:"natsResultsStream,omitempty"`
+
+	// chainStatuses tracks the status of each mission chain.
+	// +optional
+	ChainStatuses []MissionChainStatus `json:"chainStatuses,omitempty"`
+
+	// resultsConfigMap is the name of the ConfigMap containing preserved results
+	// (only set when retainResults=true and mission is complete).
+	// +optional
+	ResultsConfigMap string `json:"resultsConfigMap,omitempty"`
+}
+
+// MissionKnightTemplate is a named, reusable knight spec template.
+type MissionKnightTemplate struct {
+	// name is the template name, referenced by MissionKnight.TemplateRef.
+	// +kubebuilder:validation:Required
+	Name string `json:"name"`
+
+	// spec is the knight spec to use when creating ephemeral knights from this template.
+	// +kubebuilder:validation:Required
+	Spec KnightSpec `json:"spec"`
+}
+
+// MissionRoundTableTemplate configures the ephemeral RoundTable.
+type MissionRoundTableTemplate struct {
+	// defaults overrides for the ephemeral table's knight defaults.
+	// +optional
+	Defaults *RoundTableDefaults `json:"defaults,omitempty"`
+
+	// policies overrides for the ephemeral table's policies.
+	// +optional
+	Policies *RoundTablePolicies `json:"policies,omitempty"`
+
+	// natsURL overrides the NATS server URL for the mission table.
+	// +optional
+	NATSURL string `json:"natsURL,omitempty"`
+}
+
+// KnightSpecOverrides allows selectively overriding template fields.
+type KnightSpecOverrides struct {
+	// model overrides the AI model.
+	// +optional
+	Model string `json:"model,omitempty"`
+
+	// skills overrides the skill list.
+	// +optional
+	Skills []string `json:"skills,omitempty"`
+
+	// env adds additional environment variables.
+	// +optional
+	Env []corev1.EnvVar `json:"env,omitempty"`
+
+	// prompt overrides prompt configuration.
+	// +optional
+	Prompt *KnightPrompt `json:"prompt,omitempty"`
+
+	// concurrency overrides max concurrent tasks.
+	// +optional
+	Concurrency *int32 `json:"concurrency,omitempty"`
+}
+
+// MissionChainStatus tracks a chain's status within the mission.
+type MissionChainStatus struct {
+	// name is the chain reference name from the spec.
+	Name string `json:"name"`
+
+	// chainCRName is the actual Chain CR name created for this mission.
+	// +optional
+	ChainCRName string `json:"chainCRName,omitempty"`
+
+	// phase is the chain's current phase.
+	// +optional
+	Phase ChainPhase `json:"phase,omitempty"`
 }
 
 // +kubebuilder:object:root=true

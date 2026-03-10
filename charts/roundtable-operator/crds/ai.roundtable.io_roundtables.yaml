@@ -134,6 +134,12 @@ spec:
                 description: description is a human-readable description of this round
                   table's purpose.
                 type: string
+              ephemeral:
+                default: false
+                description: |-
+                  ephemeral marks this RoundTable as mission-owned. Ephemeral tables are
+                  excluded from fleet-wide aggregation and are garbage collected with their mission.
+                type: boolean
               knightSelector:
                 description: |-
                   knightSelector is a label selector for Knights that belong to this table.
@@ -182,6 +188,10 @@ spec:
                     type: object
                 type: object
                 x-kubernetes-map-type: atomic
+              missionRef:
+                description: missionRef is set by the mission controller when creating
+                  ephemeral tables.
+                type: string
               nats:
                 description: nats configures the shared NATS infrastructure for all
                   knights in this table.
