@@ -22,6 +22,7 @@ import (
 	"sync"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -523,6 +524,14 @@ func (r *MissionReconciler) reconcileCleaningUp(ctx context.Context, mission *ai
 		}
 	}
 
+	// Create results ConfigMap if retainResults is true and not already created
+	if mission.Spec.RetainResults && mission.Status.ResultsConfigMap == "" {
+		if err := r.createResultsConfigMap(ctx, mission); err != nil {
+			log.Error(err, "Failed to create results ConfigMap")
+			// Continue with cleanup even if this fails
+		}
+	}
+
 	// Self-delete if cleanupPolicy=Delete and TTL expired
 	if mission.Spec.CleanupPolicy == "Delete" &&
 		mission.Status.ExpiresAt != nil &&
@@ -641,6 +650,70 @@ func (r *MissionReconciler) publishBriefing(ctx context.Context, mission *aiv1al
 		}
 	}
 
+	return nil
+}
+
+// createResultsConfigMap creates a ConfigMap with mission results for retention.
+func (r *MissionReconciler) createResultsConfigMap(ctx context.Context, mission *aiv1alpha1.Mission) error {
+	log := logf.FromContext(ctx)
+
+	cmName := fmt.Sprintf("mission-%s-results", mission.Name)
+
+	// Collect chain outputs
+	chainOutputs := make(map[string]string)
+	for _, cs := range mission.Status.ChainStatuses {
+		chain := &aiv1alpha1.Chain{}
+		if err := r.Get(ctx, types.NamespacedName{
+			Name:      cs.ChainCRName,
+			Namespace: mission.Namespace,
+		}, chain); err != nil {
+			continue
+		}
+
+		// Collect step outputs
+		for _, stepStatus := range chain.Status.StepStatuses {
+			key := fmt.Sprintf("%s.%s", cs.Name, stepStatus.Name)
+			chainOutputs[key] = stepStatus.Output
+		}
+	}
+
+	// Build ConfigMap data
+	data := map[string]string{
+		"mission-name":    mission.Name,
+		"objective":       mission.Spec.Objective,
+		"phase":           string(mission.Status.Phase),
+		"result":          mission.Status.Result,
+		"total-cost":      mission.Status.TotalCost,
+		"started-at":      mission.Status.StartedAt.Format(time.RFC3339),
+	}
+	if mission.Status.CompletedAt != nil {
+		data["completed-at"] = mission.Status.CompletedAt.Format(time.RFC3339)
+	}
+
+	// Add chain outputs
+	for key, output := range chainOutputs {
+		data[key] = output
+	}
+
+	// Create ConfigMap
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      cmName,
+			Namespace: mission.Namespace,
+			Labels: map[string]string{
+				"ai.roundtable.io/mission": mission.Name,
+				"ai.roundtable.io/results": "true",
+			},
+		},
+		Data: data,
+	}
+
+	if err := r.Create(ctx, cm); err != nil {
+		return fmt.Errorf("failed to create results ConfigMap: %w", err)
+	}
+
+	mission.Status.ResultsConfigMap = cmName
+	log.Info("Created results ConfigMap", "configmap", cmName)
 	return nil
 }
 
