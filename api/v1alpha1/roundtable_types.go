@@ -63,6 +63,16 @@ type RoundTableSpec struct {
 	// +kubebuilder:default=false
 	// +optional
 	Suspended bool `json:"suspended,omitempty"`
+
+	// ephemeral marks this RoundTable as mission-owned. Ephemeral tables are
+	// excluded from fleet-wide aggregation and are garbage collected with their mission.
+	// +kubebuilder:default=false
+	// +optional
+	Ephemeral bool `json:"ephemeral,omitempty"`
+
+	// missionRef is set by the mission controller when creating ephemeral tables.
+	// +optional
+	MissionRef string `json:"missionRef,omitempty"`
 }
 
 // SharedWorkspaceConfig configures a shared RWX volume for collaborative knight work.
