@@ -99,7 +99,7 @@ func (r *MissionReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 
 	// Initialize status
 	if mission.Status.Phase == "" {
-		mission.Status.Phase = aiv1alpha1.MissionPhaseAssembling
+		mission.Status.Phase = aiv1alpha1.MissionPhasePending
 		now := metav1.Now()
 		mission.Status.StartedAt = &now
 		expiresAt := metav1.NewTime(now.Add(time.Duration(mission.Spec.TTL) * time.Second))
@@ -136,6 +136,10 @@ func (r *MissionReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	}
 
 	switch mission.Status.Phase {
+	case aiv1alpha1.MissionPhasePending:
+		return r.reconcilePending(ctx, mission)
+	case aiv1alpha1.MissionPhaseProvisioning:
+		return r.reconcileProvisioning(ctx, mission)
 	case aiv1alpha1.MissionPhaseAssembling:
 		return r.reconcileAssembling(ctx, mission)
 	case aiv1alpha1.MissionPhaseBriefing:
@@ -175,6 +179,97 @@ func natsPrefix(mission *aiv1alpha1.Mission) string {
 		return mission.Spec.NATSPrefix
 	}
 	return fmt.Sprintf("mission-%s", mission.Name)
+}
+
+// reconcilePending validates the mission spec before provisioning.
+func (r *MissionReconciler) reconcilePending(ctx context.Context, mission *aiv1alpha1.Mission) (ctrl.Result, error) {
+	log := logf.FromContext(ctx)
+
+	// Validate knight templates have unique names
+	templateNames := make(map[string]bool)
+	for _, template := range mission.Spec.KnightTemplates {
+		if templateNames[template.Name] {
+			mission.Status.Phase = aiv1alpha1.MissionPhaseFailed
+			mission.Status.Result = fmt.Sprintf("Duplicate knight template name: %s", template.Name)
+			mission.Status.ObservedGeneration = mission.Generation
+			return ctrl.Result{}, r.Status().Update(ctx, mission)
+		}
+		templateNames[template.Name] = true
+	}
+
+	// Validate knights have unique names and valid template refs
+	knightNames := make(map[string]bool)
+	for _, knight := range mission.Spec.Knights {
+		if knightNames[knight.Name] {
+			mission.Status.Phase = aiv1alpha1.MissionPhaseFailed
+			mission.Status.Result = fmt.Sprintf("Duplicate knight name: %s", knight.Name)
+			mission.Status.ObservedGeneration = mission.Generation
+			return ctrl.Result{}, r.Status().Update(ctx, mission)
+		}
+		knightNames[knight.Name] = true
+
+		// If using templateRef, validate it exists
+		if knight.TemplateRef != "" && !templateNames[knight.TemplateRef] {
+			mission.Status.Phase = aiv1alpha1.MissionPhaseFailed
+			mission.Status.Result = fmt.Sprintf("Knight %s references unknown template: %s", knight.Name, knight.TemplateRef)
+			mission.Status.ObservedGeneration = mission.Generation
+			return ctrl.Result{}, r.Status().Update(ctx, mission)
+		}
+
+		// Validate ephemeral knights have spec OR templateRef (not both, not neither)
+		if knight.Ephemeral {
+			hasSpec := knight.EphemeralSpec != nil
+			hasTemplate := knight.TemplateRef != ""
+			if hasSpec == hasTemplate { // XOR check
+				mission.Status.Phase = aiv1alpha1.MissionPhaseFailed
+				mission.Status.Result = fmt.Sprintf("Ephemeral knight %s must have exactly one of ephemeralSpec or templateRef", knight.Name)
+				mission.Status.ObservedGeneration = mission.Generation
+				return ctrl.Result{}, r.Status().Update(ctx, mission)
+			}
+		}
+	}
+
+	// Validate referenced chains exist
+	for _, chainRef := range mission.Spec.Chains {
+		chain := &aiv1alpha1.Chain{}
+		if err := r.Get(ctx, types.NamespacedName{
+			Name:      chainRef.Name,
+			Namespace: mission.Namespace,
+		}, chain); err != nil {
+			if client.IgnoreNotFound(err) == nil {
+				mission.Status.Phase = aiv1alpha1.MissionPhaseFailed
+				mission.Status.Result = fmt.Sprintf("Referenced chain not found: %s", chainRef.Name)
+				mission.Status.ObservedGeneration = mission.Generation
+				return ctrl.Result{}, r.Status().Update(ctx, mission)
+			}
+			return ctrl.Result{}, err
+		}
+	}
+
+	log.Info("Mission spec validation passed", "mission", mission.Name)
+	mission.Status.Phase = aiv1alpha1.MissionPhaseProvisioning
+	mission.Status.ObservedGeneration = mission.Generation
+	return ctrl.Result{RequeueAfter: 1 * time.Second}, r.Status().Update(ctx, mission)
+}
+
+// reconcileProvisioning creates the ephemeral RoundTable if needed.
+func (r *MissionReconciler) reconcileProvisioning(ctx context.Context, mission *aiv1alpha1.Mission) (ctrl.Result, error) {
+	log := logf.FromContext(ctx)
+
+	// If roundTableRef is already set, skip provisioning (using existing RT)
+	if mission.Spec.RoundTableRef != "" {
+		log.Info("Using existing RoundTable", "roundTable", mission.Spec.RoundTableRef)
+		mission.Status.Phase = aiv1alpha1.MissionPhaseAssembling
+		mission.Status.ObservedGeneration = mission.Generation
+		return ctrl.Result{RequeueAfter: 1 * time.Second}, r.Status().Update(ctx, mission)
+	}
+
+	// For now, we'll transition directly to Assembling without creating an ephemeral RT
+	// Full implementation would create RoundTable here
+	log.Info("Skipping ephemeral RoundTable creation (not implemented)", "mission", mission.Name)
+	mission.Status.Phase = aiv1alpha1.MissionPhaseAssembling
+	mission.Status.ObservedGeneration = mission.Generation
+	return ctrl.Result{RequeueAfter: 1 * time.Second}, r.Status().Update(ctx, mission)
 }
 
 // reconcileAssembling validates knight references and waits for readiness.
