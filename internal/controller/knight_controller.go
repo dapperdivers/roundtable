@@ -265,6 +265,26 @@ func (r *KnightReconciler) reconcileConfigMap(ctx context.Context, knight *aiv1a
 			cm.Data["flake.nix"] = r.generateFlakeNix(knight)
 		}
 
+		// Generate TOOLS.md listing available tools and paths
+		if knight.Spec.Tools != nil && len(knight.Spec.Tools.Nix) > 0 {
+			var toolsDoc strings.Builder
+			toolsDoc.WriteString("# Available Tools\n\n")
+			toolsDoc.WriteString("Tools are installed at `/data/nix-env/bin/` and are in your PATH.\n\n")
+			toolsDoc.WriteString("## Nix Packages\n")
+			for _, pkg := range knight.Spec.Tools.Nix {
+				toolsDoc.WriteString(fmt.Sprintf("- %s\n", pkg))
+			}
+			toolsDoc.WriteString("\n## Shared Workspace\n")
+			toolsDoc.WriteString("- `/shared/` — RWX volume shared with all knights\n")
+			toolsDoc.WriteString("- `/shared/repos/` — Pre-cloned git repositories\n")
+			toolsDoc.WriteString("- `/shared/chains/` — Chain working directories\n")
+			toolsDoc.WriteString("\n## Git Configuration\n")
+			toolsDoc.WriteString("- `GH_TOKEN` / `GITHUB_TOKEN` env vars are set for GitHub API access\n")
+			toolsDoc.WriteString("- Use `gh` CLI for PR creation: `gh pr create --title ... --body ...`\n")
+			toolsDoc.WriteString("- Use authenticated clone: `git clone https://${GH_TOKEN}@github.com/...`\n")
+			cm.Data["TOOLS.md"] = toolsDoc.String()
+		}
+
 		// Prompt overrides
 		if knight.Spec.Prompt != nil {
 			if knight.Spec.Prompt.Identity != "" {
