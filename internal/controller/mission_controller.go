@@ -96,6 +96,8 @@ func (r *MissionReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		if err := r.Update(ctx, mission); err != nil {
 			return ctrl.Result{}, err
 		}
+		// Requeue to avoid resourceVersion conflicts between Update and Status().Update()
+		return ctrl.Result{Requeue: true}, nil
 	}
 
 	// Initialize status
