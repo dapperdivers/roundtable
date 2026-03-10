@@ -22,6 +22,7 @@ import (
 	"sync"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -59,8 +60,11 @@ type MissionReconciler struct {
 // +kubebuilder:rbac:groups=ai.roundtable.io,resources=missions,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=ai.roundtable.io,resources=missions/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=ai.roundtable.io,resources=missions/finalizers,verbs=update
-// +kubebuilder:rbac:groups=ai.roundtable.io,resources=knights,verbs=get;list;watch
+// +kubebuilder:rbac:groups=ai.roundtable.io,resources=knights,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=ai.roundtable.io,resources=chains,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=ai.roundtable.io,resources=roundtables,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 
 func (r *MissionReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
@@ -95,7 +99,7 @@ func (r *MissionReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 
 	// Initialize status
 	if mission.Status.Phase == "" {
-		mission.Status.Phase = aiv1alpha1.MissionPhaseAssembling
+		mission.Status.Phase = aiv1alpha1.MissionPhasePending
 		now := metav1.Now()
 		mission.Status.StartedAt = &now
 		expiresAt := metav1.NewTime(now.Add(time.Duration(mission.Spec.TTL) * time.Second))
@@ -132,6 +136,10 @@ func (r *MissionReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	}
 
 	switch mission.Status.Phase {
+	case aiv1alpha1.MissionPhasePending:
+		return r.reconcilePending(ctx, mission)
+	case aiv1alpha1.MissionPhaseProvisioning:
+		return r.reconcileProvisioning(ctx, mission)
 	case aiv1alpha1.MissionPhaseAssembling:
 		return r.reconcileAssembling(ctx, mission)
 	case aiv1alpha1.MissionPhaseBriefing:
@@ -171,6 +179,97 @@ func natsPrefix(mission *aiv1alpha1.Mission) string {
 		return mission.Spec.NATSPrefix
 	}
 	return fmt.Sprintf("mission-%s", mission.Name)
+}
+
+// reconcilePending validates the mission spec before provisioning.
+func (r *MissionReconciler) reconcilePending(ctx context.Context, mission *aiv1alpha1.Mission) (ctrl.Result, error) {
+	log := logf.FromContext(ctx)
+
+	// Validate knight templates have unique names
+	templateNames := make(map[string]bool)
+	for _, template := range mission.Spec.KnightTemplates {
+		if templateNames[template.Name] {
+			mission.Status.Phase = aiv1alpha1.MissionPhaseFailed
+			mission.Status.Result = fmt.Sprintf("Duplicate knight template name: %s", template.Name)
+			mission.Status.ObservedGeneration = mission.Generation
+			return ctrl.Result{}, r.Status().Update(ctx, mission)
+		}
+		templateNames[template.Name] = true
+	}
+
+	// Validate knights have unique names and valid template refs
+	knightNames := make(map[string]bool)
+	for _, knight := range mission.Spec.Knights {
+		if knightNames[knight.Name] {
+			mission.Status.Phase = aiv1alpha1.MissionPhaseFailed
+			mission.Status.Result = fmt.Sprintf("Duplicate knight name: %s", knight.Name)
+			mission.Status.ObservedGeneration = mission.Generation
+			return ctrl.Result{}, r.Status().Update(ctx, mission)
+		}
+		knightNames[knight.Name] = true
+
+		// If using templateRef, validate it exists
+		if knight.TemplateRef != "" && !templateNames[knight.TemplateRef] {
+			mission.Status.Phase = aiv1alpha1.MissionPhaseFailed
+			mission.Status.Result = fmt.Sprintf("Knight %s references unknown template: %s", knight.Name, knight.TemplateRef)
+			mission.Status.ObservedGeneration = mission.Generation
+			return ctrl.Result{}, r.Status().Update(ctx, mission)
+		}
+
+		// Validate ephemeral knights have spec OR templateRef (not both, not neither)
+		if knight.Ephemeral {
+			hasSpec := knight.EphemeralSpec != nil
+			hasTemplate := knight.TemplateRef != ""
+			if hasSpec == hasTemplate { // XOR check
+				mission.Status.Phase = aiv1alpha1.MissionPhaseFailed
+				mission.Status.Result = fmt.Sprintf("Ephemeral knight %s must have exactly one of ephemeralSpec or templateRef", knight.Name)
+				mission.Status.ObservedGeneration = mission.Generation
+				return ctrl.Result{}, r.Status().Update(ctx, mission)
+			}
+		}
+	}
+
+	// Validate referenced chains exist
+	for _, chainRef := range mission.Spec.Chains {
+		chain := &aiv1alpha1.Chain{}
+		if err := r.Get(ctx, types.NamespacedName{
+			Name:      chainRef.Name,
+			Namespace: mission.Namespace,
+		}, chain); err != nil {
+			if client.IgnoreNotFound(err) == nil {
+				mission.Status.Phase = aiv1alpha1.MissionPhaseFailed
+				mission.Status.Result = fmt.Sprintf("Referenced chain not found: %s", chainRef.Name)
+				mission.Status.ObservedGeneration = mission.Generation
+				return ctrl.Result{}, r.Status().Update(ctx, mission)
+			}
+			return ctrl.Result{}, err
+		}
+	}
+
+	log.Info("Mission spec validation passed", "mission", mission.Name)
+	mission.Status.Phase = aiv1alpha1.MissionPhaseProvisioning
+	mission.Status.ObservedGeneration = mission.Generation
+	return ctrl.Result{RequeueAfter: 1 * time.Second}, r.Status().Update(ctx, mission)
+}
+
+// reconcileProvisioning creates the ephemeral RoundTable if needed.
+func (r *MissionReconciler) reconcileProvisioning(ctx context.Context, mission *aiv1alpha1.Mission) (ctrl.Result, error) {
+	log := logf.FromContext(ctx)
+
+	// If roundTableRef is already set, skip provisioning (using existing RT)
+	if mission.Spec.RoundTableRef != "" {
+		log.Info("Using existing RoundTable", "roundTable", mission.Spec.RoundTableRef)
+		mission.Status.Phase = aiv1alpha1.MissionPhaseAssembling
+		mission.Status.ObservedGeneration = mission.Generation
+		return ctrl.Result{RequeueAfter: 1 * time.Second}, r.Status().Update(ctx, mission)
+	}
+
+	// For now, we'll transition directly to Assembling without creating an ephemeral RT
+	// Full implementation would create RoundTable here
+	log.Info("Skipping ephemeral RoundTable creation (not implemented)", "mission", mission.Name)
+	mission.Status.Phase = aiv1alpha1.MissionPhaseAssembling
+	mission.Status.ObservedGeneration = mission.Generation
+	return ctrl.Result{RequeueAfter: 1 * time.Second}, r.Status().Update(ctx, mission)
 }
 
 // reconcileAssembling validates knight references and waits for readiness.
@@ -327,6 +426,37 @@ func (r *MissionReconciler) reconcileActive(ctx context.Context, mission *aiv1al
 		}
 	}
 
+	// Check cost budget
+	if mission.Spec.CostBudgetUSD != "" && mission.Spec.CostBudgetUSD != "0" {
+		totalCost, err := r.aggregateMissionCost(ctx, mission)
+		if err != nil {
+			log.Error(err, "Failed to aggregate mission cost")
+		} else {
+			mission.Status.TotalCost = fmt.Sprintf("%.4f", totalCost)
+			
+			// Parse budget
+			var budget float64
+			if _, err := fmt.Sscanf(mission.Spec.CostBudgetUSD, "%f", &budget); err == nil {
+				if totalCost > budget {
+					log.Info("Mission cost budget exceeded", "totalCost", totalCost, "budget", budget)
+					mission.Status.Phase = aiv1alpha1.MissionPhaseFailed
+					now := metav1.Now()
+					mission.Status.CompletedAt = &now
+					mission.Status.Result = fmt.Sprintf("Cost budget exceeded: $%.2f > $%.2f", totalCost, budget)
+					meta.SetStatusCondition(&mission.Status.Conditions, metav1.Condition{
+						Type:               "Complete",
+						Status:             metav1.ConditionTrue,
+						Reason:             "OverBudget",
+						Message:            fmt.Sprintf("Cost $%.2f exceeded budget $%.2f", totalCost, budget),
+						ObservedGeneration: mission.Generation,
+					})
+					mission.Status.ObservedGeneration = mission.Generation
+					return ctrl.Result{}, r.Status().Update(ctx, mission)
+				}
+			}
+		}
+	}
+
 	// Create Chain CRs for any referenced chains that don't exist yet
 	if len(mission.Spec.Chains) > 0 {
 		allChainsComplete, anyChainFailed, err := r.reconcileMissionChains(ctx, mission)
@@ -406,7 +536,7 @@ func (r *MissionReconciler) reconcileMissionChains(ctx context.Context, mission 
 		// Only process chains for current active phases
 		phaseMatch := false
 		for _, p := range activePhases {
-			if chainRef.Phase == p {
+			if chainRef.Phase == p || (chainRef.Phase == "" && p == "Active") { // default is Active
 				phaseMatch = true
 				break
 			}
@@ -415,24 +545,31 @@ func (r *MissionReconciler) reconcileMissionChains(ctx context.Context, mission 
 			continue
 		}
 
-		// Check if the referenced chain exists
+		// Create mission-scoped chain copy if it doesn't exist
+		if err := r.ensureMissionChain(ctx, mission, chainRef); err != nil {
+			log.Error(err, "Failed to create mission chain", "chain", chainRef.Name)
+			anyFailed = true
+			continue
+		}
+
+		// Monitor the mission-scoped chain copy
+		missionChainName := fmt.Sprintf("mission-%s-%s", mission.Name, chainRef.Name)
 		chain := &aiv1alpha1.Chain{}
-		chainName := fmt.Sprintf("%s-%s", mission.Name, chainRef.Name)
 		err := r.Get(ctx, types.NamespacedName{
-			Name:      chainRef.Name,
+			Name:      missionChainName,
 			Namespace: mission.Namespace,
 		}, chain)
 		if err != nil {
 			if client.IgnoreNotFound(err) == nil {
-				log.Info("Referenced chain not found", "chain", chainRef.Name)
-				// Chain doesn't exist — this is an error
-				anyFailed = true
+				log.Info("Mission chain not yet created", "chain", missionChainName)
+				allComplete = false
 				continue
 			}
 			return false, false, err
 		}
 
-		_ = chainName // reserved for future use creating mission-owned chain copies
+		// Update mission.status.chainStatuses
+		r.updateChainStatus(mission, chainRef.Name, missionChainName, chain.Status.Phase)
 
 		// Check chain status
 		switch chain.Status.Phase {
@@ -479,6 +616,14 @@ func (r *MissionReconciler) reconcileCleaningUp(ctx context.Context, mission *ai
 		// If teardown chain is still running, wait
 		if chain.Status.Phase == aiv1alpha1.ChainPhaseRunning {
 			return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+		}
+	}
+
+	// Create results ConfigMap if retainResults is true and not already created
+	if mission.Spec.RetainResults && mission.Status.ResultsConfigMap == "" {
+		if err := r.createResultsConfigMap(ctx, mission); err != nil {
+			log.Error(err, "Failed to create results ConfigMap")
+			// Continue with cleanup even if this fails
 		}
 	}
 
@@ -603,10 +748,200 @@ func (r *MissionReconciler) publishBriefing(ctx context.Context, mission *aiv1al
 	return nil
 }
 
+// createResultsConfigMap creates a ConfigMap with mission results for retention.
+func (r *MissionReconciler) createResultsConfigMap(ctx context.Context, mission *aiv1alpha1.Mission) error {
+	log := logf.FromContext(ctx)
+
+	cmName := fmt.Sprintf("mission-%s-results", mission.Name)
+
+	// Collect chain outputs
+	chainOutputs := make(map[string]string)
+	for _, cs := range mission.Status.ChainStatuses {
+		chain := &aiv1alpha1.Chain{}
+		if err := r.Get(ctx, types.NamespacedName{
+			Name:      cs.ChainCRName,
+			Namespace: mission.Namespace,
+		}, chain); err != nil {
+			continue
+		}
+
+		// Collect step outputs
+		for _, stepStatus := range chain.Status.StepStatuses {
+			key := fmt.Sprintf("%s.%s", cs.Name, stepStatus.Name)
+			chainOutputs[key] = stepStatus.Output
+		}
+	}
+
+	// Build ConfigMap data
+	data := map[string]string{
+		"mission-name":    mission.Name,
+		"objective":       mission.Spec.Objective,
+		"phase":           string(mission.Status.Phase),
+		"result":          mission.Status.Result,
+		"total-cost":      mission.Status.TotalCost,
+		"started-at":      mission.Status.StartedAt.Format(time.RFC3339),
+	}
+	if mission.Status.CompletedAt != nil {
+		data["completed-at"] = mission.Status.CompletedAt.Format(time.RFC3339)
+	}
+
+	// Add chain outputs
+	for key, output := range chainOutputs {
+		data[key] = output
+	}
+
+	// Create ConfigMap
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      cmName,
+			Namespace: mission.Namespace,
+			Labels: map[string]string{
+				"ai.roundtable.io/mission": mission.Name,
+				"ai.roundtable.io/results": "true",
+			},
+		},
+		Data: data,
+	}
+
+	if err := r.Create(ctx, cm); err != nil {
+		return fmt.Errorf("failed to create results ConfigMap: %w", err)
+	}
+
+	mission.Status.ResultsConfigMap = cmName
+	log.Info("Created results ConfigMap", "configmap", cmName)
+	return nil
+}
+
+// aggregateMissionCost calculates the total cost across all mission knights.
+func (r *MissionReconciler) aggregateMissionCost(ctx context.Context, mission *aiv1alpha1.Mission) (float64, error) {
+	var totalCost float64
+
+	for _, mk := range mission.Spec.Knights {
+		knightName := mk.Name
+		knight := &aiv1alpha1.Knight{}
+		if err := r.Get(ctx, types.NamespacedName{
+			Name:      knightName,
+			Namespace: mission.Namespace,
+		}, knight); err != nil {
+			if client.IgnoreNotFound(err) == nil {
+				continue // Knight not found, skip
+			}
+			return 0, err
+		}
+
+		// Parse knight's total cost
+		if knight.Status.TotalCost != "" {
+			var cost float64
+			if _, err := fmt.Sscanf(knight.Status.TotalCost, "%f", &cost); err == nil {
+				totalCost += cost
+			}
+		}
+	}
+
+	return totalCost, nil
+}
+
+// ensureMissionChain creates a mission-scoped chain copy if it doesn't already exist.
+func (r *MissionReconciler) ensureMissionChain(ctx context.Context, mission *aiv1alpha1.Mission, chainRef aiv1alpha1.MissionChainRef) error {
+	log := logf.FromContext(ctx)
+
+	// Fetch the source chain template
+	sourceChain := &aiv1alpha1.Chain{}
+	if err := r.Get(ctx, types.NamespacedName{
+		Name:      chainRef.Name,
+		Namespace: mission.Namespace,
+	}, sourceChain); err != nil {
+		return fmt.Errorf("source chain %q not found: %w", chainRef.Name, err)
+	}
+
+	// Build the mission-scoped chain name
+	missionChainName := fmt.Sprintf("mission-%s-%s", mission.Name, chainRef.Name)
+
+	// Check if it already exists
+	existingChain := &aiv1alpha1.Chain{}
+	err := r.Get(ctx, types.NamespacedName{
+		Name:      missionChainName,
+		Namespace: mission.Namespace,
+	}, existingChain)
+	if err == nil {
+		// Chain already exists
+		return nil
+	}
+	if client.IgnoreNotFound(err) != nil {
+		return err
+	}
+
+	// Get RoundTable reference for this mission
+	rtRef := mission.Spec.RoundTableRef
+	if rtRef == "" {
+		rtRef = "default" // fallback to default if not specified
+	}
+
+	// Create the mission-scoped chain
+	missionChain := &aiv1alpha1.Chain{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      missionChainName,
+			Namespace: mission.Namespace,
+			Labels: map[string]string{
+				"ai.roundtable.io/mission":     mission.Name,
+				"ai.roundtable.io/chain-phase": chainRef.Phase,
+			},
+		},
+		Spec: aiv1alpha1.ChainSpec{
+			Description:   fmt.Sprintf("Mission %s: %s", mission.Name, sourceChain.Spec.Description),
+			Steps:         sourceChain.Spec.Steps,
+			Timeout:       sourceChain.Spec.Timeout,
+			RoundTableRef: rtRef,
+			OutputKnight:  sourceChain.Spec.OutputKnight,
+			RetryPolicy:   sourceChain.Spec.RetryPolicy,
+		},
+	}
+
+	// Override input if specified
+	if chainRef.InputOverride != "" {
+		missionChain.Spec.Input = chainRef.InputOverride
+	} else {
+		missionChain.Spec.Input = sourceChain.Spec.Input
+	}
+
+	// Set owner reference for garbage collection
+	if err := controllerutil.SetControllerReference(mission, missionChain, r.Scheme); err != nil {
+		return fmt.Errorf("failed to set owner reference: %w", err)
+	}
+
+	// Create the chain CR
+	if err := r.Create(ctx, missionChain); err != nil {
+		return fmt.Errorf("failed to create mission chain: %w", err)
+	}
+
+	log.Info("Created mission-scoped chain", "chain", missionChainName, "sourceChain", chainRef.Name)
+	return nil
+}
+
+// updateChainStatus updates the mission's chainStatuses array with the latest chain status.
+func (r *MissionReconciler) updateChainStatus(mission *aiv1alpha1.Mission, chainRefName, chainCRName string, phase aiv1alpha1.ChainPhase) {
+	// Find existing status entry
+	for i := range mission.Status.ChainStatuses {
+		if mission.Status.ChainStatuses[i].Name == chainRefName {
+			mission.Status.ChainStatuses[i].ChainCRName = chainCRName
+			mission.Status.ChainStatuses[i].Phase = phase
+			return
+		}
+	}
+
+	// Add new status entry
+	mission.Status.ChainStatuses = append(mission.Status.ChainStatuses, aiv1alpha1.MissionChainStatus{
+		Name:        chainRefName,
+		ChainCRName: chainCRName,
+		Phase:       phase,
+	})
+}
+
 // SetupWithManager sets up the controller with the Manager.
 func (r *MissionReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&aiv1alpha1.Mission{}).
+		Owns(&aiv1alpha1.Chain{}).
 		Named("mission").
 		Complete(r)
 }
