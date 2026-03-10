@@ -18,12 +18,10 @@ package controller
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"sync"
 	"time"
 
-	"github.com/nats-io/nats.go"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -34,6 +32,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	aiv1alpha1 "github.com/dapperdivers/roundtable/api/v1alpha1"
+	natspkg "github.com/dapperdivers/roundtable/pkg/nats"
 )
 
 const (
@@ -53,9 +52,8 @@ type MissionReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
 
-	nc *nats.Conn
-	js nats.JetStreamContext
-	mu sync.Mutex
+	natsClient natspkg.Client
+	mu         sync.Mutex
 }
 
 // +kubebuilder:rbac:groups=ai.roundtable.io,resources=missions,verbs=get;list;watch;create;update;patch;delete
@@ -536,37 +534,24 @@ func (r *MissionReconciler) updateKnightStatuses(ctx context.Context, mission *a
 }
 
 // ensureNATS connects to NATS if not already connected.
-func (r *MissionReconciler) ensureNATS() error {
+func (r *MissionReconciler) ensureNATS(ctx context.Context) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if r.nc != nil && r.nc.IsConnected() {
+	if r.natsClient != nil && r.natsClient.IsConnected() {
 		return nil
 	}
 
-	nc, err := nats.Connect(natsURL,
-		nats.RetryOnFailedConnect(true),
-		nats.MaxReconnects(-1),
-		nats.ReconnectWait(2*time.Second),
-	)
-	if err != nil {
-		return fmt.Errorf("NATS connect failed: %w", err)
-	}
+	log := logf.FromContext(ctx)
+	config := natspkg.DefaultConfig()
+	r.natsClient = natspkg.NewClient(config, log)
 
-	js, err := nc.JetStream()
-	if err != nil {
-		nc.Close()
-		return fmt.Errorf("JetStream context failed: %w", err)
-	}
-
-	r.nc = nc
-	r.js = js
-	return nil
+	return r.natsClient.Connect()
 }
 
 // publishBriefing publishes the mission briefing to NATS.
 func (r *MissionReconciler) publishBriefing(ctx context.Context, mission *aiv1alpha1.Mission) error {
-	if err := r.ensureNATS(); err != nil {
+	if err := r.ensureNATS(ctx); err != nil {
 		return err
 	}
 
@@ -582,17 +567,11 @@ func (r *MissionReconciler) publishBriefing(ctx context.Context, mission *aiv1al
 		Knights:     knightNames,
 	}
 
-	data, err := json.Marshal(payload)
-	if err != nil {
-		return fmt.Errorf("marshal briefing payload: %w", err)
-	}
-
 	// Publish to mission briefing subject
 	prefix := natsPrefix(mission)
 	subject := fmt.Sprintf("%s.briefing", prefix)
-	_, err = r.js.Publish(subject, data)
-	if err != nil {
-		return fmt.Errorf("NATS publish to %s failed: %w", subject, err)
+	if err := r.natsClient.PublishJSON(subject, payload); err != nil {
+		return err
 	}
 
 	// Also publish briefing as a task to each knight's normal task subject
@@ -608,20 +587,15 @@ func (r *MissionReconciler) publishBriefing(ctx context.Context, mission *aiv1al
 			continue
 		}
 
-		taskPayload := TaskPayload{
+		taskPayload := natspkg.TaskPayload{
 			TaskID:    fmt.Sprintf("mission-%s-briefing-%d", mission.Name, time.Now().UnixMilli()),
 			ChainName: fmt.Sprintf("mission-%s", mission.Name),
 			StepName:  "briefing",
 			Task:      fmt.Sprintf("[Mission: %s]\nObjective: %s\n\n%s", mission.Name, mission.Spec.Objective, mission.Spec.Briefing),
 		}
 
-		taskData, err := json.Marshal(taskPayload)
-		if err != nil {
-			continue
-		}
-
-		taskSubject := fmt.Sprintf("fleet-a.tasks.%s.%s", knight.Spec.Domain, mk.Name)
-		if _, err := r.js.Publish(taskSubject, taskData); err != nil {
+		taskSubject := natspkg.TaskSubject("fleet-a", knight.Spec.Domain, mk.Name)
+		if err := r.natsClient.PublishJSON(taskSubject, taskPayload); err != nil {
 			logf.FromContext(ctx).Error(err, "Failed to publish briefing to knight", "knight", mk.Name)
 		}
 	}
