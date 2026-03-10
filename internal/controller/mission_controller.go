@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sync"
 	"time"
@@ -439,6 +440,12 @@ func (r *MissionReconciler) reconcileActive(ctx context.Context, mission *aiv1al
 			if _, err := fmt.Sscanf(mission.Spec.CostBudgetUSD, "%f", &budget); err == nil {
 				if totalCost > budget {
 					log.Info("Mission cost budget exceeded", "totalCost", totalCost, "budget", budget)
+					
+					// Suspend all mission-owned chains to prevent further cost
+					if err := r.suspendMissionChains(ctx, mission); err != nil {
+						log.Error(err, "Failed to suspend mission chains")
+					}
+					
 					mission.Status.Phase = aiv1alpha1.MissionPhaseFailed
 					now := metav1.Now()
 					mission.Status.CompletedAt = &now
@@ -754,43 +761,129 @@ func (r *MissionReconciler) createResultsConfigMap(ctx context.Context, mission 
 
 	cmName := fmt.Sprintf("mission-%s-results", mission.Name)
 
+	// Build summary
+	duration := ""
+	if mission.Status.StartedAt != nil && mission.Status.CompletedAt != nil {
+		dur := mission.Status.CompletedAt.Sub(mission.Status.StartedAt.Time)
+		duration = fmt.Sprintf("%.0fm%.0fs", dur.Minutes(), dur.Seconds()-dur.Minutes()*60)
+	}
+
+	summary := map[string]interface{}{
+		"mission":   mission.Name,
+		"objective": mission.Spec.Objective,
+		"phase":     string(mission.Status.Phase),
+		"result":    mission.Status.Result,
+		"duration":  duration,
+		"totalCost": mission.Status.TotalCost,
+	}
+	summaryJSON, err := json.Marshal(summary)
+	if err != nil {
+		return fmt.Errorf("failed to marshal summary: %w", err)
+	}
+
+	// Build timeline
+	timeline := map[string]interface{}{
+		"started":   "",
+		"completed": "",
+		"phases":    []map[string]string{},
+	}
+	if mission.Status.StartedAt != nil {
+		timeline["started"] = mission.Status.StartedAt.Format(time.RFC3339)
+	}
+	if mission.Status.CompletedAt != nil {
+		timeline["completed"] = mission.Status.CompletedAt.Format(time.RFC3339)
+	}
+	// Add phase transitions from status conditions
+	for _, cond := range mission.Status.Conditions {
+		timeline["phases"] = append(timeline["phases"].([]map[string]string), map[string]string{
+			"type":      cond.Type,
+			"status":    string(cond.Status),
+			"reason":    cond.Reason,
+			"timestamp": cond.LastTransitionTime.Format(time.RFC3339),
+		})
+	}
+	timelineJSON, err := json.Marshal(timeline)
+	if err != nil {
+		return fmt.Errorf("failed to marshal timeline: %w", err)
+	}
+
 	// Collect chain outputs
-	chainOutputs := make(map[string]string)
+	data := map[string]string{
+		"summary.json":  string(summaryJSON),
+		"timeline.json": string(timelineJSON),
+	}
+
 	for _, cs := range mission.Status.ChainStatuses {
 		chain := &aiv1alpha1.Chain{}
 		if err := r.Get(ctx, types.NamespacedName{
 			Name:      cs.ChainCRName,
 			Namespace: mission.Namespace,
 		}, chain); err != nil {
+			log.Info("Failed to fetch chain for results", "chain", cs.ChainCRName, "error", err.Error())
 			continue
+		}
+
+		// Build chain result
+		chainResult := map[string]interface{}{
+			"name":   cs.Name,
+			"phase":  string(cs.Phase),
+			"steps":  []map[string]interface{}{},
+			"output": "",
 		}
 
 		// Collect step outputs
 		for _, stepStatus := range chain.Status.StepStatuses {
-			key := fmt.Sprintf("%s.%s", cs.Name, stepStatus.Name)
-			chainOutputs[key] = stepStatus.Output
+			chainResult["steps"] = append(chainResult["steps"].([]map[string]interface{}), map[string]interface{}{
+				"name":   stepStatus.Name,
+				"output": stepStatus.Output,
+				"error":  stepStatus.Error,
+			})
+			// Use last step output as chain output
+			if stepStatus.Output != "" {
+				chainResult["output"] = stepStatus.Output
+			}
+		}
+
+		chainJSON, err := json.Marshal(chainResult)
+		if err != nil {
+			log.Error(err, "Failed to marshal chain result", "chain", cs.Name)
+			continue
+		}
+		data[fmt.Sprintf("chain-%s.json", cs.Name)] = string(chainJSON)
+	}
+
+	// Add knight statuses
+	knightStatuses := []map[string]interface{}{}
+	for _, ks := range mission.Status.KnightStatuses {
+		knightStatuses = append(knightStatuses, map[string]interface{}{
+			"name":      ks.Name,
+			"ready":     ks.Ready,
+			"ephemeral": ks.Ephemeral,
+		})
+	}
+	knightsJSON, err := json.Marshal(map[string]interface{}{
+		"knights": knightStatuses,
+	})
+	if err != nil {
+		log.Error(err, "Failed to marshal knight statuses")
+	} else {
+		data["knights.json"] = string(knightsJSON)
+	}
+
+	// Add cost breakdown if available
+	if len(mission.Status.CostBreakdown) > 0 {
+		costBreakdownJSON, err := json.Marshal(map[string]interface{}{
+			"breakdown": mission.Status.CostBreakdown,
+			"total":     mission.Status.TotalCost,
+		})
+		if err != nil {
+			log.Error(err, "Failed to marshal cost breakdown")
+		} else {
+			data["costs.json"] = string(costBreakdownJSON)
 		}
 	}
 
-	// Build ConfigMap data
-	data := map[string]string{
-		"mission-name":    mission.Name,
-		"objective":       mission.Spec.Objective,
-		"phase":           string(mission.Status.Phase),
-		"result":          mission.Status.Result,
-		"total-cost":      mission.Status.TotalCost,
-		"started-at":      mission.Status.StartedAt.Format(time.RFC3339),
-	}
-	if mission.Status.CompletedAt != nil {
-		data["completed-at"] = mission.Status.CompletedAt.Format(time.RFC3339)
-	}
-
-	// Add chain outputs
-	for key, output := range chainOutputs {
-		data[key] = output
-	}
-
-	// Create ConfigMap
+	// Create ConfigMap (no ownerReference - should persist after mission deletion)
 	cm := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      cmName,
@@ -798,6 +891,10 @@ func (r *MissionReconciler) createResultsConfigMap(ctx context.Context, mission 
 			Labels: map[string]string{
 				"ai.roundtable.io/mission": mission.Name,
 				"ai.roundtable.io/results": "true",
+			},
+			Annotations: map[string]string{
+				"ai.roundtable.io/mission-objective": mission.Spec.Objective,
+				"ai.roundtable.io/completed-at":      mission.Status.CompletedAt.Format(time.RFC3339),
 			},
 		},
 		Data: data,
@@ -808,13 +905,49 @@ func (r *MissionReconciler) createResultsConfigMap(ctx context.Context, mission 
 	}
 
 	mission.Status.ResultsConfigMap = cmName
-	log.Info("Created results ConfigMap", "configmap", cmName)
+	log.Info("Created results ConfigMap", "configmap", cmName, "chains", len(mission.Status.ChainStatuses))
 	return nil
 }
 
-// aggregateMissionCost calculates the total cost across all mission knights.
+// suspendMissionChains suspends all mission-owned chains to prevent further cost accumulation.
+func (r *MissionReconciler) suspendMissionChains(ctx context.Context, mission *aiv1alpha1.Mission) error {
+	log := logf.FromContext(ctx)
+
+	for _, cs := range mission.Status.ChainStatuses {
+		if cs.ChainCRName == "" {
+			continue
+		}
+
+		chain := &aiv1alpha1.Chain{}
+		if err := r.Get(ctx, types.NamespacedName{
+			Name:      cs.ChainCRName,
+			Namespace: mission.Namespace,
+		}, chain); err != nil {
+			if client.IgnoreNotFound(err) == nil {
+				continue // Chain not found, skip
+			}
+			log.Error(err, "Failed to fetch chain for suspension", "chain", cs.ChainCRName)
+			continue
+		}
+
+		// Set suspended flag
+		if !chain.Spec.Suspended {
+			chain.Spec.Suspended = true
+			if err := r.Update(ctx, chain); err != nil {
+				log.Error(err, "Failed to suspend chain", "chain", cs.ChainCRName)
+				continue
+			}
+			log.Info("Suspended chain due to budget exceeded", "chain", cs.ChainCRName)
+		}
+	}
+
+	return nil
+}
+
+// aggregateMissionCost calculates the total cost across all mission knights and updates costBreakdown.
 func (r *MissionReconciler) aggregateMissionCost(ctx context.Context, mission *aiv1alpha1.Mission) (float64, error) {
 	var totalCost float64
+	costBreakdown := make([]aiv1alpha1.MissionKnightCost, 0, len(mission.Spec.Knights))
 
 	for _, mk := range mission.Spec.Knights {
 		knightName := mk.Name
@@ -824,19 +957,37 @@ func (r *MissionReconciler) aggregateMissionCost(ctx context.Context, mission *a
 			Namespace: mission.Namespace,
 		}, knight); err != nil {
 			if client.IgnoreNotFound(err) == nil {
-				continue // Knight not found, skip
+				// Knight not found, add to breakdown with zero cost
+				costBreakdown = append(costBreakdown, aiv1alpha1.MissionKnightCost{
+					Name:      knightName,
+					CostUSD:   "0.0000",
+					Ephemeral: mk.Ephemeral,
+				})
+				continue
 			}
 			return 0, err
 		}
 
 		// Parse knight's total cost
+		knightCost := "0.0000"
 		if knight.Status.TotalCost != "" {
 			var cost float64
 			if _, err := fmt.Sscanf(knight.Status.TotalCost, "%f", &cost); err == nil {
 				totalCost += cost
+				knightCost = knight.Status.TotalCost
 			}
 		}
+
+		// Add to breakdown
+		costBreakdown = append(costBreakdown, aiv1alpha1.MissionKnightCost{
+			Name:      knightName,
+			CostUSD:   knightCost,
+			Ephemeral: mk.Ephemeral,
+		})
 	}
+
+	// Update mission status with breakdown
+	mission.Status.CostBreakdown = costBreakdown
 
 	return totalCost, nil
 }
