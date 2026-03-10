@@ -330,6 +330,37 @@ func (r *MissionReconciler) reconcileActive(ctx context.Context, mission *aiv1al
 		}
 	}
 
+	// Check cost budget
+	if mission.Spec.CostBudgetUSD != "" && mission.Spec.CostBudgetUSD != "0" {
+		totalCost, err := r.aggregateMissionCost(ctx, mission)
+		if err != nil {
+			log.Error(err, "Failed to aggregate mission cost")
+		} else {
+			mission.Status.TotalCost = fmt.Sprintf("%.4f", totalCost)
+			
+			// Parse budget
+			var budget float64
+			if _, err := fmt.Sscanf(mission.Spec.CostBudgetUSD, "%f", &budget); err == nil {
+				if totalCost > budget {
+					log.Info("Mission cost budget exceeded", "totalCost", totalCost, "budget", budget)
+					mission.Status.Phase = aiv1alpha1.MissionPhaseFailed
+					now := metav1.Now()
+					mission.Status.CompletedAt = &now
+					mission.Status.Result = fmt.Sprintf("Cost budget exceeded: $%.2f > $%.2f", totalCost, budget)
+					meta.SetStatusCondition(&mission.Status.Conditions, metav1.Condition{
+						Type:               "Complete",
+						Status:             metav1.ConditionTrue,
+						Reason:             "OverBudget",
+						Message:            fmt.Sprintf("Cost $%.2f exceeded budget $%.2f", totalCost, budget),
+						ObservedGeneration: mission.Generation,
+					})
+					mission.Status.ObservedGeneration = mission.Generation
+					return ctrl.Result{}, r.Status().Update(ctx, mission)
+				}
+			}
+		}
+	}
+
 	// Create Chain CRs for any referenced chains that don't exist yet
 	if len(mission.Spec.Chains) > 0 {
 		allChainsComplete, anyChainFailed, err := r.reconcileMissionChains(ctx, mission)
@@ -611,6 +642,35 @@ func (r *MissionReconciler) publishBriefing(ctx context.Context, mission *aiv1al
 	}
 
 	return nil
+}
+
+// aggregateMissionCost calculates the total cost across all mission knights.
+func (r *MissionReconciler) aggregateMissionCost(ctx context.Context, mission *aiv1alpha1.Mission) (float64, error) {
+	var totalCost float64
+
+	for _, mk := range mission.Spec.Knights {
+		knightName := mk.Name
+		knight := &aiv1alpha1.Knight{}
+		if err := r.Get(ctx, types.NamespacedName{
+			Name:      knightName,
+			Namespace: mission.Namespace,
+		}, knight); err != nil {
+			if client.IgnoreNotFound(err) == nil {
+				continue // Knight not found, skip
+			}
+			return 0, err
+		}
+
+		// Parse knight's total cost
+		if knight.Status.TotalCost != "" {
+			var cost float64
+			if _, err := fmt.Sscanf(knight.Status.TotalCost, "%f", &cost); err == nil {
+				totalCost += cost
+			}
+		}
+	}
+
+	return totalCost, nil
 }
 
 // ensureMissionChain creates a mission-scoped chain copy if it doesn't already exist.
