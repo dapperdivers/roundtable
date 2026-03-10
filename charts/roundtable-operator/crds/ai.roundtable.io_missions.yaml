@@ -362,9 +362,9 @@ spec:
                             type: object
                           type: array
                         image:
-                          default: ghcr.io/dapperdivers/pi-knight:latest
-                          description: image is the container image for the knight
-                            runtime.
+                          description: |-
+                            image is the container image for the knight runtime.
+                            If empty, the operator uses DEFAULT_KNIGHT_IMAGE env var.
                           type: string
                         model:
                           default: claude-sonnet-4-20250514
@@ -463,6 +463,11 @@ spec:
                               pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
                               x-kubernetes-int-or-string: true
                           type: object
+                        serviceAccountName:
+                          description: |-
+                            serviceAccountName is the name of the ServiceAccount to use for the knight pod.
+                            If empty, the namespace default ServiceAccount is used.
+                          type: string
                         skills:
                           description: |-
                             skills defines which skill categories this knight has access to.

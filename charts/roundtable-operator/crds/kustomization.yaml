@@ -1,0 +1,8 @@
+---
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ai.roundtable.io_knights.yaml
+  - ai.roundtable.io_chains.yaml
+  - ai.roundtable.io_missions.yaml
+  - ai.roundtable.io_roundtables.yaml
