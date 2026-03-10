@@ -443,7 +443,7 @@ func (r *KnightReconciler) reconcileDeployment(ctx context.Context, knight *aiv1
 		podAnnotations[nixToolsHashAnnotation] = nixToolsHash(knight.Spec.Tools.Nix)
 	}
 	desired.Spec.Template.ObjectMeta.Annotations = podAnnotations
-	desired.Spec.Template.Spec = r.buildPodSpec(knight)
+	desired.Spec.Template.Spec = r.buildPodSpec(ctx, knight)
 
 	// Compute hash of desired state
 	desiredHash := deploymentSpecHash(desired)
@@ -487,7 +487,7 @@ func (r *KnightReconciler) reconcileDeployment(ctx context.Context, knight *aiv1
 		podAnnotations[specHashAnnotation] = desiredHash
 		deploy.Spec.Template.ObjectMeta.Annotations = podAnnotations
 
-		deploy.Spec.Template.Spec = r.buildPodSpec(knight)
+		deploy.Spec.Template.Spec = r.buildPodSpec(ctx, knight)
 
 		return nil
 	})
@@ -505,7 +505,7 @@ func (r *KnightReconciler) reconcileDeployment(ctx context.Context, knight *aiv1
 
 // buildPodSpec constructs the complete pod spec for a knight.
 // Matches the proven deployment pattern from the working Helm-based knights.
-func (r *KnightReconciler) buildPodSpec(knight *aiv1alpha1.Knight) corev1.PodSpec {
+func (r *KnightReconciler) buildPodSpec(ctx context.Context, knight *aiv1alpha1.Knight) corev1.PodSpec {
 	configMapName := fmt.Sprintf("knight-%s-config", knight.Name)
 
 	// Determine workspace PVC name
@@ -635,6 +635,31 @@ func (r *KnightReconciler) buildPodSpec(knight *aiv1alpha1.Knight) corev1.PodSpe
 				SubPath:   strings.TrimSuffix(wp, "/"),
 				ReadOnly:  false,
 			})
+		}
+	}
+
+	// Shared workspace mount (from parent RoundTable)
+	if tableName, ok := knight.Labels["ai.roundtable.io/table"]; ok {
+		rt := &aiv1alpha1.RoundTable{}
+		if err := r.Get(ctx, types.NamespacedName{Name: tableName, Namespace: knight.Namespace}, rt); err == nil {
+			if rt.Spec.SharedWorkspace != nil {
+				mountPath := rt.Spec.SharedWorkspace.MountPath
+				if mountPath == "" {
+					mountPath = "/shared"
+				}
+				volumes = append(volumes, corev1.Volume{
+					Name: "shared-workspace",
+					VolumeSource: corev1.VolumeSource{
+						PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+							ClaimName: rt.Spec.SharedWorkspace.ClaimName,
+						},
+					},
+				})
+				volumeMounts = append(volumeMounts, corev1.VolumeMount{
+					Name:      "shared-workspace",
+					MountPath: mountPath,
+				})
+			}
 		}
 	}
 

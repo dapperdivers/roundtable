@@ -278,6 +278,22 @@ spec:
                   type: object
                   x-kubernetes-map-type: atomic
                 type: array
+              sharedWorkspace:
+                description: |-
+                  sharedWorkspace configures a shared RWX PVC mounted on all knights for collaborative work.
+                  Knights can read/write files here to pass artifacts between chain steps.
+                properties:
+                  claimName:
+                    description: claimName is the PVC name for the shared workspace.
+                    type: string
+                  mountPath:
+                    default: /shared
+                    description: mountPath is where the shared workspace is mounted
+                      in knight pods.
+                    type: string
+                required:
+                - claimName
+                type: object
               suspended:
                 default: false
                 description: suspended, if true, suspends all knights in this table.

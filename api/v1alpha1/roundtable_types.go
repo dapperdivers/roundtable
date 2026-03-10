@@ -54,10 +54,27 @@ type RoundTableSpec struct {
 	// +optional
 	Vault *KnightVault `json:"vault,omitempty"`
 
+	// sharedWorkspace configures a shared RWX PVC mounted on all knights for collaborative work.
+	// Knights can read/write files here to pass artifacts between chain steps.
+	// +optional
+	SharedWorkspace *SharedWorkspaceConfig `json:"sharedWorkspace,omitempty"`
+
 	// suspended, if true, suspends all knights in this table.
 	// +kubebuilder:default=false
 	// +optional
 	Suspended bool `json:"suspended,omitempty"`
+}
+
+// SharedWorkspaceConfig configures a shared RWX volume for collaborative knight work.
+type SharedWorkspaceConfig struct {
+	// claimName is the PVC name for the shared workspace.
+	// +kubebuilder:validation:Required
+	ClaimName string `json:"claimName"`
+
+	// mountPath is where the shared workspace is mounted in knight pods.
+	// +kubebuilder:default="/shared"
+	// +optional
+	MountPath string `json:"mountPath,omitempty"`
 }
 
 // RoundTableNATS configures the shared NATS infrastructure for a round table.
