@@ -578,12 +578,22 @@ func (r *MissionReconciler) reconcileMissionChains(ctx context.Context, mission 
 		// Trigger idle chains — mission-scoped chains have no schedule,
 		// so the mission controller must kick them to Running.
 		if chain.Status.Phase == aiv1alpha1.ChainPhaseIdle || chain.Status.Phase == "" {
+			// Re-fetch to avoid conflict errors (chain controller may have reconciled)
+			if err := r.Get(ctx, types.NamespacedName{
+				Name:      missionChainName,
+				Namespace: mission.Namespace,
+			}, chain); err != nil {
+				log.Error(err, "Failed to re-fetch chain for trigger", "chain", missionChainName)
+				allComplete = false
+				continue
+			}
 			now := metav1.Now()
 			chain.Status.Phase = aiv1alpha1.ChainPhaseRunning
 			chain.Status.StartedAt = &now
 			if err := r.Status().Update(ctx, chain); err != nil {
-				log.Error(err, "Failed to trigger mission chain", "chain", missionChainName)
-				anyFailed = true
+				// Conflict is transient — requeue, don't fail the mission
+				log.Info("Conflict triggering chain, will retry", "chain", missionChainName, "error", err)
+				allComplete = false
 				continue
 			}
 			log.Info("Triggered mission chain", "chain", missionChainName)
