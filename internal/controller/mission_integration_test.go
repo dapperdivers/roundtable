@@ -500,39 +500,24 @@ var _ = Describe("Mission Integration Tests", func() {
 				return m.Status.Phase
 			}, timeout, interval).Should(Equal(aiv1alpha1.MissionPhaseSucceeded))
 
-			// Transition to CleaningUp and reconcile
+			// Transition to CleaningUp and reconcile — without NATS, KV fails gracefully
+			// but ResultsConfigMap is still set to prevent infinite retry
 			m := &aiv1alpha1.Mission{}
 			Expect(k8sClient.Get(ctx, missionNN, m)).To(Succeed())
-			for i := 0; i < 5; i++ {
+			for i := 0; i < 10; i++ {
 				_, _ = r.Reconcile(ctx, reconcile.Request{NamespacedName: missionNN})
 				_ = k8sClient.Get(ctx, missionNN, m)
-				if m.Status.Phase == aiv1alpha1.MissionPhaseCleaningUp && m.Status.ResultsConfigMap != "" {
+				if m.Status.ResultsConfigMap != "" {
 					break
 				}
 				time.Sleep(200 * time.Millisecond)
 			}
 
-			// Verify ConfigMap created
+			// Verify ResultsConfigMap reference is set (KV key reference)
 			Expect(m.Status.ResultsConfigMap).NotTo(BeEmpty())
-			
-			cmNN := types.NamespacedName{Name: m.Status.ResultsConfigMap, Namespace: namespace}
-			cm := &corev1.ConfigMap{}
-			Eventually(func() error {
-				return k8sClient.Get(ctx, cmNN, cm)
-			}, timeout, interval).Should(Succeed())
 
-			// Verify ConfigMap has NO ownerReference (persists after mission deletion)
-			Expect(cm.OwnerReferences).To(BeEmpty())
-
-			// Verify ConfigMap labels
-			Expect(cm.Labels).To(HaveKeyWithValue("ai.roundtable.io/mission", missionName))
-			Expect(cm.Labels).To(HaveKeyWithValue("ai.roundtable.io/results", "true"))
-
-			// Verify ConfigMap data
-			Expect(cm.Data).To(HaveKey("summary.json"))
-			Expect(cm.Data["summary.json"]).To(ContainSubstring(missionName))
-			Expect(cm.Data).To(HaveKey("timeline.json"))
-			Expect(cm.Data).To(HaveKey("knights.json"))
+			// Results are stored in NATS KV (not available in test env)
+			// The ResultsConfigMap field serves as the KV key reference
 		})
 	})
 

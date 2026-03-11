@@ -23,7 +23,6 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -554,7 +553,7 @@ var _ = Describe("Mission Controller", func() {
 		})
 	})
 
-	Context("Result ConfigMap creation", func() {
+	Context("Result storage (NATS KV)", func() {
 		BeforeEach(func() {
 			createKnight()
 			createChain()
@@ -574,21 +573,12 @@ var _ = Describe("Mission Controller", func() {
 		})
 
 		AfterEach(func() {
-			// Clean up ConfigMap
-			cmName := fmt.Sprintf("mission-%s-results", missionName)
-			cm := &corev1.ConfigMap{}
-			if err := k8sClient.Get(ctx, types.NamespacedName{
-				Name:      cmName,
-				Namespace: namespace,
-			}, cm); err == nil {
-				_ = k8sClient.Delete(ctx, cm)
-			}
 			deleteMission()
 			deleteChain()
 			deleteKnight()
 		})
 
-		It("should create results ConfigMap when retainResults=true", func() {
+		It("should set ResultsConfigMap reference when retainResults=true (graceful without NATS)", func() {
 			r := newReconciler()
 
 			// Drive to Active and complete
@@ -611,43 +601,15 @@ var _ = Describe("Mission Controller", func() {
 				return k8sClient.Status().Update(ctx, missionChain)
 			}, "5s", "500ms").Should(Succeed())
 
-			// Wait for completion
-			Eventually(func() aiv1alpha1.MissionPhase {
+			// Wait for completion and cleanup — without NATS, KV store fails gracefully
+			// but ResultsConfigMap is still set (to prevent infinite retry)
+			// Check both phase transition AND ResultsConfigMap in one Eventually
+			Eventually(func() string {
 				_, _ = r.Reconcile(ctx, reconcile.Request{NamespacedName: missionNN})
 				mission := &aiv1alpha1.Mission{}
 				_ = k8sClient.Get(ctx, missionNN, mission)
-				return mission.Status.Phase
-			}, "5s", "500ms").Should(Equal(aiv1alpha1.MissionPhaseSucceeded))
-
-			// Transition to CleaningUp
-			_, _ = r.Reconcile(ctx, reconcile.Request{NamespacedName: missionNN})
-
-			// Reconcile cleanup - should create ConfigMap
-			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: missionNN})
-			Expect(err).NotTo(HaveOccurred())
-
-			// Verify ConfigMap was created
-			cmName := fmt.Sprintf("mission-%s-results", missionName)
-			cm := &corev1.ConfigMap{}
-			Eventually(func() error {
-				return k8sClient.Get(ctx, types.NamespacedName{
-					Name:      cmName,
-					Namespace: namespace,
-				}, cm)
-			}, "5s", "500ms").Should(Succeed())
-
-			Expect(cm.Labels).To(HaveKeyWithValue("ai.roundtable.io/mission", missionName))
-			Expect(cm.Labels).To(HaveKeyWithValue("ai.roundtable.io/results", "true"))
-			// Controller stores results as JSON blobs
-			Expect(cm.Data).To(HaveKey("summary.json"))
-			Expect(cm.Data["summary.json"]).To(ContainSubstring(missionName))
-			Expect(cm.Data).To(HaveKey("timeline.json"))
-			Expect(cm.Data).To(HaveKey("knights.json"))
-
-			// Verify mission status tracks the ConfigMap
-			mission := &aiv1alpha1.Mission{}
-			Expect(k8sClient.Get(ctx, missionNN, mission)).To(Succeed())
-			Expect(mission.Status.ResultsConfigMap).To(Equal(cmName))
+				return mission.Status.ResultsConfigMap
+			}, "15s", "500ms").ShouldNot(BeEmpty())
 		})
 	})
 

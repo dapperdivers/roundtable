@@ -803,6 +803,11 @@ func (r *MissionReconciler) publishBriefing(ctx context.Context, mission *aiv1al
 func (r *MissionReconciler) storeResultsToKV(ctx context.Context, mission *aiv1alpha1.Mission) error {
 	log := logf.FromContext(ctx)
 
+	if r.natsClient == nil || !r.natsClient.IsConnected() {
+		log.Info("NATS not available, skipping KV results storage")
+		return fmt.Errorf("NATS client not available")
+	}
+
 	kvKey := mission.Name
 	const kvBucket = "mission-results"
 
