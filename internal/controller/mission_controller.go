@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -252,7 +253,7 @@ func (r *MissionReconciler) reconcilePending(ctx context.Context, mission *aiv1a
 	return ctrl.Result{RequeueAfter: 1 * time.Second}, r.Status().Update(ctx, mission)
 }
 
-// reconcileProvisioning creates the ephemeral RoundTable if needed.
+// reconcileProvisioning creates the ephemeral RoundTable and NATS streams if needed.
 func (r *MissionReconciler) reconcileProvisioning(ctx context.Context, mission *aiv1alpha1.Mission) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
@@ -264,12 +265,68 @@ func (r *MissionReconciler) reconcileProvisioning(ctx context.Context, mission *
 		return ctrl.Result{RequeueAfter: 1 * time.Second}, r.Status().Update(ctx, mission)
 	}
 
-	// For now, we'll transition directly to Assembling without creating an ephemeral RT
-	// Full implementation would create RoundTable here
-	log.Info("Skipping ephemeral RoundTable creation (not implemented)", "mission", mission.Name)
+	// Generate resource names
+	uid8 := string(mission.UID)[:8]
+	roundTableName := fmt.Sprintf("mission-%s-%s", mission.Name, uid8)
+	natsPrefix := fmt.Sprintf("msn-%s-%s", mission.Name, uid8)
+	// Use underscores in stream names (NATS requirement)
+	tasksStream := fmt.Sprintf("msn_%s_%s_tasks", strings.ReplaceAll(mission.Name, "-", "_"), uid8)
+	resultsStream := fmt.Sprintf("msn_%s_%s_results", strings.ReplaceAll(mission.Name, "-", "_"), uid8)
+
+	// Check if ephemeral RoundTable already exists
+	rt := &aiv1alpha1.RoundTable{}
+	rtKey := types.NamespacedName{Name: roundTableName, Namespace: mission.Namespace}
+	err := r.Get(ctx, rtKey, rt)
+
+	if err != nil {
+		if client.IgnoreNotFound(err) != nil {
+			return ctrl.Result{}, fmt.Errorf("failed to get ephemeral RoundTable: %w", err)
+		}
+
+		// RoundTable doesn't exist, create it
+		rt = r.buildEphemeralRoundTable(mission, roundTableName, natsPrefix, tasksStream, resultsStream)
+
+		log.Info("Creating ephemeral RoundTable", "name", roundTableName)
+		if err := r.Create(ctx, rt); err != nil {
+			return ctrl.Result{}, fmt.Errorf("failed to create ephemeral RoundTable: %w", err)
+		}
+
+		// Update Mission status with RoundTable name and stream names
+		mission.Status.RoundTableName = roundTableName
+		mission.Status.NATSTasksStream = tasksStream
+		mission.Status.NATSResultsStream = resultsStream
+		mission.Status.ObservedGeneration = mission.Generation
+
+		if err := r.Status().Update(ctx, mission); err != nil {
+			return ctrl.Result{}, fmt.Errorf("failed to update mission status: %w", err)
+		}
+
+		// Requeue to wait for RoundTable to become Ready
+		return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
+	}
+
+	// RoundTable exists, check if it's Ready
+	if rt.Status.Phase != aiv1alpha1.RoundTablePhaseReady {
+		log.Info("Waiting for ephemeral RoundTable to become Ready",
+			"roundTable", roundTableName,
+			"currentPhase", rt.Status.Phase)
+		return ctrl.Result{RequeueAfter: 3 * time.Second}, nil
+	}
+
+	// RoundTable is Ready, streams are created
+	log.Info("Ephemeral RoundTable ready, transitioning to Assembling",
+		"roundTable", roundTableName,
+		"tasksStream", tasksStream,
+		"resultsStream", resultsStream)
+
+	// Transition to Assembling phase
 	mission.Status.Phase = aiv1alpha1.MissionPhaseAssembling
 	mission.Status.ObservedGeneration = mission.Generation
-	return ctrl.Result{RequeueAfter: 1 * time.Second}, r.Status().Update(ctx, mission)
+	if err := r.Status().Update(ctx, mission); err != nil {
+		return ctrl.Result{}, fmt.Errorf("failed to transition to Assembling: %w", err)
+	}
+
+	return ctrl.Result{Requeue: true}, nil
 }
 
 // reconcileAssembling validates knight references and waits for readiness.
@@ -1095,6 +1152,106 @@ func (r *MissionReconciler) updateChainStatus(mission *aiv1alpha1.Mission, chain
 		ChainCRName: chainCRName,
 		Phase:       phase,
 	})
+}
+
+// buildEphemeralRoundTable creates the spec for an ephemeral RoundTable for a mission.
+func (r *MissionReconciler) buildEphemeralRoundTable(
+	mission *aiv1alpha1.Mission,
+	name, natsPrefix, tasksStream, resultsStream string,
+) *aiv1alpha1.RoundTable {
+	// Get parent RoundTable for defaults (if specified)
+	var parentDefaults *aiv1alpha1.RoundTableDefaults
+	var parentPolicies *aiv1alpha1.RoundTablePolicies
+	natsURL := "nats://nats.database.svc.cluster.local:4222" // Default
+
+	if mission.Spec.RoundTableRef != "" {
+		parentRT := &aiv1alpha1.RoundTable{}
+		parentKey := types.NamespacedName{Name: mission.Spec.RoundTableRef, Namespace: mission.Namespace}
+		// Use background context for fetching defaults (non-critical)
+		if err := r.Get(context.Background(), parentKey, parentRT); err == nil {
+			if parentRT.Spec.Defaults != nil {
+				parentDefaults = parentRT.Spec.Defaults
+			}
+			if parentRT.Spec.Policies != nil {
+				parentPolicies = parentRT.Spec.Policies
+			}
+			if parentRT.Spec.NATS.URL != "" {
+				natsURL = parentRT.Spec.NATS.URL
+			}
+		}
+	}
+
+	// Apply mission template overrides
+	if mission.Spec.RoundTableTemplate != nil {
+		if mission.Spec.RoundTableTemplate.Defaults != nil {
+			parentDefaults = mission.Spec.RoundTableTemplate.Defaults
+		}
+		if mission.Spec.RoundTableTemplate.Policies != nil {
+			parentPolicies = mission.Spec.RoundTableTemplate.Policies
+		}
+		if mission.Spec.RoundTableTemplate.NATSURL != "" {
+			natsURL = mission.Spec.RoundTableTemplate.NATSURL
+		}
+	}
+
+	// Build RoundTable CR
+	rt := &aiv1alpha1.RoundTable{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: mission.Namespace,
+			Labels: map[string]string{
+				aiv1alpha1.LabelMission:   mission.Name,
+				aiv1alpha1.LabelEphemeral: "true",
+			},
+			OwnerReferences: []metav1.OwnerReference{
+				*metav1.NewControllerRef(mission, aiv1alpha1.GroupVersion.WithKind("Mission")),
+			},
+		},
+		Spec: aiv1alpha1.RoundTableSpec{
+			Ephemeral:  true,
+			MissionRef: mission.Name,
+			NATS: aiv1alpha1.RoundTableNATS{
+				URL:             natsURL,
+				SubjectPrefix:   natsPrefix,
+				TasksStream:     tasksStream,
+				ResultsStream:   resultsStream,
+				CreateStreams:   true,
+				StreamRetention: "WorkQueue", // ALWAYS WorkQueue for ephemeral
+			},
+		},
+	}
+
+	// Apply defaults (with fallback to sensible defaults)
+	if parentDefaults != nil {
+		rt.Spec.Defaults = parentDefaults
+	} else {
+		rt.Spec.Defaults = &aiv1alpha1.RoundTableDefaults{
+			Model:       "claude-sonnet-4-20250514",
+			Concurrency: 3,
+			TaskTimeout: 300,
+		}
+	}
+
+	// Apply policies (initialize if nil)
+	if parentPolicies != nil {
+		rt.Spec.Policies = parentPolicies
+	} else {
+		rt.Spec.Policies = &aiv1alpha1.RoundTablePolicies{}
+	}
+
+	// Override cost budget with mission budget
+	if mission.Spec.CostBudgetUSD != "" && mission.Spec.CostBudgetUSD != "0" {
+		rt.Spec.Policies.CostBudgetUSD = mission.Spec.CostBudgetUSD
+	}
+
+	// Set max knights to mission knight count
+	if rt.Spec.Policies == nil {
+		rt.Spec.Policies = &aiv1alpha1.RoundTablePolicies{}
+	}
+	knightCount := int32(len(mission.Spec.Knights))
+	rt.Spec.Policies.MaxKnights = knightCount
+
+	return rt
 }
 
 // SetupWithManager sets up the controller with the Manager.
