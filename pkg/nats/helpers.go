@@ -18,7 +18,6 @@ package nats
 
 import (
 	"fmt"
-	"time"
 )
 
 // TaskSubject constructs a NATS subject for publishing tasks to a knight.
@@ -48,7 +47,7 @@ func StreamSubject(prefix, streamType string) string {
 // ChainConsumerName generates a consumer name for chain result polling.
 // Format: chain-poll-{chainName}-{stepName}-{timestamp}
 func ChainConsumerName(chainName, stepName string) string {
-	return fmt.Sprintf("chain-poll-%s-%s-%d", chainName, stepName, time.Now().UnixMilli())
+	return fmt.Sprintf("chain-poll-%s-%s", chainName, stepName)
 }
 
 // KnightConsumerName generates a consumer name for a knight.

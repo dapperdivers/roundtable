@@ -672,7 +672,7 @@ func (r *MissionReconciler) reconcileCleaningUp(ctx context.Context, mission *ai
 		return ctrl.Result{}, nil
 	}
 
-	// Mark cleanup as done
+	// Mark cleanup as done and transition to terminal phase
 	meta.SetStatusCondition(&mission.Status.Conditions, metav1.Condition{
 		Type:               "CleanupComplete",
 		Status:             metav1.ConditionTrue,
@@ -680,6 +680,20 @@ func (r *MissionReconciler) reconcileCleaningUp(ctx context.Context, mission *ai
 		Message:            "Mission cleanup completed",
 		ObservedGeneration: mission.Generation,
 	})
+
+	// Transition to terminal phase based on chain results
+	allSucceeded := true
+	for _, cs := range mission.Status.ChainStatuses {
+		if cs.Phase == aiv1alpha1.ChainPhaseFailed {
+			allSucceeded = false
+			break
+		}
+	}
+	if allSucceeded {
+		mission.Status.Phase = aiv1alpha1.MissionPhaseSucceeded
+	} else {
+		mission.Status.Phase = aiv1alpha1.MissionPhaseFailed
+	}
 	mission.Status.ObservedGeneration = mission.Generation
 	_ = r.Status().Update(ctx, mission)
 
