@@ -312,13 +312,17 @@ var _ = Describe("Mission Integration Tests", func() {
 				Scheme: k8sClient.Scheme(),
 			}
 
-			// Progress through initial phases
+			// Progress through phases until Active
 			for i := 0; i < 10; i++ {
 				_, _ = r.Reconcile(ctx, reconcile.Request{NamespacedName: missionNN})
+				m := &aiv1alpha1.Mission{}
+				if err := k8sClient.Get(ctx, missionNN, m); err == nil && m.Status.Phase == aiv1alpha1.MissionPhaseActive {
+					break
+				}
 				time.Sleep(100 * time.Millisecond)
 			}
 
-			// Simulate knight cost exceeding budget
+			// Set knight cost BEFORE next reconcile (reconcileActive checks budget)
 			Eventually(func() error {
 				k := &aiv1alpha1.Knight{}
 				if err := k8sClient.Get(ctx, knightNN, k); err != nil {
@@ -525,11 +529,10 @@ var _ = Describe("Mission Integration Tests", func() {
 			Expect(cm.Labels).To(HaveKeyWithValue("ai.roundtable.io/results", "true"))
 
 			// Verify ConfigMap data
-			Expect(cm.Data).To(HaveKey("mission-name"))
-			Expect(cm.Data["mission-name"]).To(Equal(missionName))
-			Expect(cm.Data).To(HaveKey("objective"))
-			Expect(cm.Data).To(HaveKey("phase"))
-			Expect(cm.Data).To(HaveKey("result"))
+			Expect(cm.Data).To(HaveKey("summary.json"))
+			Expect(cm.Data["summary.json"]).To(ContainSubstring(missionName))
+			Expect(cm.Data).To(HaveKey("timeline.json"))
+			Expect(cm.Data).To(HaveKey("knights.json"))
 		})
 	})
 
