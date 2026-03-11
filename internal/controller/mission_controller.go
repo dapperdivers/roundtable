@@ -25,10 +25,13 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -67,6 +70,8 @@ type MissionReconciler struct {
 // +kubebuilder:rbac:groups=ai.roundtable.io,resources=roundtables,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=serviceaccounts,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch;delete
 
 func (r *MissionReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
@@ -270,11 +275,22 @@ func (r *MissionReconciler) reconcileProvisioning(ctx context.Context, mission *
 	uid8 := string(mission.UID)[:8]
 	roundTableName := fmt.Sprintf("mission-%s-%s", mission.Name, uid8)
 	natsPrefix := fmt.Sprintf("msn-%s-%s", mission.Name, uid8)
+	serviceAccountName := fmt.Sprintf("mission-%s", mission.Name)
 	// Use underscores in stream names (NATS requirement)
 	tasksStream := fmt.Sprintf("msn_%s_%s_tasks", strings.ReplaceAll(mission.Name, "-", "_"), uid8)
 	resultsStream := fmt.Sprintf("msn_%s_%s_results", strings.ReplaceAll(mission.Name, "-", "_"), uid8)
 
-	// Check if ephemeral RoundTable already exists
+	// 1. Create ServiceAccount (if not exists)
+	if err := r.ensureMissionServiceAccount(ctx, mission, serviceAccountName); err != nil {
+		return ctrl.Result{}, fmt.Errorf("failed to ensure ServiceAccount: %w", err)
+	}
+
+	// 2. Create NetworkPolicy (if not exists)
+	if err := r.ensureMissionNetworkPolicy(ctx, mission); err != nil {
+		return ctrl.Result{}, fmt.Errorf("failed to ensure NetworkPolicy: %w", err)
+	}
+
+	// 3. Check if ephemeral RoundTable already exists
 	rt := &aiv1alpha1.RoundTable{}
 	rtKey := types.NamespacedName{Name: roundTableName, Namespace: mission.Namespace}
 	err := r.Get(ctx, rtKey, rt)
@@ -1341,6 +1357,9 @@ func (r *MissionReconciler) buildEphemeralKnight(
 	// Ephemeral knights don't get persistent workspace
 	spec.Workspace = nil
 
+	// Use mission-scoped ServiceAccount
+	spec.ServiceAccountName = fmt.Sprintf("mission-%s", mission.Name)
+
 	// Build Knight CR
 	knight := &aiv1alpha1.Knight{
 		ObjectMeta: metav1.ObjectMeta{
@@ -1364,6 +1383,152 @@ func (r *MissionReconciler) buildEphemeralKnight(
 	}
 
 	return knight, nil
+}
+
+// ensureMissionServiceAccount creates a mission-scoped ServiceAccount if it doesn't exist.
+func (r *MissionReconciler) ensureMissionServiceAccount(ctx context.Context, mission *aiv1alpha1.Mission, saName string) error {
+	sa := &corev1.ServiceAccount{}
+	saKey := types.NamespacedName{Name: saName, Namespace: mission.Namespace}
+	err := r.Get(ctx, saKey, sa)
+
+	if err != nil && client.IgnoreNotFound(err) == nil {
+		// Create ServiceAccount
+		sa = &corev1.ServiceAccount{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      saName,
+				Namespace: mission.Namespace,
+				Labels: map[string]string{
+					aiv1alpha1.LabelMission:   mission.Name,
+					aiv1alpha1.LabelEphemeral: "true",
+				},
+				OwnerReferences: []metav1.OwnerReference{
+					*metav1.NewControllerRef(mission, aiv1alpha1.GroupVersion.WithKind("Mission")),
+				},
+			},
+		}
+
+		if err := r.Create(ctx, sa); err != nil {
+			return fmt.Errorf("failed to create ServiceAccount: %w", err)
+		}
+		logf.FromContext(ctx).Info("Created mission ServiceAccount", "name", saName)
+	} else if err != nil {
+		return fmt.Errorf("failed to get ServiceAccount: %w", err)
+	}
+
+	return nil
+}
+
+// ensureMissionNetworkPolicy creates a NetworkPolicy to isolate ephemeral knights if it doesn't exist.
+func (r *MissionReconciler) ensureMissionNetworkPolicy(ctx context.Context, mission *aiv1alpha1.Mission) error {
+	policyName := fmt.Sprintf("mission-%s-isolation", mission.Name)
+	policy := &networkingv1.NetworkPolicy{}
+	policyKey := types.NamespacedName{Name: policyName, Namespace: mission.Namespace}
+	err := r.Get(ctx, policyKey, policy)
+
+	if err != nil && client.IgnoreNotFound(err) == nil {
+		// Build NetworkPolicy
+		policy = r.buildMissionNetworkPolicy(mission, policyName)
+
+		if err := r.Create(ctx, policy); err != nil {
+			return fmt.Errorf("failed to create NetworkPolicy: %w", err)
+		}
+		logf.FromContext(ctx).Info("Created mission NetworkPolicy", "name", policyName)
+	} else if err != nil {
+		return fmt.Errorf("failed to get NetworkPolicy: %w", err)
+	}
+
+	return nil
+}
+
+// buildMissionNetworkPolicy constructs a NetworkPolicy that restricts ephemeral knight egress.
+func (r *MissionReconciler) buildMissionNetworkPolicy(mission *aiv1alpha1.Mission, policyName string) *networkingv1.NetworkPolicy {
+	return &networkingv1.NetworkPolicy{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      policyName,
+			Namespace: mission.Namespace,
+			Labels: map[string]string{
+				aiv1alpha1.LabelMission:   mission.Name,
+				aiv1alpha1.LabelEphemeral: "true",
+			},
+			OwnerReferences: []metav1.OwnerReference{
+				*metav1.NewControllerRef(mission, aiv1alpha1.GroupVersion.WithKind("Mission")),
+			},
+		},
+		Spec: networkingv1.NetworkPolicySpec{
+			// Apply to all ephemeral knights in this mission
+			PodSelector: metav1.LabelSelector{
+				MatchLabels: map[string]string{
+					aiv1alpha1.LabelMission: mission.Name,
+				},
+			},
+			PolicyTypes: []networkingv1.PolicyType{
+				networkingv1.PolicyTypeEgress,
+			},
+			Egress: []networkingv1.NetworkPolicyEgressRule{
+				// Allow egress to NATS server
+				{
+					To: []networkingv1.NetworkPolicyPeer{
+						{
+							NamespaceSelector: &metav1.LabelSelector{
+								MatchLabels: map[string]string{
+									"kubernetes.io/metadata.name": "database",
+								},
+							},
+							PodSelector: &metav1.LabelSelector{
+								MatchLabels: map[string]string{
+									"app.kubernetes.io/name": "nats",
+								},
+							},
+						},
+					},
+					Ports: []networkingv1.NetworkPolicyPort{
+						{
+							Protocol: ptr.To(corev1.ProtocolTCP),
+							Port:     ptr.To(intstr.FromInt(4222)),
+						},
+					},
+				},
+				// Allow DNS resolution (UDP and TCP)
+				{
+					To: []networkingv1.NetworkPolicyPeer{
+						{
+							NamespaceSelector: &metav1.LabelSelector{
+								MatchLabels: map[string]string{
+									"kubernetes.io/metadata.name": "kube-system",
+								},
+							},
+							PodSelector: &metav1.LabelSelector{
+								MatchLabels: map[string]string{
+									"k8s-app": "kube-dns",
+								},
+							},
+						},
+					},
+					Ports: []networkingv1.NetworkPolicyPort{
+						{
+							Protocol: ptr.To(corev1.ProtocolUDP),
+							Port:     ptr.To(intstr.FromInt(53)),
+						},
+						{
+							Protocol: ptr.To(corev1.ProtocolTCP),
+							Port:     ptr.To(intstr.FromInt(53)),
+						},
+					},
+				},
+				// Allow HTTPS egress for AI provider APIs
+				// Note: This allows egress to ANY HTTPS endpoint
+				// For stricter isolation, use an egress proxy with allowlisting
+				{
+					Ports: []networkingv1.NetworkPolicyPort{
+						{
+							Protocol: ptr.To(corev1.ProtocolTCP),
+							Port:     ptr.To(intstr.FromInt(443)),
+						},
+					},
+				},
+			},
+		},
+	}
 }
 
 // buildEphemeralRoundTable creates the spec for an ephemeral RoundTable for a mission.
@@ -1466,13 +1631,4 @@ func (r *MissionReconciler) buildEphemeralRoundTable(
 	return rt
 }
 
-// SetupWithManager sets up the controller with the Manager.
-func (r *MissionReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewControllerManagedBy(mgr).
-		For(&aiv1alpha1.Mission{}).
-		Owns(&aiv1alpha1.Chain{}).
-		Owns(&aiv1alpha1.Knight{}).
-		Owns(&aiv1alpha1.RoundTable{}).
-		Named("mission").
-		Complete(r)
-}
+// ensureMissionServiceAccount creates a mission-scoped ServiceAccount if it doesn't exist.
