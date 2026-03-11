@@ -428,6 +428,16 @@ func (r *ChainReconciler) reconcileRunning(ctx context.Context, chain *aiv1alpha
 					ss.Phase = aiv1alpha1.ChainStepPhaseSucceeded
 					ss.Output = resultOutput
 
+					// Store full output to NATS KV (best-effort)
+					if spec := specMap[ss.Name]; spec != nil {
+						r.storeStepOutputToKV(ctx, chain.Name, ss.Name, resultOutput, resultErr, spec.KnightRef, ss.StartedAt, &now)
+					}
+
+					// Truncate CRD status output to avoid etcd bloat
+					if len(ss.Output) > 1000 {
+						ss.Output = ss.Output[:1000] + "\n\n... [truncated — full output in NATS KV bucket 'chain-outputs', key '" + chain.Name + "." + ss.Name + "']"
+					}
+
 					// Best-effort artifact write if outputPath is set
 					if spec != nil && spec.OutputPath != "" {
 						outputPath, err := r.renderOutputPath(chain, spec)
@@ -876,6 +886,43 @@ func (r *ChainReconciler) writeArtifact(ctx context.Context, nc natsConfig, chai
 
 	subject := natspkg.TaskSubject(nc.SubjectPrefix, knight.Spec.Domain, knightName)
 	return r.natsClient.PublishJSON(subject, payload)
+}
+
+// storeStepOutputToKV stores the full step output to the NATS KV "chain-outputs" bucket.
+// This is best-effort — failures are logged but do not block chain execution.
+func (r *ChainReconciler) storeStepOutputToKV(ctx context.Context, chainName, stepName, output, errStr, knight string, startedAt, completedAt *metav1.Time) {
+	log := logf.FromContext(ctx)
+
+	if err := r.ensureNATS(ctx); err != nil {
+		log.Error(err, "Failed to connect NATS for KV store", "step", stepName)
+		return
+	}
+
+	var durationStr string
+	if startedAt != nil && completedAt != nil {
+		durationStr = completedAt.Time.Sub(startedAt.Time).String()
+	}
+
+	kvValue := map[string]interface{}{
+		"output":   output,
+		"error":    errStr,
+		"knight":   knight,
+		"duration": durationStr,
+		"storedAt": time.Now().UTC().Format(time.RFC3339),
+	}
+
+	data, err := json.Marshal(kvValue)
+	if err != nil {
+		log.Error(err, "Failed to marshal KV value", "step", stepName)
+		return
+	}
+
+	key := chainName + "." + stepName
+	if err := r.natsClient.KVPut("chain-outputs", key, data); err != nil {
+		log.Error(err, "Failed to store step output to KV", "key", key)
+	} else {
+		log.Info("Stored step output to NATS KV", "bucket", "chain-outputs", "key", key, "size", len(data))
+	}
 }
 
 // SetupWithManager sets up the controller with the Manager.

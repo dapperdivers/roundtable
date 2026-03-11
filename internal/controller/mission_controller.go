@@ -23,7 +23,6 @@ import (
 	"sync"
 	"time"
 
-	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -653,11 +652,13 @@ func (r *MissionReconciler) reconcileCleaningUp(ctx context.Context, mission *ai
 		}
 	}
 
-	// Create results ConfigMap if retainResults is true and not already created
+	// Store results to NATS KV if retainResults is true and not already stored
 	if mission.Spec.RetainResults && mission.Status.ResultsConfigMap == "" {
-		if err := r.createResultsConfigMap(ctx, mission); err != nil {
-			log.Error(err, "Failed to create results ConfigMap")
-			// Continue with cleanup even if this fails
+		if err := r.storeResultsToKV(ctx, mission); err != nil {
+			log.Error(err, "Failed to store results to NATS KV")
+			// Continue with cleanup even if this fails — set the key anyway
+			// to prevent infinite retry loop
+			mission.Status.ResultsConfigMap = fmt.Sprintf("mission-results.%s", mission.Name)
 		}
 	}
 
@@ -796,45 +797,54 @@ func (r *MissionReconciler) publishBriefing(ctx context.Context, mission *aiv1al
 	return nil
 }
 
-// createResultsConfigMap creates a ConfigMap with mission results for retention.
-func (r *MissionReconciler) createResultsConfigMap(ctx context.Context, mission *aiv1alpha1.Mission) error {
+// storeResultsToKV stores mission results in a NATS KV bucket for retention.
+// Bucket: "mission-results", Key: mission name, Value: JSON with all results.
+// KV Put is idempotent — no "already exists" problem like ConfigMaps.
+func (r *MissionReconciler) storeResultsToKV(ctx context.Context, mission *aiv1alpha1.Mission) error {
 	log := logf.FromContext(ctx)
 
-	cmName := fmt.Sprintf("mission-%s-results", mission.Name)
+	if r.natsClient == nil || !r.natsClient.IsConnected() {
+		log.Info("NATS not available, skipping KV results storage")
+		return fmt.Errorf("NATS client not available")
+	}
 
-	// Build summary
+	kvKey := mission.Name
+	const kvBucket = "mission-results"
+
+	// Build duration string
 	duration := ""
 	if mission.Status.StartedAt != nil && mission.Status.CompletedAt != nil {
 		dur := mission.Status.CompletedAt.Sub(mission.Status.StartedAt.Time)
 		duration = fmt.Sprintf("%.0fm%.0fs", dur.Minutes(), dur.Seconds()-dur.Minutes()*60)
 	}
 
-	summary := map[string]interface{}{
-		"mission":   mission.Name,
-		"objective": mission.Spec.Objective,
-		"phase":     string(mission.Status.Phase),
-		"result":    mission.Status.Result,
-		"duration":  duration,
-		"totalCost": mission.Status.TotalCost,
-	}
-	summaryJSON, err := json.Marshal(summary)
-	if err != nil {
-		return fmt.Errorf("failed to marshal summary: %w", err)
+	// Build complete results document
+	results := map[string]interface{}{
+		"summary": map[string]interface{}{
+			"mission":   mission.Name,
+			"objective": mission.Spec.Objective,
+			"phase":     string(mission.Status.Phase),
+			"result":    mission.Status.Result,
+			"duration":  duration,
+			"totalCost": mission.Status.TotalCost,
+		},
+		"timeline": map[string]interface{}{
+			"started":   "",
+			"completed": "",
+			"phases":    []map[string]string{},
+		},
+		"chains":  map[string]interface{}{},
+		"knights": []map[string]interface{}{},
 	}
 
-	// Build timeline
-	timeline := map[string]interface{}{
-		"started":   "",
-		"completed": "",
-		"phases":    []map[string]string{},
-	}
+	// Timeline
+	timeline := results["timeline"].(map[string]interface{})
 	if mission.Status.StartedAt != nil {
 		timeline["started"] = mission.Status.StartedAt.Format(time.RFC3339)
 	}
 	if mission.Status.CompletedAt != nil {
 		timeline["completed"] = mission.Status.CompletedAt.Format(time.RFC3339)
 	}
-	// Add phase transitions from status conditions
 	for _, cond := range mission.Status.Conditions {
 		timeline["phases"] = append(timeline["phases"].([]map[string]string), map[string]string{
 			"type":      cond.Type,
@@ -843,17 +853,9 @@ func (r *MissionReconciler) createResultsConfigMap(ctx context.Context, mission 
 			"timestamp": cond.LastTransitionTime.Format(time.RFC3339),
 		})
 	}
-	timelineJSON, err := json.Marshal(timeline)
-	if err != nil {
-		return fmt.Errorf("failed to marshal timeline: %w", err)
-	}
 
-	// Collect chain outputs
-	data := map[string]string{
-		"summary.json":  string(summaryJSON),
-		"timeline.json": string(timelineJSON),
-	}
-
+	// Chain results
+	chains := results["chains"].(map[string]interface{})
 	for _, cs := range mission.Status.ChainStatuses {
 		chain := &aiv1alpha1.Chain{}
 		if err := r.Get(ctx, types.NamespacedName{
@@ -864,89 +866,55 @@ func (r *MissionReconciler) createResultsConfigMap(ctx context.Context, mission 
 			continue
 		}
 
-		// Build chain result
 		chainResult := map[string]interface{}{
 			"name":   cs.Name,
 			"phase":  string(cs.Phase),
 			"steps":  []map[string]interface{}{},
 			"output": "",
 		}
-
-		// Collect step outputs
 		for _, stepStatus := range chain.Status.StepStatuses {
 			chainResult["steps"] = append(chainResult["steps"].([]map[string]interface{}), map[string]interface{}{
 				"name":   stepStatus.Name,
 				"output": stepStatus.Output,
 				"error":  stepStatus.Error,
 			})
-			// Use last step output as chain output
 			if stepStatus.Output != "" {
 				chainResult["output"] = stepStatus.Output
 			}
 		}
-
-		chainJSON, err := json.Marshal(chainResult)
-		if err != nil {
-			log.Error(err, "Failed to marshal chain result", "chain", cs.Name)
-			continue
-		}
-		data[fmt.Sprintf("chain-%s.json", cs.Name)] = string(chainJSON)
+		chains[cs.Name] = chainResult
 	}
 
-	// Add knight statuses
-	knightStatuses := []map[string]interface{}{}
+	// Knight statuses
 	for _, ks := range mission.Status.KnightStatuses {
-		knightStatuses = append(knightStatuses, map[string]interface{}{
+		results["knights"] = append(results["knights"].([]map[string]interface{}), map[string]interface{}{
 			"name":      ks.Name,
 			"ready":     ks.Ready,
 			"ephemeral": ks.Ephemeral,
 		})
 	}
-	knightsJSON, err := json.Marshal(map[string]interface{}{
-		"knights": knightStatuses,
-	})
-	if err != nil {
-		log.Error(err, "Failed to marshal knight statuses")
-	} else {
-		data["knights.json"] = string(knightsJSON)
-	}
 
-	// Add cost breakdown if available
+	// Cost breakdown
 	if len(mission.Status.CostBreakdown) > 0 {
-		costBreakdownJSON, err := json.Marshal(map[string]interface{}{
+		results["costs"] = map[string]interface{}{
 			"breakdown": mission.Status.CostBreakdown,
 			"total":     mission.Status.TotalCost,
-		})
-		if err != nil {
-			log.Error(err, "Failed to marshal cost breakdown")
-		} else {
-			data["costs.json"] = string(costBreakdownJSON)
 		}
 	}
 
-	// Create ConfigMap (no ownerReference - should persist after mission deletion)
-	cm := &corev1.ConfigMap{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      cmName,
-			Namespace: mission.Namespace,
-			Labels: map[string]string{
-				"ai.roundtable.io/mission": mission.Name,
-				"ai.roundtable.io/results": "true",
-			},
-			Annotations: map[string]string{
-				"ai.roundtable.io/mission-objective": mission.Spec.Objective,
-				"ai.roundtable.io/completed-at":      mission.Status.CompletedAt.Format(time.RFC3339),
-			},
-		},
-		Data: data,
+	// Marshal and store — KVPut is idempotent (upsert)
+	resultsJSON, err := json.Marshal(results)
+	if err != nil {
+		return fmt.Errorf("failed to marshal results: %w", err)
 	}
 
-	if err := r.Create(ctx, cm); err != nil {
-		return fmt.Errorf("failed to create results ConfigMap: %w", err)
+	if err := r.natsClient.KVPut(kvBucket, kvKey, resultsJSON); err != nil {
+		return fmt.Errorf("failed to store results in NATS KV: %w", err)
 	}
 
-	mission.Status.ResultsConfigMap = cmName
-	log.Info("Created results ConfigMap", "configmap", cmName, "chains", len(mission.Status.ChainStatuses))
+	mission.Status.ResultsConfigMap = fmt.Sprintf("%s.%s", kvBucket, kvKey)
+	log.Info("Stored mission results to NATS KV", "bucket", kvBucket, "key", kvKey,
+		"chains", len(mission.Status.ChainStatuses), "bytes", len(resultsJSON))
 	return nil
 }
 
