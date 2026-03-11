@@ -820,6 +820,76 @@ func (r *MissionReconciler) reconcileCleaningUp(ctx context.Context, mission *ai
 		}
 	}
 
+	// Determine if we should actually delete resources based on cleanupPolicy
+	shouldDelete := r.shouldDeleteResources(mission)
+
+	if shouldDelete {
+		// Step 1: Delete ephemeral Knight CRs
+		log.Info("Deleting ephemeral Knight CRs")
+		if err := r.deleteEphemeralKnights(ctx, mission); err != nil {
+			log.Error(err, "Failed to delete ephemeral knights, retrying")
+			return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+		}
+
+		// Step 2: Delete NATS consumers (best effort)
+		log.Info("Deleting NATS consumers")
+		if err := r.deleteNATSConsumers(ctx, mission); err != nil {
+			log.Error(err, "Failed to delete NATS consumers (best effort, continuing)")
+			// Continue even if this fails - consumers will be deleted when stream is deleted
+		}
+
+		// Step 3: Delete NATS streams
+		if mission.Status.NATSTasksStream != "" || mission.Status.NATSResultsStream != "" {
+			log.Info("Deleting NATS streams",
+				"tasksStream", mission.Status.NATSTasksStream,
+				"resultsStream", mission.Status.NATSResultsStream)
+			if err := r.deleteNATSStreams(ctx, mission); err != nil {
+				log.Error(err, "Failed to delete NATS streams, retrying with backoff")
+				return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+			}
+		}
+
+		// Step 4: Delete ephemeral RoundTable (owner ref handles cascade)
+		if mission.Status.RoundTableName != "" {
+			log.Info("Deleting ephemeral RoundTable", "name", mission.Status.RoundTableName)
+			if err := r.deleteEphemeralRoundTable(ctx, mission); err != nil {
+				log.Error(err, "Failed to delete RoundTable, retrying")
+				return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+			}
+		}
+	}
+
+	// Mark cleanup as done
+	meta.SetStatusCondition(&mission.Status.Conditions, metav1.Condition{
+		Type:               "CleanupComplete",
+		Status:             metav1.ConditionTrue,
+		Reason:             "CleanedUp",
+		Message:            "Mission cleanup completed",
+		ObservedGeneration: mission.Generation,
+	})
+
+	// Transition to terminal phase based on original outcome
+	if mission.Status.Phase != aiv1alpha1.MissionPhaseSucceeded && 
+	   mission.Status.Phase != aiv1alpha1.MissionPhaseFailed && 
+	   mission.Status.Phase != aiv1alpha1.MissionPhaseExpired {
+		// Determine terminal phase from chain results
+		allSucceeded := true
+		for _, cs := range mission.Status.ChainStatuses {
+			if cs.Phase == aiv1alpha1.ChainPhaseFailed {
+				allSucceeded = false
+				break
+			}
+		}
+		if allSucceeded {
+			mission.Status.Phase = aiv1alpha1.MissionPhaseSucceeded
+		} else {
+			mission.Status.Phase = aiv1alpha1.MissionPhaseFailed
+		}
+	}
+
+	mission.Status.ObservedGeneration = mission.Generation
+	_ = r.Status().Update(ctx, mission)
+
 	// Self-delete if cleanupPolicy=Delete and TTL expired
 	if mission.Spec.CleanupPolicy == "Delete" &&
 		mission.Status.ExpiresAt != nil &&
@@ -830,31 +900,6 @@ func (r *MissionReconciler) reconcileCleaningUp(ctx context.Context, mission *ai
 		}
 		return ctrl.Result{}, nil
 	}
-
-	// Mark cleanup as done and transition to terminal phase
-	meta.SetStatusCondition(&mission.Status.Conditions, metav1.Condition{
-		Type:               "CleanupComplete",
-		Status:             metav1.ConditionTrue,
-		Reason:             "CleanedUp",
-		Message:            "Mission cleanup completed",
-		ObservedGeneration: mission.Generation,
-	})
-
-	// Transition to terminal phase based on chain results
-	allSucceeded := true
-	for _, cs := range mission.Status.ChainStatuses {
-		if cs.Phase == aiv1alpha1.ChainPhaseFailed {
-			allSucceeded = false
-			break
-		}
-	}
-	if allSucceeded {
-		mission.Status.Phase = aiv1alpha1.MissionPhaseSucceeded
-	} else {
-		mission.Status.Phase = aiv1alpha1.MissionPhaseFailed
-	}
-	mission.Status.ObservedGeneration = mission.Generation
-	_ = r.Status().Update(ctx, mission)
 
 	// If cleanupPolicy=Delete but TTL hasn't expired yet, requeue
 	if mission.Spec.CleanupPolicy == "Delete" && mission.Status.ExpiresAt != nil {
@@ -1631,4 +1676,128 @@ func (r *MissionReconciler) buildEphemeralRoundTable(
 	return rt
 }
 
-// ensureMissionServiceAccount creates a mission-scoped ServiceAccount if it doesn't exist.
+// shouldDeleteResources determines if resources should be deleted based on cleanup policy and mission outcome.
+func (r *MissionReconciler) shouldDeleteResources(mission *aiv1alpha1.Mission) bool {
+	switch mission.Spec.CleanupPolicy {
+	case "Delete":
+		return true
+	case "Retain":
+		return false
+	case "OnSuccess":
+		return mission.Status.Phase == aiv1alpha1.MissionPhaseSucceeded
+	case "OnFailure":
+		return mission.Status.Phase == aiv1alpha1.MissionPhaseFailed
+	default:
+		return true // Default to Delete
+	}
+}
+
+// deleteEphemeralKnights deletes all ephemeral Knight CRs owned by this mission.
+func (r *MissionReconciler) deleteEphemeralKnights(ctx context.Context, mission *aiv1alpha1.Mission) error {
+	for _, ks := range mission.Status.KnightStatuses {
+		if !ks.Ephemeral {
+			continue
+		}
+
+		knightName := fmt.Sprintf("%s-%s", mission.Name, ks.Name)
+		knight := &aiv1alpha1.Knight{}
+		if err := r.Get(ctx, types.NamespacedName{
+			Name:      knightName,
+			Namespace: mission.Namespace,
+		}, knight); err != nil {
+			if client.IgnoreNotFound(err) == nil {
+				continue // Already deleted
+			}
+			return err
+		}
+
+		if err := r.Delete(ctx, knight); err != nil {
+			return fmt.Errorf("failed to delete knight %s: %w", knightName, err)
+		}
+	}
+	return nil
+}
+
+// deleteNATSConsumers deletes all NATS consumers for this mission's streams (best effort).
+func (r *MissionReconciler) deleteNATSConsumers(ctx context.Context, mission *aiv1alpha1.Mission) error {
+	if r.natsClient == nil {
+		return nil // Gracefully skip if no NATS client
+	}
+
+	tasksStream := mission.Status.NATSTasksStream
+	resultsStream := mission.Status.NATSResultsStream
+
+	for _, ks := range mission.Status.KnightStatuses {
+		if !ks.Ephemeral {
+			continue
+		}
+
+		consumerName := fmt.Sprintf("msn-%s-%s", mission.Name, ks.Name)
+
+		// Delete from tasks stream (best effort)
+		if tasksStream != "" {
+			_ = r.natsClient.DeleteConsumer(tasksStream, consumerName)
+		}
+
+		// Delete from results stream (best effort)
+		if resultsStream != "" {
+			_ = r.natsClient.DeleteConsumer(resultsStream, consumerName)
+		}
+	}
+
+	return nil
+}
+
+// deleteNATSStreams deletes the mission's task and result streams.
+func (r *MissionReconciler) deleteNATSStreams(ctx context.Context, mission *aiv1alpha1.Mission) error {
+	if r.natsClient == nil {
+		return nil // Gracefully skip if no NATS client
+	}
+
+	// Delete tasks stream
+	if mission.Status.NATSTasksStream != "" {
+		if err := r.natsClient.DeleteStream(mission.Status.NATSTasksStream); err != nil {
+			return fmt.Errorf("failed to delete tasks stream: %w", err)
+		}
+	}
+
+	// Delete results stream
+	if mission.Status.NATSResultsStream != "" {
+		if err := r.natsClient.DeleteStream(mission.Status.NATSResultsStream); err != nil {
+			return fmt.Errorf("failed to delete results stream: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// deleteEphemeralRoundTable deletes the mission's ephemeral RoundTable CR.
+func (r *MissionReconciler) deleteEphemeralRoundTable(ctx context.Context, mission *aiv1alpha1.Mission) error {
+	if mission.Status.RoundTableName == "" {
+		return nil // No RoundTable to delete
+	}
+
+	rt := &aiv1alpha1.RoundTable{}
+	if err := r.Get(ctx, types.NamespacedName{
+		Name:      mission.Status.RoundTableName,
+		Namespace: mission.Namespace,
+	}, rt); err != nil {
+		if client.IgnoreNotFound(err) == nil {
+			return nil // Already deleted
+		}
+		return err
+	}
+
+	return r.Delete(ctx, rt)
+}
+
+// SetupWithManager sets up the controller with the Manager.
+func (r *MissionReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	return ctrl.NewControllerManagedBy(mgr).
+		For(&aiv1alpha1.Mission{}).
+		Owns(&aiv1alpha1.Chain{}).
+		Owns(&aiv1alpha1.Knight{}).
+		Owns(&aiv1alpha1.RoundTable{}).
+		Named("mission").
+		Complete(r)
+}
