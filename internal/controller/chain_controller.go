@@ -130,6 +130,20 @@ func (r *ChainReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		return ctrl.Result{}, err
 	}
 
+	// Validate templates parse correctly
+	if err := r.validateTemplates(chain); err != nil {
+		meta.SetStatusCondition(&chain.Status.Conditions, metav1.Condition{
+			Type:               "Valid",
+			Status:             metav1.ConditionFalse,
+			Reason:             "InvalidTemplate",
+			Message:            err.Error(),
+			ObservedGeneration: chain.Generation,
+		})
+		chain.Status.ObservedGeneration = chain.Generation
+		_ = r.Status().Update(ctx, chain)
+		return ctrl.Result{}, err
+	}
+
 	meta.SetStatusCondition(&chain.Status.Conditions, metav1.Condition{
 		Type:               "Valid",
 		Status:             metav1.ConditionTrue,
@@ -202,6 +216,37 @@ func (r *ChainReconciler) validateKnightRefs(ctx context.Context, chain *aiv1alp
 }
 
 // validateDAG performs topological sort to detect cycles.
+// validateTemplates pre-parses all step task templates to catch syntax errors early.
+// Also warns about common mistakes like using lowercase field names.
+func (r *ChainReconciler) validateTemplates(chain *aiv1alpha1.Chain) error {
+	for _, step := range chain.Spec.Steps {
+		if !strings.Contains(step.Task, "{{") {
+			continue
+		}
+		tmpl, err := template.New("validate").Parse(step.Task)
+		if err != nil {
+			return fmt.Errorf("step %q has invalid template: %w", step.Name, err)
+		}
+		// Dry-run execute with mock data to catch field access errors
+		mockSteps := make(map[string]map[string]string)
+		for _, s := range chain.Spec.Steps {
+			mockSteps[s.Name] = map[string]string{
+				"Output": "",
+				"Error":  "",
+			}
+		}
+		mockData := map[string]interface{}{
+			"Steps": mockSteps,
+			"Input": "",
+		}
+		var buf bytes.Buffer
+		if err := tmpl.Execute(&buf, mockData); err != nil {
+			return fmt.Errorf("step %q template execution error (hint: use .Steps.stepname.Output not steps.stepname.output): %w", step.Name, err)
+		}
+	}
+	return nil
+}
+
 func (r *ChainReconciler) validateDAG(chain *aiv1alpha1.Chain) error {
 	stepNames := make(map[string]bool)
 	for _, s := range chain.Spec.Steps {
