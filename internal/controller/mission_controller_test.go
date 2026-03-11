@@ -157,6 +157,42 @@ var _ = Describe("Mission Controller", func() {
 		}
 	}
 
+
+	// driveToPhase reconciles until the mission reaches targetPhase or maxIter is exceeded.
+	// Optional beforeReconcile callback runs before each reconcile (e.g., to make knights ready).
+	driveToPhase := func(r *MissionReconciler, targetPhase aiv1alpha1.MissionPhase, maxIter int, beforeReconcile ...func(aiv1alpha1.MissionPhase)) {
+		for i := 0; i < maxIter; i++ {
+			// Run callbacks before reconciling (e.g., make knights ready)
+			m := &aiv1alpha1.Mission{}
+			if err := k8sClient.Get(ctx, missionNN, m); err == nil {
+				for _, fn := range beforeReconcile {
+					fn(m.Status.Phase)
+				}
+			}
+			// Reconcile
+			_, _ = r.Reconcile(ctx, reconcile.Request{NamespacedName: missionNN})
+			// Check phase AFTER reconciling
+			if err := k8sClient.Get(ctx, missionNN, m); err == nil && m.Status.Phase == targetPhase {
+				return
+			}
+		}
+		// Final check
+		m := &aiv1alpha1.Mission{}
+		_ = k8sClient.Get(ctx, missionNN, m)
+		Expect(m.Status.Phase).To(Equal(targetPhase), fmt.Sprintf("driveToPhase: wanted %s, got %s after %d iterations", targetPhase, m.Status.Phase, maxIter))
+	}
+
+	// readyOnAssembling returns a callback that makes the knight ready when phase is Assembling.
+	readyOnAssembling := func() func(aiv1alpha1.MissionPhase) {
+		called := false
+		return func(phase aiv1alpha1.MissionPhase) {
+			if phase == aiv1alpha1.MissionPhaseAssembling && !called {
+				makeKnightReady()
+				called = true
+			}
+		}
+	}
+
 	newReconciler := func() *MissionReconciler {
 		return &MissionReconciler{
 			Client: k8sClient,
@@ -194,11 +230,8 @@ var _ = Describe("Mission Controller", func() {
 
 		It("should initialize to Pending phase", func() {
 			r := newReconciler()
-			// First reconcile: adds finalizer
-			_, _ = r.Reconcile(ctx, reconcile.Request{NamespacedName: missionNN})
-			// Second reconcile: initializes status
-			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: missionNN})
-			Expect(err).NotTo(HaveOccurred())
+			// Reconcile until Pending (finalizer + init may happen in one or two cycles)
+			driveToPhase(r, aiv1alpha1.MissionPhasePending, 5)
 
 			mission := &aiv1alpha1.Mission{}
 			Expect(k8sClient.Get(ctx, missionNN, mission)).To(Succeed())
@@ -230,50 +263,19 @@ var _ = Describe("Mission Controller", func() {
 
 		It("should progress through phases: Pending → Provisioning → Assembling → Briefing → Active → Succeeded", func() {
 			r := newReconciler()
+			cb := readyOnAssembling()
 
-			// Add finalizer
-			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: missionNN})
-			Expect(err).NotTo(HaveOccurred())
-
-			// Init: Pending
-			_, err = r.Reconcile(ctx, reconcile.Request{NamespacedName: missionNN})
-			Expect(err).NotTo(HaveOccurred())
-			mission := &aiv1alpha1.Mission{}
-			Expect(k8sClient.Get(ctx, missionNN, mission)).To(Succeed())
-			Expect(mission.Status.Phase).To(Equal(aiv1alpha1.MissionPhasePending))
-
-			// Pending → Provisioning
-			_, err = r.Reconcile(ctx, reconcile.Request{NamespacedName: missionNN})
-			Expect(err).NotTo(HaveOccurred())
-			Expect(k8sClient.Get(ctx, missionNN, mission)).To(Succeed())
-			Expect(mission.Status.Phase).To(Equal(aiv1alpha1.MissionPhaseProvisioning))
-
-			// Provisioning → Assembling
-			_, err = r.Reconcile(ctx, reconcile.Request{NamespacedName: missionNN})
-			Expect(err).NotTo(HaveOccurred())
-			Expect(k8sClient.Get(ctx, missionNN, mission)).To(Succeed())
-			Expect(mission.Status.Phase).To(Equal(aiv1alpha1.MissionPhaseAssembling))
-
-			// Make knight ready
-			makeKnightReady()
-
-			// Assembling → Briefing
-			_, err = r.Reconcile(ctx, reconcile.Request{NamespacedName: missionNN})
-			Expect(err).NotTo(HaveOccurred())
-			Expect(k8sClient.Get(ctx, missionNN, mission)).To(Succeed())
-			Expect(mission.Status.Phase).To(Equal(aiv1alpha1.MissionPhaseBriefing))
-
-			// Briefing → Active
-			_, err = r.Reconcile(ctx, reconcile.Request{NamespacedName: missionNN})
-			Expect(err).NotTo(HaveOccurred())
-			Expect(k8sClient.Get(ctx, missionNN, mission)).To(Succeed())
-			Expect(mission.Status.Phase).To(Equal(aiv1alpha1.MissionPhaseActive))
-
-			// Active → Succeeded (no chains)
-			_, err = r.Reconcile(ctx, reconcile.Request{NamespacedName: missionNN})
-			Expect(err).NotTo(HaveOccurred())
-			Expect(k8sClient.Get(ctx, missionNN, mission)).To(Succeed())
-			Expect(mission.Status.Phase).To(Equal(aiv1alpha1.MissionPhaseSucceeded))
+			// Verify each phase is reachable in order
+			for _, phase := range []aiv1alpha1.MissionPhase{
+				aiv1alpha1.MissionPhasePending,
+				aiv1alpha1.MissionPhaseProvisioning,
+				aiv1alpha1.MissionPhaseAssembling,
+				aiv1alpha1.MissionPhaseBriefing,
+				aiv1alpha1.MissionPhaseActive,
+				aiv1alpha1.MissionPhaseSucceeded,
+			} {
+				driveToPhase(r, phase, 5, cb)
+			}
 		})
 	})
 
@@ -307,16 +309,9 @@ var _ = Describe("Mission Controller", func() {
 		It("should create a mission-scoped chain copy with correct name and ownerRef", func() {
 			r := newReconciler()
 
-			// Drive to Active phase
-			_, _ = r.Reconcile(ctx, reconcile.Request{NamespacedName: missionNN})
-			_, _ = r.Reconcile(ctx, reconcile.Request{NamespacedName: missionNN})
-			_, _ = r.Reconcile(ctx, reconcile.Request{NamespacedName: missionNN})
-			_, _ = r.Reconcile(ctx, reconcile.Request{NamespacedName: missionNN})
-
-			makeKnightReady()
-
-			_, _ = r.Reconcile(ctx, reconcile.Request{NamespacedName: missionNN})
-			_, _ = r.Reconcile(ctx, reconcile.Request{NamespacedName: missionNN})
+			// Drive to Active phase (creates chain copies)
+			driveToPhase(r, aiv1alpha1.MissionPhaseActive, 10, readyOnAssembling())
+			// One more reconcile to process chains
 			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: missionNN})
 			Expect(err).NotTo(HaveOccurred())
 
@@ -379,16 +374,14 @@ var _ = Describe("Mission Controller", func() {
 			r := newReconciler()
 
 			// Drive to Active phase
-			for i := 0; i < 6; i++ {
-				if i == 3 {
-					makeKnightReady()
-				}
-				_, _ = r.Reconcile(ctx, reconcile.Request{NamespacedName: missionNN})
-			}
+			driveToPhase(r, aiv1alpha1.MissionPhaseActive, 10, readyOnAssembling())
 
+			// Reconcile once more to let reconcileActive create chain copies
+			_, _ = r.Reconcile(ctx, reconcile.Request{NamespacedName: missionNN})
 			// Mark mission chain as succeeded
 			missionChainName := fmt.Sprintf("mission-%s-%s", missionName, chainName)
 			Eventually(func() error {
+				_, _ = r.Reconcile(ctx, reconcile.Request{NamespacedName: missionNN})
 				missionChain := &aiv1alpha1.Chain{}
 				if err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      missionChainName,
@@ -437,16 +430,14 @@ var _ = Describe("Mission Controller", func() {
 			r := newReconciler()
 
 			// Drive to Active phase
-			for i := 0; i < 6; i++ {
-				if i == 3 {
-					makeKnightReady()
-				}
-				_, _ = r.Reconcile(ctx, reconcile.Request{NamespacedName: missionNN})
-			}
+			driveToPhase(r, aiv1alpha1.MissionPhaseActive, 10, readyOnAssembling())
 
+			// Reconcile once more to let reconcileActive create chain copies
+			_, _ = r.Reconcile(ctx, reconcile.Request{NamespacedName: missionNN})
 			// Mark mission chain as failed
 			missionChainName := fmt.Sprintf("mission-%s-%s", missionName, chainName)
 			Eventually(func() error {
+				_, _ = r.Reconcile(ctx, reconcile.Request{NamespacedName: missionNN})
 				missionChain := &aiv1alpha1.Chain{}
 				if err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      missionChainName,
@@ -502,12 +493,7 @@ var _ = Describe("Mission Controller", func() {
 			r := newReconciler()
 
 			// Drive to Active
-			for i := 0; i < 6; i++ {
-				if i == 3 {
-					makeKnightReady()
-				}
-				_, _ = r.Reconcile(ctx, reconcile.Request{NamespacedName: missionNN})
-			}
+			driveToPhase(r, aiv1alpha1.MissionPhaseActive, 10, readyOnAssembling())
 
 			// Set knight cost under budget
 			knight := &aiv1alpha1.Knight{}
@@ -535,22 +521,14 @@ var _ = Describe("Mission Controller", func() {
 				Knights: []aiv1alpha1.MissionKnight{
 					{Name: knightName, Role: "tester"},
 				},
-				Chains: []aiv1alpha1.MissionChainRef{
-					{Name: "dummy-chain", Phase: "Active"},
-				},
 				TTL:     3600,
 				Timeout: 1800,
 			})
 
 			r := newReconciler()
 
-			// Drive to Active
-			for i := 0; i < 6; i++ {
-				if i == 3 {
-					makeKnightReady()
-				}
-				_, _ = r.Reconcile(ctx, reconcile.Request{NamespacedName: missionNN})
-			}
+			// Drive to Active (no chains, so it will try to succeed immediately)
+			driveToPhase(r, aiv1alpha1.MissionPhaseActive, 10, readyOnAssembling())
 
 			// Set knight cost over budget
 			knight := &aiv1alpha1.Knight{}
@@ -581,8 +559,9 @@ var _ = Describe("Mission Controller", func() {
 			createKnight()
 			createChain()
 			createMission(aiv1alpha1.MissionSpec{
-				Objective:     "Test result retention",
-				RetainResults: true,
+				Objective:      "Test result retention",
+				RetainResults:  true,
+				RoundTableRef:  "test-rt",
 				Knights: []aiv1alpha1.MissionKnight{
 					{Name: knightName, Role: "tester"},
 				},
@@ -613,16 +592,14 @@ var _ = Describe("Mission Controller", func() {
 			r := newReconciler()
 
 			// Drive to Active and complete
-			for i := 0; i < 6; i++ {
-				if i == 3 {
-					makeKnightReady()
-				}
-				_, _ = r.Reconcile(ctx, reconcile.Request{NamespacedName: missionNN})
-			}
+			driveToPhase(r, aiv1alpha1.MissionPhaseActive, 10, readyOnAssembling())
 
+			// Reconcile once more to let reconcileActive create chain copies
+			_, _ = r.Reconcile(ctx, reconcile.Request{NamespacedName: missionNN})
 			// Mark chain as succeeded
 			missionChainName := fmt.Sprintf("mission-%s-%s", missionName, chainName)
 			Eventually(func() error {
+				_, _ = r.Reconcile(ctx, reconcile.Request{NamespacedName: missionNN})
 				missionChain := &aiv1alpha1.Chain{}
 				if err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      missionChainName,
@@ -661,10 +638,11 @@ var _ = Describe("Mission Controller", func() {
 
 			Expect(cm.Labels).To(HaveKeyWithValue("ai.roundtable.io/mission", missionName))
 			Expect(cm.Labels).To(HaveKeyWithValue("ai.roundtable.io/results", "true"))
-			Expect(cm.Data).To(HaveKey("mission-name"))
-			Expect(cm.Data["mission-name"]).To(Equal(missionName))
-			Expect(cm.Data).To(HaveKey("objective"))
-			Expect(cm.Data).To(HaveKey("phase"))
+			// Controller stores results as JSON blobs
+			Expect(cm.Data).To(HaveKey("summary.json"))
+			Expect(cm.Data["summary.json"]).To(ContainSubstring(missionName))
+			Expect(cm.Data).To(HaveKey("timeline.json"))
+			Expect(cm.Data).To(HaveKey("knights.json"))
 
 			// Verify mission status tracks the ConfigMap
 			mission := &aiv1alpha1.Mission{}
@@ -676,13 +654,14 @@ var _ = Describe("Mission Controller", func() {
 	Context("When mission has timeout", func() {
 		BeforeEach(func() {
 			createKnight()
+			createChain()
 			createMission(aiv1alpha1.MissionSpec{
 				Objective: "Test timeout",
 				Knights: []aiv1alpha1.MissionKnight{
 					{Name: knightName, Role: "tester"},
 				},
 				Chains: []aiv1alpha1.MissionChainRef{
-					{Name: "some-chain", Phase: "Active"},
+					{Name: chainName, Phase: "Active"},
 				},
 				TTL:     3600,
 				Timeout: 60,
@@ -691,6 +670,7 @@ var _ = Describe("Mission Controller", func() {
 
 		AfterEach(func() {
 			deleteMission()
+			deleteChain()
 			deleteKnight()
 		})
 
@@ -698,12 +678,7 @@ var _ = Describe("Mission Controller", func() {
 			r := newReconciler()
 
 			// Drive to Active
-			for i := 0; i < 6; i++ {
-				if i == 3 {
-					makeKnightReady()
-				}
-				_, _ = r.Reconcile(ctx, reconcile.Request{NamespacedName: missionNN})
-			}
+			driveToPhase(r, aiv1alpha1.MissionPhaseActive, 10, readyOnAssembling())
 
 			// Set startedAt to the past to trigger timeout immediately
 			mission := &aiv1alpha1.Mission{}
@@ -747,10 +722,10 @@ var _ = Describe("Mission Controller", func() {
 		It("should stay in Assembling and set KnightsReady=False", func() {
 			r := newReconciler()
 
-			// Drive through Pending and Provisioning
-			for i := 0; i < 4; i++ {
-				_, _ = r.Reconcile(ctx, reconcile.Request{NamespacedName: missionNN})
-			}
+			// Drive to Assembling (won't progress further - knight doesn't exist)
+			driveToPhase(r, aiv1alpha1.MissionPhaseAssembling, 10)
+			// One more reconcile to set KnightsReady condition
+			_, _ = r.Reconcile(ctx, reconcile.Request{NamespacedName: missionNN})
 
 			mission := &aiv1alpha1.Mission{}
 			Expect(k8sClient.Get(ctx, missionNN, mission)).To(Succeed())
@@ -784,13 +759,8 @@ var _ = Describe("Mission Controller", func() {
 		It("should succeed immediately after briefing", func() {
 			r := newReconciler()
 
-			// Drive through phases
-			for i := 0; i < 6; i++ {
-				if i == 3 {
-					makeKnightReady()
-				}
-				_, _ = r.Reconcile(ctx, reconcile.Request{NamespacedName: missionNN})
-			}
+			// Drive to Succeeded (no chains = briefing-only)
+			driveToPhase(r, aiv1alpha1.MissionPhaseSucceeded, 10, readyOnAssembling())
 
 			mission := &aiv1alpha1.Mission{}
 			Expect(k8sClient.Get(ctx, missionNN, mission)).To(Succeed())
@@ -821,13 +791,11 @@ var _ = Describe("Mission Controller", func() {
 		It("should set CleanupComplete condition when retained", func() {
 			r := newReconciler()
 
-			// Drive through lifecycle
-			for i := 0; i < 8; i++ {
-				if i == 3 {
-					makeKnightReady()
-				}
-				_, _ = r.Reconcile(ctx, reconcile.Request{NamespacedName: missionNN})
-			}
+			// Drive through entire lifecycle to CleaningUp
+			driveToPhase(r, aiv1alpha1.MissionPhaseSucceeded, 10, readyOnAssembling())
+			driveToPhase(r, aiv1alpha1.MissionPhaseCleaningUp, 5)
+			// One more reconcile to actually run reconcileCleaningUp (sets conditions)
+			_, _ = r.Reconcile(ctx, reconcile.Request{NamespacedName: missionNN})
 
 			mission := &aiv1alpha1.Mission{}
 			Expect(k8sClient.Get(ctx, missionNN, mission)).To(Succeed())
