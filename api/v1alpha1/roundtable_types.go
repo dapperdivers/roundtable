@@ -21,21 +21,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// Label constants for Round Table resources
-const (
-	// LabelEphemeral marks resources as ephemeral (mission-owned).
-	LabelEphemeral = "ai.roundtable.io/ephemeral"
-
-	// LabelMission links ephemeral resources to their owning Mission.
-	LabelMission = "ai.roundtable.io/mission"
-
-	// LabelRoundTable links ephemeral Knights to their ephemeral RoundTable.
-	LabelRoundTable = "ai.roundtable.io/round-table"
-
-	// LabelRole specifies a knight's role within a mission.
-	LabelRole = "ai.roundtable.io/role"
-)
-
 // RoundTableSpec defines the desired state of a RoundTable — a fleet of knights
 // with shared configuration and policies.
 type RoundTableSpec struct {

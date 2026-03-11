@@ -415,8 +415,8 @@ var _ = Describe("RoundTable Controller", func() {
 		})
 
 		AfterEach(func() {
-			// Cleanup knights
-			for _, name := range []string{"galahad", "mission-test-scanner", "mission-other-scanner"} {
+			// Cleanup knights (from all tests in this context)
+			for _, name := range []string{"galahad", "mission-test-scanner", "mission-other-scanner", "regular-knight", "eph-knight"} {
 				k := &aiv1alpha1.Knight{}
 				knn := types.NamespacedName{Name: name, Namespace: namespace}
 				if err := k8sClient.Get(ctx, knn, k); err == nil {
@@ -424,7 +424,7 @@ var _ = Describe("RoundTable Controller", func() {
 				}
 			}
 			// Cleanup RoundTables
-			for _, name := range []string{fleetRT, ephemeralRT} {
+			for _, name := range []string{fleetRT, ephemeralRT, "fleet-no-selector"} {
 				rt := &aiv1alpha1.RoundTable{}
 				rtKey := types.NamespacedName{Name: name, Namespace: namespace}
 				if err := k8sClient.Get(ctx, rtKey, rt); err == nil {
@@ -434,6 +434,12 @@ var _ = Describe("RoundTable Controller", func() {
 		})
 
 		It("should exclude ephemeral knights from fleet RoundTable aggregation", func() {
+			// Ensure galahad doesn't exist from previous test
+			existingGalahad := &aiv1alpha1.Knight{}
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: "galahad", Namespace: namespace}, existingGalahad); err == nil {
+				_ = k8sClient.Delete(ctx, existingGalahad)
+			}
+
 			// Create regular fleet knight
 			galahad := &aiv1alpha1.Knight{
 				ObjectMeta: metav1.ObjectMeta{

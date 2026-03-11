@@ -22,6 +22,21 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+// Label keys used across Round Table resources
+const (
+	// LabelEphemeral marks resources as ephemeral (mission-owned)
+	LabelEphemeral = "ai.roundtable.io/ephemeral"
+
+	// LabelMission links resources to their owning Mission
+	LabelMission = "ai.roundtable.io/mission"
+
+	// LabelRoundTable links resources to their RoundTable
+	LabelRoundTable = "ai.roundtable.io/round-table"
+
+	// LabelRole specifies a knight's role within a mission
+	LabelRole = "ai.roundtable.io/role"
+)
+
 // KnightSpec defines the desired state of a Knight — an AI agent in the Round Table.
 type KnightSpec struct {
 	// domain is the knight's area of expertise (e.g., "security", "infrastructure", "finance").
