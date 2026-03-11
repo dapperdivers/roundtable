@@ -230,11 +230,10 @@ var _ = Describe("Mission Controller", func() {
 
 	// readyOnProvisioning returns a callback that makes the RoundTable ready when phase is Provisioning.
 	readyOnProvisioning := func() func(aiv1alpha1.MissionPhase) {
-		called := false
 		return func(phase aiv1alpha1.MissionPhase) {
-			if phase == aiv1alpha1.MissionPhaseProvisioning && !called {
+			if phase == aiv1alpha1.MissionPhaseProvisioning {
+				// Keep trying to mark RT as ready until it exists and is marked
 				makeEphemeralRoundTableReady()
-				called = true
 			}
 		}
 	}

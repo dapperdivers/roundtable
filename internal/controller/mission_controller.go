@@ -24,6 +24,7 @@ import (
 	"sync"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -329,80 +330,161 @@ func (r *MissionReconciler) reconcileProvisioning(ctx context.Context, mission *
 	return ctrl.Result{Requeue: true}, nil
 }
 
-// reconcileAssembling validates knight references and waits for readiness.
+// reconcileAssembling creates ephemeral knights and validates all knight references for readiness.
 func (r *MissionReconciler) reconcileAssembling(ctx context.Context, mission *aiv1alpha1.Mission) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
-	allReady := true
-	for i, mk := range mission.Spec.Knights {
-		if mk.Ephemeral {
-			// v1: skip ephemeral knights (not implemented)
-			log.Info("Skipping ephemeral knight (v2 feature)", "knight", mk.Name)
-			mission.Status.KnightStatuses[i].Ready = false
-			allReady = false
-			continue
-		}
-
-		// Validate knight exists
-		knight := &aiv1alpha1.Knight{}
-		if err := r.Get(ctx, types.NamespacedName{
-			Name:      mk.Name,
-			Namespace: mission.Namespace,
-		}, knight); err != nil {
-			log.Error(err, "Knight not found", "knight", mk.Name)
-			meta.SetStatusCondition(&mission.Status.Conditions, metav1.Condition{
-				Type:               "KnightsReady",
-				Status:             metav1.ConditionFalse,
-				Reason:             "KnightNotFound",
-				Message:            fmt.Sprintf("Knight %q not found: %v", mk.Name, err),
-				ObservedGeneration: mission.Generation,
-			})
-			mission.Status.ObservedGeneration = mission.Generation
-			_ = r.Status().Update(ctx, mission)
-			return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
-		}
-
-		// Check knight readiness
-		if knight.Status.Phase == aiv1alpha1.KnightPhaseReady && knight.Status.Ready {
-			mission.Status.KnightStatuses[i].Ready = true
-		} else {
-			mission.Status.KnightStatuses[i].Ready = false
-			allReady = false
-			log.Info("Knight not ready yet", "knight", mk.Name, "phase", knight.Status.Phase)
+	// Get ephemeral RoundTable (if one was created)
+	var rt *aiv1alpha1.RoundTable
+	if mission.Status.RoundTableName != "" {
+		rt = &aiv1alpha1.RoundTable{}
+		rtKey := types.NamespacedName{Name: mission.Status.RoundTableName, Namespace: mission.Namespace}
+		if err := r.Get(ctx, rtKey, rt); err != nil {
+			return ctrl.Result{}, fmt.Errorf("failed to get ephemeral RoundTable: %w", err)
 		}
 	}
 
-	if allReady && len(mission.Spec.Knights) > 0 {
-		// Check we don't have only ephemeral knights (which we skip in v1)
-		hasNonEphemeral := false
-		for _, mk := range mission.Spec.Knights {
-			if !mk.Ephemeral {
-				hasNonEphemeral = true
-				break
+	// Track assembly progress
+	knightStatuses := make(map[string]aiv1alpha1.MissionKnightStatus)
+	for _, existing := range mission.Status.KnightStatuses {
+		knightStatuses[existing.Name] = existing
+	}
+
+	allReady := true
+	var notReadyKnights []string
+
+	// Process each knight in spec
+	for _, mk := range mission.Spec.Knights {
+		if !mk.Ephemeral {
+			// Recruited knight - verify it exists and is Ready
+			existingKnight := &aiv1alpha1.Knight{}
+			knightKey := types.NamespacedName{Name: mk.Name, Namespace: mission.Namespace}
+			if err := r.Get(ctx, knightKey, existingKnight); err != nil {
+				if client.IgnoreNotFound(err) == nil {
+					log.Error(err, "Recruited knight not found", "knight", mk.Name)
+					meta.SetStatusCondition(&mission.Status.Conditions, metav1.Condition{
+						Type:               "KnightsReady",
+						Status:             metav1.ConditionFalse,
+						Reason:             "KnightNotFound",
+						Message:            fmt.Sprintf("Recruited knight %q not found", mk.Name),
+						ObservedGeneration: mission.Generation,
+					})
+					mission.Status.ObservedGeneration = mission.Generation
+					_ = r.Status().Update(ctx, mission)
+					return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+				}
+				return ctrl.Result{}, err
 			}
-		}
-		if !hasNonEphemeral {
-			meta.SetStatusCondition(&mission.Status.Conditions, metav1.Condition{
-				Type:               "KnightsReady",
-				Status:             metav1.ConditionFalse,
-				Reason:             "NoValidKnights",
-				Message:            "All knights are ephemeral (not supported in v1)",
-				ObservedGeneration: mission.Generation,
-			})
-			mission.Status.Phase = aiv1alpha1.MissionPhaseFailed
-			now := metav1.Now()
-			mission.Status.CompletedAt = &now
-			mission.Status.Result = "No valid knights available"
-			mission.Status.ObservedGeneration = mission.Generation
-			return ctrl.Result{}, r.Status().Update(ctx, mission)
+
+			if existingKnight.Status.Phase != aiv1alpha1.KnightPhaseReady || !existingKnight.Status.Ready {
+				allReady = false
+				notReadyKnights = append(notReadyKnights, mk.Name)
+			}
+
+			// Update status
+			knightStatuses[mk.Name] = aiv1alpha1.MissionKnightStatus{
+				Name:      mk.Name,
+				Ephemeral: false,
+				Ready:     existingKnight.Status.Ready,
+			}
+			continue
 		}
 
-		log.Info("All knights assembled, transitioning to Briefing", "mission", mission.Name)
+		// Ephemeral knight - create if doesn't exist
+		knightName := fmt.Sprintf("%s-%s", mission.Name, mk.Name)
+		knight := &aiv1alpha1.Knight{}
+		knightKey := types.NamespacedName{Name: knightName, Namespace: mission.Namespace}
+		err := r.Get(ctx, knightKey, knight)
+
+		if err != nil && client.IgnoreNotFound(err) == nil {
+			// Create ephemeral knight
+			if rt == nil {
+				return ctrl.Result{}, fmt.Errorf("cannot create ephemeral knight without RoundTable")
+			}
+
+			knight, err := r.buildEphemeralKnight(ctx, mission, mk, rt)
+			if err != nil {
+				return ctrl.Result{}, fmt.Errorf("failed to build ephemeral knight %q: %w", mk.Name, err)
+			}
+
+			log.Info("Creating ephemeral knight", "name", knightName)
+			if err := r.Create(ctx, knight); err != nil {
+				return ctrl.Result{}, fmt.Errorf("failed to create ephemeral knight: %w", err)
+			}
+
+			// Update status (not ready yet)
+			knightStatuses[mk.Name] = aiv1alpha1.MissionKnightStatus{
+				Name:      mk.Name,
+				Ephemeral: true,
+				Ready:     false,
+			}
+			allReady = false
+			notReadyKnights = append(notReadyKnights, mk.Name)
+			continue
+		} else if err != nil {
+			return ctrl.Result{}, fmt.Errorf("failed to get knight %q: %w", knightName, err)
+		}
+
+		// Knight exists, check readiness
+		if knight.Status.Phase != aiv1alpha1.KnightPhaseReady || !knight.Status.Ready {
+			allReady = false
+			notReadyKnights = append(notReadyKnights, mk.Name)
+		}
+
+		// Update status
+		knightStatuses[mk.Name] = aiv1alpha1.MissionKnightStatus{
+			Name:      mk.Name,
+			Ephemeral: true,
+			Ready:     knight.Status.Ready,
+		}
+	}
+
+	// Update mission status with knight statuses
+	mission.Status.KnightStatuses = make([]aiv1alpha1.MissionKnightStatus, 0, len(knightStatuses))
+	for _, ks := range knightStatuses {
+		mission.Status.KnightStatuses = append(mission.Status.KnightStatuses, ks)
+	}
+
+	if err := r.Status().Update(ctx, mission); err != nil {
+		return ctrl.Result{}, fmt.Errorf("failed to update mission status: %w", err)
+	}
+
+	// Check assembly timeout (Timeout/3)
+	assemblyTimeout := time.Duration(mission.Spec.Timeout/3) * time.Second
+	if mission.Status.StartedAt != nil && time.Since(mission.Status.StartedAt.Time) > assemblyTimeout {
+		log.Info("Assembly timeout exceeded",
+			"timeout", assemblyTimeout,
+			"notReady", notReadyKnights)
+
+		mission.Status.Phase = aiv1alpha1.MissionPhaseFailed
+		now := metav1.Now()
+		mission.Status.CompletedAt = &now
+		mission.Status.Result = fmt.Sprintf("Assembly timeout: knights not ready: %v", notReadyKnights)
+		meta.SetStatusCondition(&mission.Status.Conditions, metav1.Condition{
+			Type:               "KnightsReady",
+			Status:             metav1.ConditionFalse,
+			Reason:             "AssemblyTimeout",
+			Message:            fmt.Sprintf("Knights not ready within %v: %v", assemblyTimeout, notReadyKnights),
+			ObservedGeneration: mission.Generation,
+		})
+		mission.Status.ObservedGeneration = mission.Generation
+		if err := r.Status().Update(ctx, mission); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{}, nil
+	}
+
+	// If all knights ready, transition to Briefing
+	if allReady && len(mission.Spec.Knights) > 0 {
+		log.Info("All knights assembled, transitioning to Briefing",
+			"mission", mission.Name,
+			"knightCount", len(mission.Spec.Knights))
+
 		meta.SetStatusCondition(&mission.Status.Conditions, metav1.Condition{
 			Type:               "KnightsReady",
 			Status:             metav1.ConditionTrue,
 			Reason:             "AllKnightsReady",
-			Message:            "All referenced knights are ready",
+			Message:            fmt.Sprintf("All %d knights are ready", len(mission.Spec.Knights)),
 			ObservedGeneration: mission.Generation,
 		})
 		mission.Status.Phase = aiv1alpha1.MissionPhaseBriefing
@@ -410,9 +492,12 @@ func (r *MissionReconciler) reconcileAssembling(ctx context.Context, mission *ai
 		return ctrl.Result{RequeueAfter: 1 * time.Second}, r.Status().Update(ctx, mission)
 	}
 
-	mission.Status.ObservedGeneration = mission.Generation
-	_ = r.Status().Update(ctx, mission)
-	return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+	// Not all ready yet, requeue to check again
+	log.Info("Waiting for knights to become ready",
+		"total", len(mission.Spec.Knights),
+		"notReady", len(notReadyKnights))
+
+	return ctrl.Result{RequeueAfter: 3 * time.Second}, nil
 }
 
 // reconcileBriefing publishes the mission briefing to NATS and transitions to Active.
@@ -1154,6 +1239,133 @@ func (r *MissionReconciler) updateChainStatus(mission *aiv1alpha1.Mission, chain
 	})
 }
 
+// resolveKnightSpec resolves a MissionKnight's spec from either ephemeralSpec or templateRef.
+func (r *MissionReconciler) resolveKnightSpec(
+	mission *aiv1alpha1.Mission,
+	mk aiv1alpha1.MissionKnight,
+) (*aiv1alpha1.KnightSpec, error) {
+	var baseSpec *aiv1alpha1.KnightSpec
+
+	// Path A: Inline spec
+	if mk.EphemeralSpec != nil {
+		baseSpec = mk.EphemeralSpec.DeepCopy()
+	} else if mk.TemplateRef != "" {
+		// Path B: Template reference
+		var template *aiv1alpha1.MissionKnightTemplate
+		for i := range mission.Spec.KnightTemplates {
+			if mission.Spec.KnightTemplates[i].Name == mk.TemplateRef {
+				template = &mission.Spec.KnightTemplates[i]
+				break
+			}
+		}
+
+		if template == nil {
+			return nil, fmt.Errorf("template %q not found in mission.spec.knightTemplates", mk.TemplateRef)
+		}
+
+		baseSpec = template.Spec.DeepCopy()
+
+		// Apply overrides (if specified)
+		if mk.SpecOverrides != nil {
+			r.applySpecOverrides(baseSpec, mk.SpecOverrides)
+		}
+	} else {
+		return nil, fmt.Errorf("ephemeral knight %q has neither ephemeralSpec nor templateRef", mk.Name)
+	}
+
+	return baseSpec, nil
+}
+
+// applySpecOverrides applies KnightSpecOverrides to a KnightSpec (strategic merge).
+func (r *MissionReconciler) applySpecOverrides(
+	spec *aiv1alpha1.KnightSpec,
+	overrides *aiv1alpha1.KnightSpecOverrides,
+) {
+	if overrides.Model != "" {
+		spec.Model = overrides.Model
+	}
+	if overrides.Skills != nil {
+		spec.Skills = overrides.Skills
+	}
+	if overrides.Env != nil {
+		spec.Env = append(spec.Env, overrides.Env...)
+	}
+	if overrides.Prompt != nil {
+		spec.Prompt = overrides.Prompt
+	}
+	if overrides.Concurrency != nil {
+		spec.Concurrency = *overrides.Concurrency
+	}
+}
+
+// buildEphemeralKnight creates a Knight CR for an ephemeral mission knight.
+func (r *MissionReconciler) buildEphemeralKnight(
+	ctx context.Context,
+	mission *aiv1alpha1.Mission,
+	mk aiv1alpha1.MissionKnight,
+	rt *aiv1alpha1.RoundTable,
+) (*aiv1alpha1.Knight, error) {
+	// Resolve spec from template or inline
+	spec, err := r.resolveKnightSpec(mission, mk)
+	if err != nil {
+		return nil, err
+	}
+
+	// Generate knight name
+	knightName := fmt.Sprintf("%s-%s", mission.Name, mk.Name)
+
+	// Override NATS config to point at mission streams
+	natsPrefix := rt.Spec.NATS.SubjectPrefix
+	spec.NATS = aiv1alpha1.KnightNATS{
+		URL:           rt.Spec.NATS.URL,
+		Stream:        rt.Spec.NATS.TasksStream,
+		ResultsStream: rt.Spec.NATS.ResultsStream,
+		Subjects: []string{
+			fmt.Sprintf("%s.tasks.%s.>", natsPrefix, spec.Domain),
+		},
+		ConsumerName: fmt.Sprintf("msn-%s-%s", mission.Name, mk.Name),
+		MaxDeliver:   1, // Exactly-once delivery for mission tasks
+	}
+
+	// Inject mission secrets (if any)
+	if len(mission.Spec.Secrets) > 0 {
+		for _, secretRef := range mission.Spec.Secrets {
+			spec.EnvFrom = append(spec.EnvFrom, corev1.EnvFromSource{
+				SecretRef: &corev1.SecretEnvSource{
+					LocalObjectReference: secretRef,
+				},
+			})
+		}
+	}
+
+	// Ephemeral knights don't get persistent workspace
+	spec.Workspace = nil
+
+	// Build Knight CR
+	knight := &aiv1alpha1.Knight{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      knightName,
+			Namespace: mission.Namespace,
+			Labels: map[string]string{
+				aiv1alpha1.LabelMission:     mission.Name,
+				aiv1alpha1.LabelEphemeral:   "true",
+				aiv1alpha1.LabelRoundTable:  rt.Name,
+			},
+			OwnerReferences: []metav1.OwnerReference{
+				*metav1.NewControllerRef(mission, aiv1alpha1.GroupVersion.WithKind("Mission")),
+			},
+		},
+		Spec: *spec,
+	}
+
+	// Add role label if specified
+	if mk.Role != "" {
+		knight.Labels[aiv1alpha1.LabelRole] = mk.Role
+	}
+
+	return knight, nil
+}
+
 // buildEphemeralRoundTable creates the spec for an ephemeral RoundTable for a mission.
 func (r *MissionReconciler) buildEphemeralRoundTable(
 	mission *aiv1alpha1.Mission,
@@ -1259,6 +1471,8 @@ func (r *MissionReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&aiv1alpha1.Mission{}).
 		Owns(&aiv1alpha1.Chain{}).
+		Owns(&aiv1alpha1.Knight{}).
+		Owns(&aiv1alpha1.RoundTable{}).
 		Named("mission").
 		Complete(r)
 }
