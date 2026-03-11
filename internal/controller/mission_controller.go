@@ -575,6 +575,22 @@ func (r *MissionReconciler) reconcileMissionChains(ctx context.Context, mission 
 			return false, false, err
 		}
 
+		// Trigger idle chains — mission-scoped chains have no schedule,
+		// so the mission controller must kick them to Running.
+		if chain.Status.Phase == aiv1alpha1.ChainPhaseIdle || chain.Status.Phase == "" {
+			now := metav1.Now()
+			chain.Status.Phase = aiv1alpha1.ChainPhaseRunning
+			chain.Status.StartedAt = &now
+			if err := r.Status().Update(ctx, chain); err != nil {
+				log.Error(err, "Failed to trigger mission chain", "chain", missionChainName)
+				anyFailed = true
+				continue
+			}
+			log.Info("Triggered mission chain", "chain", missionChainName)
+			allComplete = false
+			continue
+		}
+
 		// Update mission.status.chainStatuses
 		r.updateChainStatus(mission, chainRef.Name, missionChainName, chain.Status.Phase)
 
