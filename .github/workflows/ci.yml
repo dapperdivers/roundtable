@@ -124,3 +124,16 @@ jobs:
         run: |
           helm package charts/roundtable-operator
           helm push roundtable-operator-*.tgz oci://ghcr.io/dapperdivers/charts
+
+  notify-cluster:
+    needs: [docker, helm]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch image update to dapper-cluster
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.CLUSTER_PAT }}
+          repository: DapperDivers/dapper-cluster
+          event-type: image-update
+          client-payload: '{"image": "roundtable", "tag": "${{ github.sha }}", "repo": "${{ github.repository }}"}'
