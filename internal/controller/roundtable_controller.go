@@ -191,22 +191,45 @@ func (r *RoundTableReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 }
 
 // discoverKnights lists Knight CRs matching the RoundTable's knightSelector.
+// For ephemeral RoundTables, it returns only knights with the matching round-table label.
+// For non-ephemeral RoundTables, it excludes all ephemeral knights.
 func (r *RoundTableReconciler) discoverKnights(ctx context.Context, rt *aiv1alpha1.RoundTable) ([]aiv1alpha1.Knight, error) {
 	knightList := &aiv1alpha1.KnightList{}
 	listOpts := []client.ListOption{
 		client.InNamespace(rt.Namespace),
 	}
 
-	if rt.Spec.KnightSelector != nil {
-		selector, err := metav1.LabelSelectorAsSelector(rt.Spec.KnightSelector)
-		if err != nil {
-			return nil, fmt.Errorf("invalid knightSelector: %w", err)
+	if rt.Spec.Ephemeral {
+		// Ephemeral RoundTable: only manage knights that belong to this specific table
+		listOpts = append(listOpts, client.MatchingLabels{
+			aiv1alpha1.LabelRoundTable: rt.Name,
+		})
+	} else {
+		// Non-ephemeral RoundTable: manage all non-ephemeral knights
+		// Apply knight selector if specified
+		if rt.Spec.KnightSelector != nil {
+			selector, err := metav1.LabelSelectorAsSelector(rt.Spec.KnightSelector)
+			if err != nil {
+				return nil, fmt.Errorf("invalid knightSelector: %w", err)
+			}
+			listOpts = append(listOpts, client.MatchingLabelsSelector{Selector: selector})
 		}
-		listOpts = append(listOpts, client.MatchingLabelsSelector{Selector: selector})
 	}
 
 	if err := r.List(ctx, knightList, listOpts...); err != nil {
 		return nil, fmt.Errorf("failed to list knights: %w", err)
+	}
+
+	// For non-ephemeral RoundTables, filter out any ephemeral knights
+	// (in case knightSelector didn't exclude them)
+	if !rt.Spec.Ephemeral {
+		filtered := make([]aiv1alpha1.Knight, 0, len(knightList.Items))
+		for _, knight := range knightList.Items {
+			if knight.Labels[aiv1alpha1.LabelEphemeral] != "true" {
+				filtered = append(filtered, knight)
+			}
+		}
+		return filtered, nil
 	}
 
 	return knightList.Items, nil
