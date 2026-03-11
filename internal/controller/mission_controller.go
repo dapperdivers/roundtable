@@ -587,6 +587,7 @@ func (r *MissionReconciler) reconcileMissionChains(ctx context.Context, mission 
 				continue
 			}
 			log.Info("Triggered mission chain", "chain", missionChainName)
+			r.updateChainStatus(mission, chainRef.Name, missionChainName, aiv1alpha1.ChainPhaseRunning)
 			allComplete = false
 			continue
 		}
