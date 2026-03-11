@@ -63,6 +63,18 @@ type Client interface {
 
 	// PollMessage polls for a single message with a timeout.
 	PollMessage(subject string, timeout time.Duration, opts ...SubscribeOption) (*nats.Msg, error)
+
+	// KVPut stores a value in a NATS KV bucket (creates bucket if needed).
+	KVPut(bucket, key string, value []byte) error
+
+	// KVGet retrieves a value from a NATS KV bucket.
+	KVGet(bucket, key string) ([]byte, error)
+
+	// KVDelete deletes a key from a NATS KV bucket.
+	KVDelete(bucket, key string) error
+
+	// KVKeys lists all keys in a NATS KV bucket.
+	KVKeys(bucket string) ([]string, error)
 }
 
 // JetStreamClient implements the Client interface using NATS JetStream.
@@ -415,4 +427,78 @@ func WithFallbackAutoDetect() SubscribeOption {
 	return func(o *subscribeOptions) {
 		o.fallbackAutoDetect = true
 	}
+}
+
+// getOrCreateBucket returns a KV bucket, creating it if it doesn't exist.
+func (c *JetStreamClient) getOrCreateBucket(bucket string) (nats.KeyValue, error) {
+	if c.js == nil {
+		return nil, fmt.Errorf("JetStream not connected")
+	}
+	kv, err := c.js.KeyValue(bucket)
+	if err == nats.ErrBucketNotFound {
+		kv, err = c.js.CreateKeyValue(&nats.KeyValueConfig{
+			Bucket:      bucket,
+			Description: fmt.Sprintf("Round Table %s store", bucket),
+			History:     3,
+			TTL:         30 * 24 * time.Hour, // 30 day TTL
+		})
+		if err != nil {
+			return nil, fmt.Errorf("failed to create KV bucket %s: %w", bucket, err)
+		}
+		c.log.Info("Created NATS KV bucket", "bucket", bucket)
+	} else if err != nil {
+		return nil, fmt.Errorf("failed to access KV bucket %s: %w", bucket, err)
+	}
+	return kv, nil
+}
+
+// KVPut stores a value in a NATS KV bucket (creates bucket if needed).
+func (c *JetStreamClient) KVPut(bucket, key string, value []byte) error {
+	kv, err := c.getOrCreateBucket(bucket)
+	if err != nil {
+		return err
+	}
+	_, err = kv.Put(key, value)
+	if err != nil {
+		return fmt.Errorf("failed to put key %s in bucket %s: %w", key, bucket, err)
+	}
+	return nil
+}
+
+// KVGet retrieves a value from a NATS KV bucket.
+func (c *JetStreamClient) KVGet(bucket, key string) ([]byte, error) {
+	kv, err := c.getOrCreateBucket(bucket)
+	if err != nil {
+		return nil, err
+	}
+	entry, err := kv.Get(key)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get key %s from bucket %s: %w", key, bucket, err)
+	}
+	return entry.Value(), nil
+}
+
+// KVDelete deletes a key from a NATS KV bucket.
+func (c *JetStreamClient) KVDelete(bucket, key string) error {
+	kv, err := c.getOrCreateBucket(bucket)
+	if err != nil {
+		return err
+	}
+	return kv.Delete(key)
+}
+
+// KVKeys lists all keys in a NATS KV bucket.
+func (c *JetStreamClient) KVKeys(bucket string) ([]string, error) {
+	kv, err := c.getOrCreateBucket(bucket)
+	if err != nil {
+		return nil, err
+	}
+	keys, err := kv.Keys()
+	if err == nats.ErrNoKeysFound {
+		return []string{}, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to list keys in bucket %s: %w", bucket, err)
+	}
+	return keys, nil
 }
