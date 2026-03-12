@@ -1,0 +1,75 @@
+apiVersion: ai.roundtable.io/v1alpha1
+kind: Mission
+metadata:
+  name: web-app-pentest
+  namespace: roundtable
+spec:
+  objective: "Conduct comprehensive penetration test of web application at https://target.example.com"
+  
+  # Reference the RoundTable with templates
+  roundTableRef: security-ops
+  
+  # Use RoundTable templates (no need to redefine knightTemplates)
+  knights:
+  # Lead pentester (uses RoundTable template as-is)
+  - name: lead
+    ephemeral: true
+    role: lead
+    templateRef: pentester  # ← References security-ops.knightTemplates.pentester
+  
+  # Multiple auditors with different focuses
+  - name: auditor-web
+    ephemeral: true
+    role: auditor
+    templateRef: auditor  # ← References security-ops.knightTemplates.auditor
+    specOverrides:
+      # Override skills for web-focused auditing
+      skills:
+      - security
+      - web-security
+      - owasp
+      # Add environment variables
+      env:
+      - name: TARGET_URL
+        value: "https://target.example.com"
+  
+  - name: auditor-network
+    ephemeral: true
+    role: auditor
+    templateRef: auditor  # ← Same template, different overrides
+    specOverrides:
+      skills:
+      - security
+      - network-security
+      - firewall
+      env:
+      - name: TARGET_NETWORK
+        value: "10.0.0.0/24"
+  
+  # Infrastructure analyst
+  - name: infra
+    ephemeral: true
+    role: analyst
+    templateRef: infra-analyst  # ← References security-ops.knightTemplates.infra-analyst
+    specOverrides:
+      env:
+      - name: CLOUD_PROVIDER
+        value: "aws"
+  
+  # Report writer
+  - name: reporter
+    ephemeral: true
+    role: reporter
+    templateRef: reporter  # ← References security-ops.knightTemplates.reporter
+  
+  # Mission config
+  ttl: 14400  # 4 hours
+  timeout: 10800  # 3 hours
+  cleanupPolicy: Retain
+  retainResults: true
+  
+  briefing: |
+    Mission: Comprehensive penetration test of web application
+    Target: https://target.example.com
+    Scope: Web app, API, network perimeter, cloud infrastructure
+    Rules of engagement: Non-destructive testing only, respect rate limits
