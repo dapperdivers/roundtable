@@ -306,19 +306,19 @@ var _ = Describe("Mission Controller", func() {
 			deleteKnight()
 		})
 
-		It("should progress through phases: Pending → Provisioning → Assembling → Briefing → Active → Succeeded", func() {
+		It("should progress through phases: Pending → Provisioning → Assembling → Briefing → Active", func() {
 			r := newReconciler()
 			cbProvisioning := readyOnProvisioning()
 			cbAssembling := readyOnAssembling()
 
 			// Verify each phase is reachable in order
+			// Note: chainless missions stay Active (no auto-Succeeded transition)
 			for _, phase := range []aiv1alpha1.MissionPhase{
 				aiv1alpha1.MissionPhasePending,
 				aiv1alpha1.MissionPhaseProvisioning,
 				aiv1alpha1.MissionPhaseAssembling,
 				aiv1alpha1.MissionPhaseBriefing,
 				aiv1alpha1.MissionPhaseActive,
-				aiv1alpha1.MissionPhaseSucceeded,
 			} {
 				driveToPhase(r, phase, 10, cbProvisioning, cbAssembling)
 			}
@@ -525,7 +525,7 @@ var _ = Describe("Mission Controller", func() {
 			deleteKnight()
 		})
 
-		It("should succeed when under budget", func() {
+		It("should track cost and stay Active when under budget", func() {
 			createMission(aiv1alpha1.MissionSpec{
 				Objective:     "Test under budget",
 				CostBudgetUSD: "10.00",
@@ -547,16 +547,12 @@ var _ = Describe("Mission Controller", func() {
 			knight.Status.TotalCost = "5.25"
 			Expect(k8sClient.Status().Update(ctx, knight)).To(Succeed())
 
-			// Reconcile should succeed
-			Eventually(func() aiv1alpha1.MissionPhase {
-				_, _ = r.Reconcile(ctx, reconcile.Request{NamespacedName: missionNN})
-				mission := &aiv1alpha1.Mission{}
-				_ = k8sClient.Get(ctx, missionNN, mission)
-				return mission.Status.Phase
-			}, "5s", "500ms").Should(Equal(aiv1alpha1.MissionPhaseSucceeded))
+			// Reconcile — should stay Active (no chains to complete) with cost tracked
+			_, _ = r.Reconcile(ctx, reconcile.Request{NamespacedName: missionNN})
 
 			mission := &aiv1alpha1.Mission{}
 			Expect(k8sClient.Get(ctx, missionNN, mission)).To(Succeed())
+			Expect(mission.Status.Phase).To(Equal(aiv1alpha1.MissionPhaseActive))
 			Expect(mission.Status.TotalCost).To(Equal("5.2500"))
 		})
 
@@ -765,16 +761,18 @@ var _ = Describe("Mission Controller", func() {
 			deleteKnight()
 		})
 
-		It("should succeed immediately after briefing", func() {
+		It("should stay Active when no chains are defined", func() {
 			r := newReconciler()
 
-			// Drive to Succeeded (no chains = briefing-only)
-			driveToPhase(r, aiv1alpha1.MissionPhaseSucceeded, 10, readyOnProvisioning(), readyOnAssembling())
+			// Drive to Active — chainless missions remain Active awaiting TTL/timeout
+			driveToPhase(r, aiv1alpha1.MissionPhaseActive, 10, readyOnProvisioning(), readyOnAssembling())
+
+			// One more reconcile — should stay Active (not transition to Succeeded)
+			_, _ = r.Reconcile(ctx, reconcile.Request{NamespacedName: missionNN})
 
 			mission := &aiv1alpha1.Mission{}
 			Expect(k8sClient.Get(ctx, missionNN, mission)).To(Succeed())
-			Expect(mission.Status.Phase).To(Equal(aiv1alpha1.MissionPhaseSucceeded))
-			Expect(mission.Status.Result).To(ContainSubstring("briefing-only"))
+			Expect(mission.Status.Phase).To(Equal(aiv1alpha1.MissionPhaseActive))
 		})
 	})
 
@@ -800,13 +798,18 @@ var _ = Describe("Mission Controller", func() {
 		It("should set CleanupComplete condition when retained", func() {
 			r := newReconciler()
 
-			// Drive through entire lifecycle to CleaningUp
-			driveToPhase(r, aiv1alpha1.MissionPhaseSucceeded, 10, readyOnProvisioning(), readyOnAssembling())
-			driveToPhase(r, aiv1alpha1.MissionPhaseCleaningUp, 5)
+			// Drive to Active, then manually transition to CleaningUp
+			// (chainless missions stay Active, so we simulate TTL expiry)
+			driveToPhase(r, aiv1alpha1.MissionPhaseActive, 10, readyOnProvisioning(), readyOnAssembling())
+
+			mission := &aiv1alpha1.Mission{}
+			Expect(k8sClient.Get(ctx, missionNN, mission)).To(Succeed())
+			mission.Status.Phase = aiv1alpha1.MissionPhaseCleaningUp
+			Expect(k8sClient.Status().Update(ctx, mission)).To(Succeed())
 			// One more reconcile to actually run reconcileCleaningUp (sets conditions)
 			_, _ = r.Reconcile(ctx, reconcile.Request{NamespacedName: missionNN})
 
-			mission := &aiv1alpha1.Mission{}
+			mission = &aiv1alpha1.Mission{}
 			Expect(k8sClient.Get(ctx, missionNN, mission)).To(Succeed())
 			// Should still exist (Retain policy)
 			Expect(mission.Name).To(Equal(missionName))
