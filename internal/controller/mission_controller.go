@@ -704,20 +704,10 @@ func (r *MissionReconciler) reconcileActive(ctx context.Context, mission *aiv1al
 			return ctrl.Result{}, r.Status().Update(ctx, mission)
 		}
 	} else {
-		// No chains — mission succeeds immediately (it was just a briefing mission)
-		mission.Status.Phase = aiv1alpha1.MissionPhaseSucceeded
-		now := metav1.Now()
-		mission.Status.CompletedAt = &now
-		mission.Status.Result = "Mission completed (briefing-only)"
-		meta.SetStatusCondition(&mission.Status.Conditions, metav1.Condition{
-			Type:               "Complete",
-			Status:             metav1.ConditionTrue,
-			Reason:             "Succeeded",
-			Message:            "Briefing-only mission completed",
-			ObservedGeneration: mission.Generation,
-		})
-		mission.Status.ObservedGeneration = mission.Generation
-		return ctrl.Result{}, r.Status().Update(ctx, mission)
+		// No chains — stay Active until TTL expires or external completion.
+		// Knights may still receive ad-hoc tasks via NATS during the mission window.
+		log.V(1).Info("No chains defined, mission remains Active awaiting TTL or external completion",
+			"mission", mission.Name)
 	}
 
 	// Update knight statuses
@@ -823,6 +813,12 @@ func (r *MissionReconciler) reconcileMissionChains(ctx context.Context, mission 
 func (r *MissionReconciler) reconcileCleaningUp(ctx context.Context, mission *aiv1alpha1.Mission) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
+	// If cleanup already completed, skip directly to terminal phase transition.
+	// This prevents repeated delete attempts on every reconcile loop.
+	if meta.IsStatusConditionTrue(mission.Status.Conditions, "CleanupComplete") {
+		return r.transitionToTerminalPhase(ctx, mission)
+	}
+
 	// Run teardown chains if any
 	for _, chainRef := range mission.Spec.Chains {
 		if chainRef.Phase != "Teardown" {
@@ -911,10 +907,17 @@ func (r *MissionReconciler) reconcileCleaningUp(ctx context.Context, mission *ai
 		ObservedGeneration: mission.Generation,
 	})
 
+	return r.transitionToTerminalPhase(ctx, mission)
+}
+
+// transitionToTerminalPhase determines the final mission state and handles self-deletion.
+func (r *MissionReconciler) transitionToTerminalPhase(ctx context.Context, mission *aiv1alpha1.Mission) (ctrl.Result, error) {
+	log := logf.FromContext(ctx)
+
 	// Transition to terminal phase based on original outcome
-	if mission.Status.Phase != aiv1alpha1.MissionPhaseSucceeded && 
-	   mission.Status.Phase != aiv1alpha1.MissionPhaseFailed && 
-	   mission.Status.Phase != aiv1alpha1.MissionPhaseExpired {
+	if mission.Status.Phase != aiv1alpha1.MissionPhaseSucceeded &&
+		mission.Status.Phase != aiv1alpha1.MissionPhaseFailed &&
+		mission.Status.Phase != aiv1alpha1.MissionPhaseExpired {
 		// Determine terminal phase from chain results
 		allSucceeded := true
 		for _, cs := range mission.Status.ChainStatuses {
