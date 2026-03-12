@@ -22,7 +22,13 @@ rules:
     resources: ["pods", "pods/log"]
     verbs: ["get", "list", "watch"]
   - apiGroups: ["ai.roundtable.io"]
-    resources: ["knights", "chains", "missions", "roundtables"]
+    resources: ["knights", "chains", "roundtables"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["ai.roundtable.io"]
+    resources: ["missions"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["ai.roundtable.io"]
+    resources: ["chains/status", "missions/status"]
     verbs: ["get", "list", "watch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
