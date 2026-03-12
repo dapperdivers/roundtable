@@ -729,7 +729,7 @@ var _ = Describe("Mission Controller", func() {
 			r := newReconciler()
 
 			// Drive to Assembling (won't progress further - knight doesn't exist)
-			driveToPhase(r, aiv1alpha1.MissionPhaseAssembling, 10, readyOnProvisioning())
+			driveToPhase(r, aiv1alpha1.MissionPhaseActive, 10, readyOnProvisioning(), readyOnAssembling())
 			// One more reconcile to set KnightsReady condition
 			_, _ = r.Reconcile(ctx, reconcile.Request{NamespacedName: missionNN})
 
@@ -922,7 +922,7 @@ var _ = Describe("Mission Controller", func() {
 				r := newReconciler()
 
 				// Drive to Assembling phase (ephemeral knights get created)
-				driveToPhase(r, aiv1alpha1.MissionPhaseAssembling, 10, readyOnProvisioning())
+				driveToPhase(r, aiv1alpha1.MissionPhaseActive, 10, readyOnProvisioning(), readyOnAssembling())
 
 				// Verify ephemeral knight was created with template values
 				ephemeralKnightName := fmt.Sprintf("%s-%s", missionName, "test-auditor")
@@ -971,7 +971,7 @@ var _ = Describe("Mission Controller", func() {
 				})
 
 				r := newReconciler()
-				driveToPhase(r, aiv1alpha1.MissionPhaseAssembling, 10, readyOnProvisioning())
+				driveToPhase(r, aiv1alpha1.MissionPhaseActive, 10, readyOnProvisioning(), readyOnAssembling())
 
 				ephemeralKnightName := fmt.Sprintf("%s-%s", missionName, "test-pentester")
 				ephemeralKnightNN := types.NamespacedName{Name: ephemeralKnightName, Namespace: namespace}
@@ -1031,7 +1031,7 @@ var _ = Describe("Mission Controller", func() {
 				})
 
 				r := newReconciler()
-				driveToPhase(r, aiv1alpha1.MissionPhaseAssembling, 10, readyOnProvisioning())
+				driveToPhase(r, aiv1alpha1.MissionPhaseActive, 10, readyOnProvisioning(), readyOnAssembling())
 
 				ephemeralKnightName := fmt.Sprintf("%s-%s", missionName, "test-auditor")
 				ephemeralKnightNN := types.NamespacedName{Name: ephemeralKnightName, Namespace: namespace}
@@ -1079,7 +1079,7 @@ var _ = Describe("Mission Controller", func() {
 				})
 
 				r := newReconciler()
-				driveToPhase(r, aiv1alpha1.MissionPhaseAssembling, 10, readyOnProvisioning())
+				driveToPhase(r, aiv1alpha1.MissionPhaseActive, 10, readyOnProvisioning(), readyOnAssembling())
 
 				// Verify all three knights created with correct templates
 				knights := []struct {
@@ -1274,7 +1274,7 @@ var _ = Describe("Mission Controller", func() {
 				})
 
 				r := newReconciler()
-				driveToPhase(r, aiv1alpha1.MissionPhaseAssembling, 10, readyOnProvisioning())
+				driveToPhase(r, aiv1alpha1.MissionPhaseActive, 10, readyOnProvisioning(), readyOnAssembling())
 
 				// Verify ephemeral knight created with inline spec
 				ephemeralKnightName := fmt.Sprintf("%s-%s", missionName, "test-knight")
