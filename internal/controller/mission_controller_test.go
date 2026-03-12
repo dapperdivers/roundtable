@@ -809,7 +809,7 @@ var _ = Describe("Mission Controller", func() {
 			// One more reconcile to actually run reconcileCleaningUp (sets conditions)
 			_, _ = r.Reconcile(ctx, reconcile.Request{NamespacedName: missionNN})
 
-			mission := &aiv1alpha1.Mission{}
+			mission = &aiv1alpha1.Mission{}
 			Expect(k8sClient.Get(ctx, missionNN, mission)).To(Succeed())
 			// Should still exist (Retain policy)
 			Expect(mission.Name).To(Equal(missionName))
