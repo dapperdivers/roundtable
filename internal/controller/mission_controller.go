@@ -271,6 +271,21 @@ func (r *MissionReconciler) reconcileProvisioning(ctx context.Context, mission *
 		return ctrl.Result{RequeueAfter: 1 * time.Second}, r.Status().Update(ctx, mission)
 	}
 
+	// If no ephemeral knights, skip ephemeral RT creation (v1 compatibility)
+	hasEphemeral := false
+	for _, mk := range mission.Spec.Knights {
+		if mk.Ephemeral {
+			hasEphemeral = true
+			break
+		}
+	}
+	if !hasEphemeral {
+		log.Info("No ephemeral knights, skipping ephemeral RoundTable creation")
+		mission.Status.Phase = aiv1alpha1.MissionPhaseAssembling
+		mission.Status.ObservedGeneration = mission.Generation
+		return ctrl.Result{RequeueAfter: 1 * time.Second}, r.Status().Update(ctx, mission)
+	}
+
 	// Generate resource names
 	uid8 := string(mission.UID)[:8]
 	roundTableName := fmt.Sprintf("mission-%s-%s", mission.Name, uid8)
