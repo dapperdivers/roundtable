@@ -363,14 +363,25 @@ func (r *MissionReconciler) reconcileProvisioning(ctx context.Context, mission *
 func (r *MissionReconciler) reconcileAssembling(ctx context.Context, mission *aiv1alpha1.Mission) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
-	// Get ephemeral RoundTable (if one was created)
+	// Resolve the RoundTable lazily — only fetched when an ephemeral knight needs it.
 	var rt *aiv1alpha1.RoundTable
-	if mission.Status.RoundTableName != "" {
-		rt = &aiv1alpha1.RoundTable{}
-		rtKey := types.NamespacedName{Name: mission.Status.RoundTableName, Namespace: mission.Namespace}
-		if err := r.Get(ctx, rtKey, rt); err != nil {
-			return ctrl.Result{}, fmt.Errorf("failed to get ephemeral RoundTable: %w", err)
+	getRoundTable := func() (*aiv1alpha1.RoundTable, error) {
+		if rt != nil {
+			return rt, nil
 		}
+		rtName := mission.Status.RoundTableName
+		if rtName == "" {
+			rtName = mission.Spec.RoundTableRef
+		}
+		if rtName == "" {
+			return nil, fmt.Errorf("cannot create ephemeral knight: no RoundTable (neither status.roundTableName nor spec.roundTableRef is set)")
+		}
+		rt = &aiv1alpha1.RoundTable{}
+		rtKey := types.NamespacedName{Name: rtName, Namespace: mission.Namespace}
+		if err := r.Get(ctx, rtKey, rt); err != nil {
+			return nil, fmt.Errorf("failed to get RoundTable %q: %w", rtName, err)
+		}
+		return rt, nil
 	}
 
 	// Track assembly progress
@@ -426,12 +437,13 @@ func (r *MissionReconciler) reconcileAssembling(ctx context.Context, mission *ai
 		err := r.Get(ctx, knightKey, knight)
 
 		if err != nil && client.IgnoreNotFound(err) == nil {
-			// Create ephemeral knight
-			if rt == nil {
-				return ctrl.Result{}, fmt.Errorf("cannot create ephemeral knight without RoundTable")
+			// Create ephemeral knight — lazy-load the RoundTable
+			resolvedRT, rtErr := getRoundTable()
+			if rtErr != nil {
+				return ctrl.Result{}, rtErr
 			}
 
-			knight, err := r.buildEphemeralKnight(ctx, mission, mk, rt)
+			knight, err := r.buildEphemeralKnight(ctx, mission, mk, resolvedRT)
 			if err != nil {
 				return ctrl.Result{}, fmt.Errorf("failed to build ephemeral knight %q: %w", mk.Name, err)
 			}
