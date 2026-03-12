@@ -1,13 +1,61 @@
 # 🏰 Knights of the Round Table
 
-**A Kubernetes Operator for Multi-Agent AI Orchestration**
+**Kubernetes-Native Multi-Agent AI Orchestration**
 
-> *"What... is your domain?" "Security!" "What... is your model?" "Claude!"*
-> *"What... is the airspeed velocity of an unladen swallow?"*
+[![Go](https://img.shields.io/badge/Go-1.23-00ADD8?logo=go)](https://go.dev)
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+[![CI](https://github.com/dapperdivers/roundtable/actions/workflows/ci.yml/badge.svg)](https://github.com/dapperdivers/roundtable/actions)
 
-## Overview
+> *"We are the knights who say... `kubectl apply`!"*
 
-The Round Table operator manages AI agents ("Knights") as first-class Kubernetes resources. Each Knight is a specialized AI agent with its own domain expertise, tools, skills, and communication channels — all declared in a single YAML manifest.
+Round Table is a Kubernetes operator that manages fleets of AI agents as native cluster resources. Define agents, orchestrate workflows, and launch ephemeral missions — all through CRDs and GitOps.
+
+```bash
+kubectl apply -f knight.yaml   # A fully wired AI agent appears in your cluster
+kubectl apply -f mission.yaml  # An ephemeral team spins up, executes, and cleans up
+```
+
+**Not a framework. Not a chatbot. An orchestration layer that treats AI agents like infrastructure.**
+
+---
+
+## Why Round Table?
+
+Most multi-agent systems are either app-layer task managers or single-agent wrappers. Round Table takes a different approach: **agents ARE infrastructure**.
+
+| | Round Table | Agent Frameworks | Workflow Engines | Task Managers |
+|---|---|---|---|---|
+| **Agent lifecycle** | K8s pods — ephemeral, scalable, isolated | Library objects in a process | Static containers | External processes |
+| **Communication** | NATS JetStream — durable, replay, fan-out | In-memory function calls | HTTP/gRPC | Polling / webhooks |
+| **State** | CRDs + NATS KV (etcd-backed, declarative) | In-memory / DB | ConfigMaps / DB | Postgres |
+| **Orchestration** | Chain DAGs with templated output chaining | Code-defined graphs | YAML DAGs | Org chart delegation |
+| **Isolation** | Pod-level (NetworkPolicy, ServiceAccount) | None (shared process) | Container-level | App-level scoping |
+| **Ephemerality** | Missions auto-provision and teardown teams | Manual | Manual | N/A |
+| **GitOps** | Native (CRDs + Flux/ArgoCD) | N/A | Partial | N/A |
+
+## Features
+
+🗡️ **4 Custom Resources** — Knight, RoundTable, Chain, Mission — declare your entire agent fleet in YAML
+
+⚔️ **Ephemeral Missions** — spin up a purpose-built team of agents, execute an objective, tear everything down
+
+🔗 **Chain DAGs** — multi-step workflows with parallel execution, templated output injection between steps
+
+📡 **NATS JetStream** — durable task routing with WorkQueue retention, fan-out, and KV store for results
+
+🛡️ **Pod-Level Isolation** — each knight gets its own pod, ServiceAccount, NetworkPolicy, and workspace PVC
+
+📦 **Arsenal** — git-synced skill repository, auto-distributed to knights via sidecar
+
+🖥️ **Dashboard** — real-time fleet monitoring, chain visualization, mission tracking ([roundtable-ui](https://github.com/dapperdivers/roundtable-ui))
+
+🔄 **GitOps-Native** — CRDs reconcile through Flux or ArgoCD, same as any other cluster workload
+
+---
+
+## Custom Resources
+
+### Knight — An AI Agent
 
 ```yaml
 apiVersion: ai.roundtable.io/v1alpha1
@@ -22,123 +70,240 @@ spec:
     apt: [nmap, whois, dnsutils]
   nats:
     subjects: ["fleet-a.tasks.security.>"]
-  taskTimeout: 300
+  concurrency: 2
+  workspace:
+    size: 2Gi
+  resources:
+    requests:
+      memory: 256Mi
+      cpu: 100m
 ```
 
-`kubectl apply` → A fully wired AI agent appears in your cluster.
+The operator reconciles this into a Deployment, PVC, ConfigMaps, NATS consumer, and optional ServiceAccount. One YAML, fully wired agent.
 
-## What It Does
+### RoundTable — Fleet Configuration
 
-The operator watches `Knight` custom resources and reconciles them into:
+```yaml
+apiVersion: ai.roundtable.io/v1alpha1
+kind: RoundTable
+metadata:
+  name: personal
+spec:
+  nats:
+    url: nats://nats.database.svc:4222
+    subjectPrefix: fleet-a
+    tasksStream: fleet-a-tasks
+    resultsStream: fleet-a-results
+    createStreams: true
+  knightSelector:
+    matchLabels:
+      ai.roundtable.io/roundtable: personal
+```
 
-| Resource | Purpose |
-|----------|---------|
-| **Deployment** | Pi-knight runtime container + skill-filter sidecar |
-| **PVC** | Persistent workspace (memory, session state) |
-| **ConfigMap** | Tool definitions (`mise.toml`, `apt.txt`), prompt overrides |
-| **NATS Consumer** | JetStream durable consumer with configured filter subjects |
-| **ServiceAccount** | Per-knight RBAC (optional) |
+Manages NATS streams and selects knights by label into logical fleets. Multiple RoundTables can coexist for multi-tenant isolation.
+
+### Chain — Workflow DAG
+
+```yaml
+apiVersion: ai.roundtable.io/v1alpha1
+kind: Chain
+metadata:
+  name: security-scan
+spec:
+  steps:
+    - name: scan
+      knightRef: galahad
+      task: "Scan example.com for CVEs. Report findings."
+      timeout: 300
+
+    - name: verify
+      knightRef: tristan
+      dependsOn: [scan]
+      task: |
+        Galahad found: {{ .Steps.scan.Output }}
+        Check if any of these CVEs affect our cluster.
+      timeout: 300
+
+    - name: report
+      knightRef: kay
+      dependsOn: [verify]
+      task: |
+        Write a threat report:
+        - Scan results: {{ .Steps.scan.Output }}
+        - Exposure analysis: {{ .Steps.verify.Output }}
+      timeout: 600
+```
+
+Steps run in dependency order. Parallel steps execute concurrently. Outputs are injected into downstream tasks via Go templates.
+
+### Mission — Ephemeral Objective
+
+```yaml
+apiVersion: ai.roundtable.io/v1alpha1
+kind: Mission
+metadata:
+  name: pentest-sprint
+spec:
+  objective: "Penetration test the staging environment and produce a findings report."
+  ttl: 3600
+  timeout: 1800
+  cleanupPolicy: Delete
+  knights:
+    - name: lead
+      role: coordinator
+      ephemeral: true
+      ephemeralSpec:
+        domain: security
+        model: claude-sonnet-4-20250514
+        skills: [security, shared]
+        nats:
+          subjects: ["mission-pentest-sprint.tasks.security.>"]
+        concurrency: 1
+        workspace:
+          size: 2Gi
+    - name: galahad
+      role: scanner
+```
+
+Missions auto-provision ephemeral knights, create isolated NATS streams, execute the objective, and clean up all resources on completion. Mix ephemeral and existing knights in the same mission.
+
+**Lifecycle:** `Pending` → `Provisioning` → `Assembling` → `Briefing` → `Active` → `Succeeded/Failed` → `CleaningUp`
+
+---
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────┐
-│                   Round Table Operator               │
-│                                                      │
-│  Watches Knight CRs ──► Reconciles K8s Resources    │
-│                                                      │
-└──────────┬──────────────────────────────┬────────────┘
-           │                              │
-    ┌──────▼──────┐               ┌───────▼──────┐
-    │  Knight Pod  │               │  Knight Pod  │
-    │ ┌──────────┐ │               │ ┌──────────┐ │
-    │ │ pi-knight │ │    NATS      │ │ pi-knight │ │
-    │ │ runtime   │◄├──JetStream──►│ │ runtime   │ │
-    │ └──────────┘ │               │ └──────────┘ │
-    │ ┌──────────┐ │               │ ┌──────────┐ │
-    │ │  skill    │ │               │ │  skill    │ │
-    │ │  filter   │ │               │ │  filter   │ │
-    │ └──────────┘ │               │ └──────────┘ │
-    │      │       │               │      │       │
-    │  /vault (RO) │               │  /vault (RO) │
-    └──────────────┘               └──────────────┘
+                        ┌──────────────────────┐
+                        │   roundtable-ui      │
+                        │   (Dashboard)        │
+                        └──────────┬───────────┘
+                                   │ K8s API
+┌──────────────────────────────────┼──────────────────────────────────┐
+│                     Round Table Operator                            │
+│                                  │                                  │
+│  ┌──────────────┐  ┌────────────┴───┐  ┌────────────────────────┐  │
+│  │   Knight      │  │   Mission      │  │   Chain                │  │
+│  │   Controller  │  │   Controller   │  │   Controller           │  │
+│  └──────┬───────┘  └───────┬────────┘  └──────────┬─────────────┘  │
+│         │                  │                       │                │
+└─────────┼──────────────────┼───────────────────────┼────────────────┘
+          │                  │                       │
+    ┌─────▼──────────────────▼───────────────────────▼─────┐
+    │                    NATS JetStream                      │
+    │  ┌─────────────┐  ┌──────────────┐  ┌──────────────┐ │
+    │  │ Tasks Stream │  │Results Stream│  │  KV Store    │ │
+    │  └──────┬──────┘  └──────────────┘  └──────────────┘ │
+    └─────────┼────────────────────────────────────────────┘
+              │
+    ┌─────────┼──────────────────────────────────┐
+    │         │           Knight Pods             │
+    │  ┌──────▼──────┐  ┌─────────────┐          │
+    │  │  pi-knight   │  │  pi-knight  │  ...     │
+    │  │  (runtime)   │  │  (runtime)  │          │
+    │  ├─────────────┤  ├─────────────┤          │
+    │  │ skill-filter │  │ skill-filter│          │
+    │  ├─────────────┤  ├─────────────┤          │
+    │  │ git-sync     │  │ git-sync    │          │
+    │  │ (arsenal)    │  │ (arsenal)   │          │
+    │  └─────────────┘  └─────────────┘          │
+    └────────────────────────────────────────────┘
 ```
 
-## Custom Resources
+## Ecosystem
 
-### Knight
-
-A `Knight` represents a specialized AI agent with:
-
-- **Domain** — area of expertise (security, infrastructure, finance, etc.)
-- **Model** — which AI model to use
-- **Skills** — filtered skill categories injected at deploy time
-- **Tools** — system packages (apt) and dev tools (mise) installed on startup
-- **NATS** — JetStream consumer configuration for task routing
-- **Vault** — shared knowledge base mount with granular write permissions
-- **Prompt** — customizable identity and instructions
-
-See [examples/](./examples/) for complete manifests.
-
-### RoundTable (planned)
-
-Cluster-level configuration: NATS connection defaults, shared vault settings, global policies.
-
-### Chain (planned)
-
-Declarative event-driven agent chaining: "When Galahad finds a CVE, Tristan checks exposure."
+| Component | Description | Repo |
+|-----------|-------------|------|
+| **roundtable** | Operator + CRDs + controllers | [dapperdivers/roundtable](https://github.com/dapperdivers/roundtable) |
+| **pi-knight** | Knight runtime (Node.js agent that consumes NATS tasks) | [dapperdivers/pi-knight](https://github.com/dapperdivers/pi-knight) |
+| **roundtable-ui** | Dashboard for fleet monitoring and chain visualization | [dapperdivers/roundtable-ui](https://github.com/dapperdivers/roundtable-ui) |
+| **roundtable-arsenal** | Skill repository (git-synced to knights via sidecar) | [dapperdivers/roundtable-arsenal](https://github.com/dapperdivers/roundtable-arsenal) |
 
 ## Quick Start
 
+### Prerequisites
+
+- Kubernetes 1.28+
+- NATS with JetStream enabled
+- An AI model API key (Anthropic, OpenAI, etc.)
+
+### Install
+
 ```bash
+# Clone the repo
+git clone https://github.com/dapperdivers/roundtable.git
+cd roundtable
+
 # Install CRDs
 make install
 
 # Deploy the operator
-make deploy
+make deploy IMG=ghcr.io/dapperdivers/roundtable:latest
 
-# Create a knight
+# Create your first knight
 kubectl apply -f examples/galahad.yaml
 
 # Check status
 kubectl get knights
-NAME       DOMAIN     MODEL                    PHASE   READY   TASKS   AGE
-galahad    security   claude-sonnet-4-20250514   Ready   true    42      3d
+NAME       DOMAIN     MODEL                       READY   AGE
+galahad    security   claude-sonnet-4-20250514    true    30s
 ```
 
-## Prerequisites
+### What Happens
 
-- Kubernetes 1.28+
-- NATS with JetStream enabled
-- An AI model API key (Anthropic, etc.)
-- [pi-knight](https://github.com/dapperdivers/pi-knight) container image
+1. The operator sees the `Knight` CR and creates a Deployment with the pi-knight runtime
+2. A skill-filter sidecar mounts only the skills matching `spec.skills`
+3. A git-sync sidecar pulls the latest arsenal (skill definitions)
+4. A NATS JetStream consumer is configured with the knight's filter subjects
+5. The knight starts consuming tasks from the stream
+
+### Send a Task
+
+```bash
+# Publish a task via NATS
+nats pub fleet-a.tasks.security.scan '{"task": "Scan example.com for open ports"}'
+```
 
 ## Development
 
 ```bash
-# Generate CRD manifests
-make manifests
+# Generate CRD manifests + deep copy
+make manifests generate
 
 # Run locally against your cluster
 make run
 
-# Build the operator image
-make docker-build docker-push IMG=ghcr.io/dapperdivers/roundtable:latest
-
 # Run tests
 make test
+
+# Build the operator image
+make docker-build docker-push IMG=ghcr.io/dapperdivers/roundtable:latest
 ```
 
-## Background
+## Roadmap
 
-Born from a homelab experiment in multi-agent AI orchestration. What started as Helm charts and manual wiring evolved into an operator because we kept asking: *"Why am I writing 5 resources for every new agent?"*
+- [x] **Phase 1** — Knight operator (CRD → Pod + NATS consumer)
+- [x] **Phase 2** — Chains (DAG workflows with output chaining)
+- [x] **Phase 3a** — Missions with existing knights
+- [x] **Phase 3b** — Ephemeral missions (dynamic knight provisioning + teardown)
+- [ ] **Phase 4** — Observability (OpenTelemetry tracing, cost tracking)
+- [ ] **Phase 5** — Multi-cluster federation
 
-The answer: you shouldn't have to. `kubectl apply -f knight.yaml` and go.
+## Contributing
+
+Contributions welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+
+Areas where help is needed:
+- Multi-cluster support
+- OpenTelemetry integration
+- Additional knight runtime implementations
+- Dashboard improvements
+- Documentation
 
 ## License
 
-Apache 2.0
+Apache 2.0 — See [LICENSE](LICENSE)
 
 ---
 
-*"We are the Knights of the Round Table. We dance whene'er we're able."* 🏰
+*"On second thought, let's not go to Lambda. 'Tis a silly place."* 🏰
