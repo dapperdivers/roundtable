@@ -204,6 +204,37 @@ var _ = Describe("Mission Controller", func() {
 		}
 	}
 
+	// makeEphemeralKnightsReady finds all ephemeral knights for the mission and marks them Ready.
+	makeEphemeralKnightsReady := func() {
+		mission := &aiv1alpha1.Mission{}
+		if err := k8sClient.Get(ctx, missionNN, mission); err != nil {
+			return
+		}
+		for _, mk := range mission.Spec.Knights {
+			if !mk.Ephemeral {
+				continue
+			}
+			ephName := fmt.Sprintf("%s-%s", mission.Name, mk.Name)
+			knight := &aiv1alpha1.Knight{}
+			nn := types.NamespacedName{Name: ephName, Namespace: namespace}
+			if err := k8sClient.Get(ctx, nn, knight); err != nil {
+				continue
+			}
+			knight.Status.Phase = aiv1alpha1.KnightPhaseReady
+			knight.Status.Ready = true
+			_ = k8sClient.Status().Update(ctx, knight)
+		}
+	}
+
+	// readyEphemeralsOnAssembling returns a callback that marks ephemeral knights ready during Assembling.
+	readyEphemeralsOnAssembling := func() func(aiv1alpha1.MissionPhase) {
+		return func(phase aiv1alpha1.MissionPhase) {
+			if phase == aiv1alpha1.MissionPhaseAssembling {
+				makeEphemeralKnightsReady()
+			}
+		}
+	}
+
 	// makeEphemeralRoundTableReady finds and marks the ephemeral RoundTable as Ready
 	makeEphemeralRoundTableReady := func() {
 		// Get mission to find the RoundTable name
@@ -728,10 +759,12 @@ var _ = Describe("Mission Controller", func() {
 		It("should stay in Assembling and set KnightsReady=False", func() {
 			r := newReconciler()
 
-			// Drive to Assembling (won't progress further - knight doesn't exist)
-			driveToPhase(r, aiv1alpha1.MissionPhaseActive, 10, readyOnProvisioning(), readyOnAssembling())
-			// One more reconcile to set KnightsReady condition
-			_, _ = r.Reconcile(ctx, reconcile.Request{NamespacedName: missionNN})
+			// Drive to Assembling — it won't progress further since knight doesn't exist
+			driveToPhase(r, aiv1alpha1.MissionPhaseAssembling, 10, readyOnProvisioning())
+			// A few more reconciles to set KnightsReady condition (stays in Assembling)
+			for i := 0; i < 3; i++ {
+				_, _ = r.Reconcile(ctx, reconcile.Request{NamespacedName: missionNN})
+			}
 
 			mission := &aiv1alpha1.Mission{}
 			Expect(k8sClient.Get(ctx, missionNN, mission)).To(Succeed())
@@ -922,7 +955,7 @@ var _ = Describe("Mission Controller", func() {
 				r := newReconciler()
 
 				// Drive to Assembling phase (ephemeral knights get created)
-				driveToPhase(r, aiv1alpha1.MissionPhaseActive, 10, readyOnProvisioning(), readyOnAssembling())
+				driveToPhase(r, aiv1alpha1.MissionPhaseActive, 10, readyOnProvisioning(), readyEphemeralsOnAssembling())
 
 				// Verify ephemeral knight was created with template values
 				ephemeralKnightName := fmt.Sprintf("%s-%s", missionName, "test-auditor")
@@ -971,7 +1004,7 @@ var _ = Describe("Mission Controller", func() {
 				})
 
 				r := newReconciler()
-				driveToPhase(r, aiv1alpha1.MissionPhaseActive, 10, readyOnProvisioning(), readyOnAssembling())
+				driveToPhase(r, aiv1alpha1.MissionPhaseActive, 10, readyOnProvisioning(), readyEphemeralsOnAssembling())
 
 				ephemeralKnightName := fmt.Sprintf("%s-%s", missionName, "test-pentester")
 				ephemeralKnightNN := types.NamespacedName{Name: ephemeralKnightName, Namespace: namespace}
@@ -1031,7 +1064,7 @@ var _ = Describe("Mission Controller", func() {
 				})
 
 				r := newReconciler()
-				driveToPhase(r, aiv1alpha1.MissionPhaseActive, 10, readyOnProvisioning(), readyOnAssembling())
+				driveToPhase(r, aiv1alpha1.MissionPhaseActive, 10, readyOnProvisioning(), readyEphemeralsOnAssembling())
 
 				ephemeralKnightName := fmt.Sprintf("%s-%s", missionName, "test-auditor")
 				ephemeralKnightNN := types.NamespacedName{Name: ephemeralKnightName, Namespace: namespace}
@@ -1079,7 +1112,7 @@ var _ = Describe("Mission Controller", func() {
 				})
 
 				r := newReconciler()
-				driveToPhase(r, aiv1alpha1.MissionPhaseActive, 10, readyOnProvisioning(), readyOnAssembling())
+				driveToPhase(r, aiv1alpha1.MissionPhaseActive, 10, readyOnProvisioning(), readyEphemeralsOnAssembling())
 
 				// Verify all three knights created with correct templates
 				knights := []struct {
@@ -1274,7 +1307,7 @@ var _ = Describe("Mission Controller", func() {
 				})
 
 				r := newReconciler()
-				driveToPhase(r, aiv1alpha1.MissionPhaseActive, 10, readyOnProvisioning(), readyOnAssembling())
+				driveToPhase(r, aiv1alpha1.MissionPhaseActive, 10, readyOnProvisioning(), readyEphemeralsOnAssembling())
 
 				// Verify ephemeral knight created with inline spec
 				ephemeralKnightName := fmt.Sprintf("%s-%s", missionName, "test-knight")
