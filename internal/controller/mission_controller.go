@@ -121,7 +121,10 @@ func (r *MissionReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		if mission.Status.Phase != aiv1alpha1.MissionPhaseCleaningUp &&
 			mission.Status.Phase != aiv1alpha1.MissionPhaseExpired {
 			log.Info("Mission TTL expired", "mission", mission.Name)
-			mission.Status.Phase = aiv1alpha1.MissionPhaseExpired
+			// Go straight to CleaningUp in a single status update to avoid
+			// double-update conflicts (the old code set Expired then immediately
+			// overwrote to CleaningUp — the second update stomped the first).
+			mission.Status.Phase = aiv1alpha1.MissionPhaseCleaningUp
 			now := metav1.Now()
 			mission.Status.CompletedAt = &now
 			mission.Status.Result = "Mission expired (TTL exceeded)"
@@ -133,11 +136,6 @@ func (r *MissionReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 				ObservedGeneration: mission.Generation,
 			})
 			mission.Status.ObservedGeneration = mission.Generation
-			if err := r.Status().Update(ctx, mission); err != nil {
-				return ctrl.Result{}, err
-			}
-			// Transition to cleanup
-			mission.Status.Phase = aiv1alpha1.MissionPhaseCleaningUp
 			return ctrl.Result{RequeueAfter: 5 * time.Second}, r.Status().Update(ctx, mission)
 		}
 	}
