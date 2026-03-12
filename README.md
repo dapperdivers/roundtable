@@ -227,26 +227,35 @@ Missions auto-provision ephemeral knights, create isolated NATS streams, execute
 - NATS with JetStream enabled
 - An AI model API key (Anthropic, OpenAI, etc.)
 
-### Install
+### Install via Helm (recommended)
 
 ```bash
-# Clone the repo
-git clone https://github.com/dapperdivers/roundtable.git
-cd roundtable
-
-# Install CRDs
-make install
-
-# Deploy the operator
-make deploy IMG=ghcr.io/dapperdivers/roundtable:latest
+# Add the OCI chart
+helm install roundtable-operator \
+  oci://ghcr.io/dapperdivers/charts/roundtable-operator \
+  --namespace roundtable --create-namespace \
+  --set image.tag=latest \
+  --set images.piKnight.tag=latest
 
 # Create your first knight
 kubectl apply -f examples/galahad.yaml
 
 # Check status
-kubectl get knights
+kubectl get knights -n roundtable
 NAME       DOMAIN     MODEL                       READY   AGE
 galahad    security   claude-sonnet-4-20250514    true    30s
+```
+
+The chart installs CRDs, the operator, and the [dashboard](#ecosystem) in one shot.
+
+### Install from source
+
+```bash
+git clone https://github.com/dapperdivers/roundtable.git
+cd roundtable
+
+make install   # CRDs
+make deploy IMG=ghcr.io/dapperdivers/roundtable:latest
 ```
 
 ### What Happens
