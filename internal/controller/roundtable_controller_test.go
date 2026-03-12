@@ -354,4 +354,298 @@ var _ = Describe("RoundTable Controller", func() {
 			Expect(phase).To(Equal(aiv1alpha1.RoundTablePhaseDegraded))
 		})
 	})
+
+	Context("Ephemeral Knight Filtering (Issue #18)", func() {
+		const (
+			fleetRT     = "fleet-roundtable"
+			ephemeralRT = "mission-test-abc123"
+		)
+
+		BeforeEach(func() {
+			// Create fleet (non-ephemeral) RoundTable
+			fleetTable := &aiv1alpha1.RoundTable{}
+			fleetKey := types.NamespacedName{Name: fleetRT, Namespace: namespace}
+			err := k8sClient.Get(ctx, fleetKey, fleetTable)
+			if err != nil && errors.IsNotFound(err) {
+				fleetTable = &aiv1alpha1.RoundTable{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      fleetRT,
+						Namespace: namespace,
+					},
+					Spec: aiv1alpha1.RoundTableSpec{
+						NATS: aiv1alpha1.RoundTableNATS{
+							URL:           "nats://nats.test:4222",
+							SubjectPrefix: "fleet-a",
+							TasksStream:   "fleet_a_tasks",
+							ResultsStream: "fleet_a_results",
+						},
+						Ephemeral: false,
+					},
+				}
+				Expect(k8sClient.Create(ctx, fleetTable)).To(Succeed())
+			}
+
+			// Create ephemeral RoundTable
+			ephRT := &aiv1alpha1.RoundTable{}
+			ephKey := types.NamespacedName{Name: ephemeralRT, Namespace: namespace}
+			err = k8sClient.Get(ctx, ephKey, ephRT)
+			if err != nil && errors.IsNotFound(err) {
+				ephRT = &aiv1alpha1.RoundTable{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      ephemeralRT,
+						Namespace: namespace,
+						Labels: map[string]string{
+							aiv1alpha1.LabelEphemeral: "true",
+							aiv1alpha1.LabelMission:   "test-mission",
+						},
+					},
+					Spec: aiv1alpha1.RoundTableSpec{
+						NATS: aiv1alpha1.RoundTableNATS{
+							URL:           "nats://nats.test:4222",
+							SubjectPrefix: "msn-test-abc123",
+							TasksStream:   "msn_test_abc123_tasks",
+							ResultsStream: "msn_test_abc123_results",
+						},
+						Ephemeral:  true,
+						MissionRef: "test-mission",
+					},
+				}
+				Expect(k8sClient.Create(ctx, ephRT)).To(Succeed())
+			}
+		})
+
+		AfterEach(func() {
+			// Cleanup knights (from all tests in this context)
+			for _, name := range []string{"galahad", "mission-test-scanner", "mission-other-scanner", "regular-knight", "eph-knight"} {
+				k := &aiv1alpha1.Knight{}
+				knn := types.NamespacedName{Name: name, Namespace: namespace}
+				if err := k8sClient.Get(ctx, knn, k); err == nil {
+					_ = k8sClient.Delete(ctx, k)
+				}
+			}
+			// Cleanup RoundTables
+			for _, name := range []string{fleetRT, ephemeralRT, "fleet-no-selector"} {
+				rt := &aiv1alpha1.RoundTable{}
+				rtKey := types.NamespacedName{Name: name, Namespace: namespace}
+				if err := k8sClient.Get(ctx, rtKey, rt); err == nil {
+					_ = k8sClient.Delete(ctx, rt)
+				}
+			}
+		})
+
+		It("should exclude ephemeral knights from fleet RoundTable aggregation", func() {
+			// Ensure galahad doesn't exist from previous test
+			existingGalahad := &aiv1alpha1.Knight{}
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: "galahad", Namespace: namespace}, existingGalahad); err == nil {
+				_ = k8sClient.Delete(ctx, existingGalahad)
+			}
+
+			// Create regular fleet knight
+			galahad := &aiv1alpha1.Knight{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "galahad",
+					Namespace: namespace,
+					// No ephemeral label
+				},
+				Spec: aiv1alpha1.KnightSpec{
+					Domain: "security",
+					Skills: []string{"security"},
+					NATS: aiv1alpha1.KnightNATS{
+						URL:      "nats://nats.test:4222",
+						Subjects: []string{"fleet-a.tasks.security.>"},
+						Stream:   "fleet_a_tasks",
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, galahad)).To(Succeed())
+			galahad.Status.Ready = true
+			galahad.Status.Phase = aiv1alpha1.KnightPhaseReady
+			Expect(k8sClient.Status().Update(ctx, galahad)).To(Succeed())
+
+			// Create ephemeral knight (for mission)
+			ephemeralKnight := &aiv1alpha1.Knight{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "mission-test-scanner",
+					Namespace: namespace,
+					Labels: map[string]string{
+						aiv1alpha1.LabelEphemeral:   "true",
+						aiv1alpha1.LabelMission:     "test-mission",
+						aiv1alpha1.LabelRoundTable:  ephemeralRT,
+					},
+				},
+				Spec: aiv1alpha1.KnightSpec{
+					Domain: "security",
+					Skills: []string{"security"},
+					NATS: aiv1alpha1.KnightNATS{
+						URL:      "nats://nats.test:4222",
+						Subjects: []string{"msn-test-abc123.tasks.security.>"},
+						Stream:   "msn_test_abc123_tasks",
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, ephemeralKnight)).To(Succeed())
+			ephemeralKnight.Status.Ready = true
+			ephemeralKnight.Status.Phase = aiv1alpha1.KnightPhaseReady
+			Expect(k8sClient.Status().Update(ctx, ephemeralKnight)).To(Succeed())
+
+			// Reconcile fleet RoundTable
+			rec := newReconciler()
+			fleetKey := types.NamespacedName{Name: fleetRT, Namespace: namespace}
+			_, err := rec.Reconcile(ctx, reconcile.Request{NamespacedName: fleetKey})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Verify fleet RoundTable only sees galahad (not ephemeral knight)
+			rt := &aiv1alpha1.RoundTable{}
+			Expect(k8sClient.Get(ctx, fleetKey, rt)).To(Succeed())
+			Expect(rt.Status.KnightsTotal).To(Equal(int32(1)), "Fleet RT should only count non-ephemeral knights")
+			Expect(rt.Status.KnightsReady).To(Equal(int32(1)))
+			Expect(rt.Status.Knights).To(HaveLen(1))
+			Expect(rt.Status.Knights[0].Name).To(Equal("galahad"))
+		})
+
+		It("should only discover knights belonging to ephemeral RoundTable", func() {
+			// Create knight for THIS ephemeral RoundTable
+			missionKnight := &aiv1alpha1.Knight{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "mission-test-scanner",
+					Namespace: namespace,
+					Labels: map[string]string{
+						aiv1alpha1.LabelEphemeral:   "true",
+						aiv1alpha1.LabelMission:     "test-mission",
+						aiv1alpha1.LabelRoundTable:  ephemeralRT,
+					},
+				},
+				Spec: aiv1alpha1.KnightSpec{
+					Domain: "security",
+					Skills: []string{"security"},
+					NATS: aiv1alpha1.KnightNATS{
+						URL:      "nats://nats.test:4222",
+						Subjects: []string{"msn-test-abc123.tasks.security.>"},
+						Stream:   "msn_test_abc123_tasks",
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, missionKnight)).To(Succeed())
+			missionKnight.Status.Ready = true
+			missionKnight.Status.Phase = aiv1alpha1.KnightPhaseReady
+			Expect(k8sClient.Status().Update(ctx, missionKnight)).To(Succeed())
+
+			// Create knight for DIFFERENT ephemeral RoundTable
+			otherKnight := &aiv1alpha1.Knight{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "mission-other-scanner",
+					Namespace: namespace,
+					Labels: map[string]string{
+						aiv1alpha1.LabelEphemeral:   "true",
+						aiv1alpha1.LabelMission:     "other-mission",
+						aiv1alpha1.LabelRoundTable:  "mission-other-xyz789",
+					},
+				},
+				Spec: aiv1alpha1.KnightSpec{
+					Domain: "security",
+					Skills: []string{"security"},
+					NATS: aiv1alpha1.KnightNATS{
+						URL:      "nats://nats.test:4222",
+						Subjects: []string{"msn-other-xyz789.tasks.security.>"},
+						Stream:   "msn_other_xyz789_tasks",
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, otherKnight)).To(Succeed())
+
+			// Reconcile ephemeral RoundTable
+			rec := newReconciler()
+			ephKey := types.NamespacedName{Name: ephemeralRT, Namespace: namespace}
+			_, err := rec.Reconcile(ctx, reconcile.Request{NamespacedName: ephKey})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Verify ephemeral RoundTable only sees its own knight
+			rt := &aiv1alpha1.RoundTable{}
+			Expect(k8sClient.Get(ctx, ephKey, rt)).To(Succeed())
+			Expect(rt.Status.KnightsTotal).To(Equal(int32(1)), "Ephemeral RT should only see its own knights")
+			Expect(rt.Status.KnightsReady).To(Equal(int32(1)))
+			Expect(rt.Status.Knights).To(HaveLen(1))
+			Expect(rt.Status.Knights[0].Name).To(Equal("mission-test-scanner"))
+		})
+
+		It("should exclude ephemeral knights even without label selector", func() {
+			// Create a fleet RoundTable without explicit knight selector
+			rtNoSelector := &aiv1alpha1.RoundTable{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "fleet-no-selector",
+					Namespace: namespace,
+				},
+				Spec: aiv1alpha1.RoundTableSpec{
+					NATS: aiv1alpha1.RoundTableNATS{
+						URL:           "nats://nats.test:4222",
+						SubjectPrefix: "fleet-b",
+						TasksStream:   "fleet_b_tasks",
+						ResultsStream: "fleet_b_results",
+					},
+					Ephemeral: false,
+					// No knightSelector specified
+				},
+			}
+			Expect(k8sClient.Create(ctx, rtNoSelector)).To(Succeed())
+			defer func() {
+				_ = k8sClient.Delete(ctx, rtNoSelector)
+			}()
+
+			// Create regular knight
+			regularKnight := &aiv1alpha1.Knight{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "regular-knight",
+					Namespace: namespace,
+				},
+				Spec: aiv1alpha1.KnightSpec{
+					Domain: "infra",
+					Skills: []string{"infra"},
+					NATS: aiv1alpha1.KnightNATS{
+						URL:      "nats://nats.test:4222",
+						Subjects: []string{"fleet-b.tasks.infra.>"},
+						Stream:   "fleet_b_tasks",
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, regularKnight)).To(Succeed())
+			defer func() {
+				_ = k8sClient.Delete(ctx, regularKnight)
+			}()
+
+			// Create ephemeral knight
+			ephKnight := &aiv1alpha1.Knight{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "eph-knight",
+					Namespace: namespace,
+					Labels: map[string]string{
+						aiv1alpha1.LabelEphemeral: "true",
+					},
+				},
+				Spec: aiv1alpha1.KnightSpec{
+					Domain: "security",
+					Skills: []string{"security"},
+					NATS: aiv1alpha1.KnightNATS{
+						URL:      "nats://nats.test:4222",
+						Subjects: []string{"msn-x.tasks.security.>"},
+						Stream:   "msn_x_tasks",
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, ephKnight)).To(Succeed())
+			defer func() {
+				_ = k8sClient.Delete(ctx, ephKnight)
+			}()
+
+			// Reconcile
+			rec := newReconciler()
+			key := types.NamespacedName{Name: "fleet-no-selector", Namespace: namespace}
+			_, err := rec.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Verify only regular knight is counted
+			rt := &aiv1alpha1.RoundTable{}
+			Expect(k8sClient.Get(ctx, key, rt)).To(Succeed())
+			Expect(rt.Status.KnightsTotal).To(Equal(int32(1)), "Should filter out ephemeral knight")
+		})
+	})
 })

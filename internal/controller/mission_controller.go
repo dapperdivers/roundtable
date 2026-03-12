@@ -20,13 +20,18 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -65,6 +70,8 @@ type MissionReconciler struct {
 // +kubebuilder:rbac:groups=ai.roundtable.io,resources=roundtables,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=serviceaccounts,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch;delete
 
 func (r *MissionReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
@@ -252,7 +259,7 @@ func (r *MissionReconciler) reconcilePending(ctx context.Context, mission *aiv1a
 	return ctrl.Result{RequeueAfter: 1 * time.Second}, r.Status().Update(ctx, mission)
 }
 
-// reconcileProvisioning creates the ephemeral RoundTable if needed.
+// reconcileProvisioning creates the ephemeral RoundTable and NATS streams if needed.
 func (r *MissionReconciler) reconcileProvisioning(ctx context.Context, mission *aiv1alpha1.Mission) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
@@ -264,88 +271,251 @@ func (r *MissionReconciler) reconcileProvisioning(ctx context.Context, mission *
 		return ctrl.Result{RequeueAfter: 1 * time.Second}, r.Status().Update(ctx, mission)
 	}
 
-	// For now, we'll transition directly to Assembling without creating an ephemeral RT
-	// Full implementation would create RoundTable here
-	log.Info("Skipping ephemeral RoundTable creation (not implemented)", "mission", mission.Name)
+	// If no ephemeral knights, skip ephemeral RT creation (v1 compatibility)
+	hasEphemeral := false
+	for _, mk := range mission.Spec.Knights {
+		if mk.Ephemeral {
+			hasEphemeral = true
+			break
+		}
+	}
+	if !hasEphemeral {
+		log.Info("No ephemeral knights, skipping ephemeral RoundTable creation")
+		mission.Status.Phase = aiv1alpha1.MissionPhaseAssembling
+		mission.Status.ObservedGeneration = mission.Generation
+		return ctrl.Result{RequeueAfter: 1 * time.Second}, r.Status().Update(ctx, mission)
+	}
+
+	// Generate resource names
+	uid8 := string(mission.UID)[:8]
+	roundTableName := fmt.Sprintf("mission-%s-%s", mission.Name, uid8)
+	natsPrefix := fmt.Sprintf("msn-%s-%s", mission.Name, uid8)
+	serviceAccountName := fmt.Sprintf("mission-%s", mission.Name)
+	// Use underscores in stream names (NATS requirement)
+	tasksStream := fmt.Sprintf("msn_%s_%s_tasks", strings.ReplaceAll(mission.Name, "-", "_"), uid8)
+	resultsStream := fmt.Sprintf("msn_%s_%s_results", strings.ReplaceAll(mission.Name, "-", "_"), uid8)
+
+	// 1. Create ServiceAccount (if not exists)
+	if err := r.ensureMissionServiceAccount(ctx, mission, serviceAccountName); err != nil {
+		return ctrl.Result{}, fmt.Errorf("failed to ensure ServiceAccount: %w", err)
+	}
+
+	// 2. Create NetworkPolicy (if not exists)
+	if err := r.ensureMissionNetworkPolicy(ctx, mission); err != nil {
+		return ctrl.Result{}, fmt.Errorf("failed to ensure NetworkPolicy: %w", err)
+	}
+
+	// 3. Check if ephemeral RoundTable already exists
+	rt := &aiv1alpha1.RoundTable{}
+	rtKey := types.NamespacedName{Name: roundTableName, Namespace: mission.Namespace}
+	err := r.Get(ctx, rtKey, rt)
+
+	if err != nil {
+		if client.IgnoreNotFound(err) != nil {
+			return ctrl.Result{}, fmt.Errorf("failed to get ephemeral RoundTable: %w", err)
+		}
+
+		// RoundTable doesn't exist, create it
+		rt = r.buildEphemeralRoundTable(mission, roundTableName, natsPrefix, tasksStream, resultsStream)
+
+		log.Info("Creating ephemeral RoundTable", "name", roundTableName)
+		if err := r.Create(ctx, rt); err != nil {
+			return ctrl.Result{}, fmt.Errorf("failed to create ephemeral RoundTable: %w", err)
+		}
+
+		// Update Mission status with RoundTable name and stream names
+		mission.Status.RoundTableName = roundTableName
+		mission.Status.NATSTasksStream = tasksStream
+		mission.Status.NATSResultsStream = resultsStream
+		mission.Status.ObservedGeneration = mission.Generation
+
+		if err := r.Status().Update(ctx, mission); err != nil {
+			return ctrl.Result{}, fmt.Errorf("failed to update mission status: %w", err)
+		}
+
+		// Requeue to wait for RoundTable to become Ready
+		return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
+	}
+
+	// RoundTable exists, check if it's Ready
+	if rt.Status.Phase != aiv1alpha1.RoundTablePhaseReady {
+		log.Info("Waiting for ephemeral RoundTable to become Ready",
+			"roundTable", roundTableName,
+			"currentPhase", rt.Status.Phase)
+		return ctrl.Result{RequeueAfter: 3 * time.Second}, nil
+	}
+
+	// RoundTable is Ready, streams are created
+	log.Info("Ephemeral RoundTable ready, transitioning to Assembling",
+		"roundTable", roundTableName,
+		"tasksStream", tasksStream,
+		"resultsStream", resultsStream)
+
+	// Transition to Assembling phase
 	mission.Status.Phase = aiv1alpha1.MissionPhaseAssembling
 	mission.Status.ObservedGeneration = mission.Generation
-	return ctrl.Result{RequeueAfter: 1 * time.Second}, r.Status().Update(ctx, mission)
+	if err := r.Status().Update(ctx, mission); err != nil {
+		return ctrl.Result{}, fmt.Errorf("failed to transition to Assembling: %w", err)
+	}
+
+	return ctrl.Result{Requeue: true}, nil
 }
 
-// reconcileAssembling validates knight references and waits for readiness.
+// reconcileAssembling creates ephemeral knights and validates all knight references for readiness.
 func (r *MissionReconciler) reconcileAssembling(ctx context.Context, mission *aiv1alpha1.Mission) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
-	allReady := true
-	for i, mk := range mission.Spec.Knights {
-		if mk.Ephemeral {
-			// v1: skip ephemeral knights (not implemented)
-			log.Info("Skipping ephemeral knight (v2 feature)", "knight", mk.Name)
-			mission.Status.KnightStatuses[i].Ready = false
-			allReady = false
-			continue
-		}
-
-		// Validate knight exists
-		knight := &aiv1alpha1.Knight{}
-		if err := r.Get(ctx, types.NamespacedName{
-			Name:      mk.Name,
-			Namespace: mission.Namespace,
-		}, knight); err != nil {
-			log.Error(err, "Knight not found", "knight", mk.Name)
-			meta.SetStatusCondition(&mission.Status.Conditions, metav1.Condition{
-				Type:               "KnightsReady",
-				Status:             metav1.ConditionFalse,
-				Reason:             "KnightNotFound",
-				Message:            fmt.Sprintf("Knight %q not found: %v", mk.Name, err),
-				ObservedGeneration: mission.Generation,
-			})
-			mission.Status.ObservedGeneration = mission.Generation
-			_ = r.Status().Update(ctx, mission)
-			return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
-		}
-
-		// Check knight readiness
-		if knight.Status.Phase == aiv1alpha1.KnightPhaseReady && knight.Status.Ready {
-			mission.Status.KnightStatuses[i].Ready = true
-		} else {
-			mission.Status.KnightStatuses[i].Ready = false
-			allReady = false
-			log.Info("Knight not ready yet", "knight", mk.Name, "phase", knight.Status.Phase)
+	// Get ephemeral RoundTable (if one was created)
+	var rt *aiv1alpha1.RoundTable
+	if mission.Status.RoundTableName != "" {
+		rt = &aiv1alpha1.RoundTable{}
+		rtKey := types.NamespacedName{Name: mission.Status.RoundTableName, Namespace: mission.Namespace}
+		if err := r.Get(ctx, rtKey, rt); err != nil {
+			return ctrl.Result{}, fmt.Errorf("failed to get ephemeral RoundTable: %w", err)
 		}
 	}
 
-	if allReady && len(mission.Spec.Knights) > 0 {
-		// Check we don't have only ephemeral knights (which we skip in v1)
-		hasNonEphemeral := false
-		for _, mk := range mission.Spec.Knights {
-			if !mk.Ephemeral {
-				hasNonEphemeral = true
-				break
+	// Track assembly progress
+	knightStatuses := make(map[string]aiv1alpha1.MissionKnightStatus)
+	for _, existing := range mission.Status.KnightStatuses {
+		knightStatuses[existing.Name] = existing
+	}
+
+	allReady := true
+	var notReadyKnights []string
+
+	// Process each knight in spec
+	for _, mk := range mission.Spec.Knights {
+		if !mk.Ephemeral {
+			// Recruited knight - verify it exists and is Ready
+			existingKnight := &aiv1alpha1.Knight{}
+			knightKey := types.NamespacedName{Name: mk.Name, Namespace: mission.Namespace}
+			if err := r.Get(ctx, knightKey, existingKnight); err != nil {
+				if client.IgnoreNotFound(err) == nil {
+					log.Error(err, "Recruited knight not found", "knight", mk.Name)
+					meta.SetStatusCondition(&mission.Status.Conditions, metav1.Condition{
+						Type:               "KnightsReady",
+						Status:             metav1.ConditionFalse,
+						Reason:             "KnightNotFound",
+						Message:            fmt.Sprintf("Recruited knight %q not found", mk.Name),
+						ObservedGeneration: mission.Generation,
+					})
+					mission.Status.ObservedGeneration = mission.Generation
+					_ = r.Status().Update(ctx, mission)
+					return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+				}
+				return ctrl.Result{}, err
 			}
-		}
-		if !hasNonEphemeral {
-			meta.SetStatusCondition(&mission.Status.Conditions, metav1.Condition{
-				Type:               "KnightsReady",
-				Status:             metav1.ConditionFalse,
-				Reason:             "NoValidKnights",
-				Message:            "All knights are ephemeral (not supported in v1)",
-				ObservedGeneration: mission.Generation,
-			})
-			mission.Status.Phase = aiv1alpha1.MissionPhaseFailed
-			now := metav1.Now()
-			mission.Status.CompletedAt = &now
-			mission.Status.Result = "No valid knights available"
-			mission.Status.ObservedGeneration = mission.Generation
-			return ctrl.Result{}, r.Status().Update(ctx, mission)
+
+			if existingKnight.Status.Phase != aiv1alpha1.KnightPhaseReady || !existingKnight.Status.Ready {
+				allReady = false
+				notReadyKnights = append(notReadyKnights, mk.Name)
+			}
+
+			// Update status
+			knightStatuses[mk.Name] = aiv1alpha1.MissionKnightStatus{
+				Name:      mk.Name,
+				Ephemeral: false,
+				Ready:     existingKnight.Status.Ready,
+			}
+			continue
 		}
 
-		log.Info("All knights assembled, transitioning to Briefing", "mission", mission.Name)
+		// Ephemeral knight - create if doesn't exist
+		knightName := fmt.Sprintf("%s-%s", mission.Name, mk.Name)
+		knight := &aiv1alpha1.Knight{}
+		knightKey := types.NamespacedName{Name: knightName, Namespace: mission.Namespace}
+		err := r.Get(ctx, knightKey, knight)
+
+		if err != nil && client.IgnoreNotFound(err) == nil {
+			// Create ephemeral knight
+			if rt == nil {
+				return ctrl.Result{}, fmt.Errorf("cannot create ephemeral knight without RoundTable")
+			}
+
+			knight, err := r.buildEphemeralKnight(ctx, mission, mk, rt)
+			if err != nil {
+				return ctrl.Result{}, fmt.Errorf("failed to build ephemeral knight %q: %w", mk.Name, err)
+			}
+
+			log.Info("Creating ephemeral knight", "name", knightName)
+			if err := r.Create(ctx, knight); err != nil {
+				return ctrl.Result{}, fmt.Errorf("failed to create ephemeral knight: %w", err)
+			}
+
+			// Update status (not ready yet)
+			knightStatuses[mk.Name] = aiv1alpha1.MissionKnightStatus{
+				Name:      mk.Name,
+				Ephemeral: true,
+				Ready:     false,
+			}
+			allReady = false
+			notReadyKnights = append(notReadyKnights, mk.Name)
+			continue
+		} else if err != nil {
+			return ctrl.Result{}, fmt.Errorf("failed to get knight %q: %w", knightName, err)
+		}
+
+		// Knight exists, check readiness
+		if knight.Status.Phase != aiv1alpha1.KnightPhaseReady || !knight.Status.Ready {
+			allReady = false
+			notReadyKnights = append(notReadyKnights, mk.Name)
+		}
+
+		// Update status
+		knightStatuses[mk.Name] = aiv1alpha1.MissionKnightStatus{
+			Name:      mk.Name,
+			Ephemeral: true,
+			Ready:     knight.Status.Ready,
+		}
+	}
+
+	// Update mission status with knight statuses
+	mission.Status.KnightStatuses = make([]aiv1alpha1.MissionKnightStatus, 0, len(knightStatuses))
+	for _, ks := range knightStatuses {
+		mission.Status.KnightStatuses = append(mission.Status.KnightStatuses, ks)
+	}
+
+	if err := r.Status().Update(ctx, mission); err != nil {
+		return ctrl.Result{}, fmt.Errorf("failed to update mission status: %w", err)
+	}
+
+	// Check assembly timeout (Timeout/3)
+	assemblyTimeout := time.Duration(mission.Spec.Timeout/3) * time.Second
+	if mission.Status.StartedAt != nil && time.Since(mission.Status.StartedAt.Time) > assemblyTimeout {
+		log.Info("Assembly timeout exceeded",
+			"timeout", assemblyTimeout,
+			"notReady", notReadyKnights)
+
+		mission.Status.Phase = aiv1alpha1.MissionPhaseFailed
+		now := metav1.Now()
+		mission.Status.CompletedAt = &now
+		mission.Status.Result = fmt.Sprintf("Assembly timeout: knights not ready: %v", notReadyKnights)
+		meta.SetStatusCondition(&mission.Status.Conditions, metav1.Condition{
+			Type:               "KnightsReady",
+			Status:             metav1.ConditionFalse,
+			Reason:             "AssemblyTimeout",
+			Message:            fmt.Sprintf("Knights not ready within %v: %v", assemblyTimeout, notReadyKnights),
+			ObservedGeneration: mission.Generation,
+		})
+		mission.Status.ObservedGeneration = mission.Generation
+		if err := r.Status().Update(ctx, mission); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{}, nil
+	}
+
+	// If all knights ready, transition to Briefing
+	if allReady && len(mission.Spec.Knights) > 0 {
+		log.Info("All knights assembled, transitioning to Briefing",
+			"mission", mission.Name,
+			"knightCount", len(mission.Spec.Knights))
+
 		meta.SetStatusCondition(&mission.Status.Conditions, metav1.Condition{
 			Type:               "KnightsReady",
 			Status:             metav1.ConditionTrue,
 			Reason:             "AllKnightsReady",
-			Message:            "All referenced knights are ready",
+			Message:            fmt.Sprintf("All %d knights are ready", len(mission.Spec.Knights)),
 			ObservedGeneration: mission.Generation,
 		})
 		mission.Status.Phase = aiv1alpha1.MissionPhaseBriefing
@@ -353,9 +523,12 @@ func (r *MissionReconciler) reconcileAssembling(ctx context.Context, mission *ai
 		return ctrl.Result{RequeueAfter: 1 * time.Second}, r.Status().Update(ctx, mission)
 	}
 
-	mission.Status.ObservedGeneration = mission.Generation
-	_ = r.Status().Update(ctx, mission)
-	return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+	// Not all ready yet, requeue to check again
+	log.Info("Waiting for knights to become ready",
+		"total", len(mission.Spec.Knights),
+		"notReady", len(notReadyKnights))
+
+	return ctrl.Result{RequeueAfter: 3 * time.Second}, nil
 }
 
 // reconcileBriefing publishes the mission briefing to NATS and transitions to Active.
@@ -662,6 +835,76 @@ func (r *MissionReconciler) reconcileCleaningUp(ctx context.Context, mission *ai
 		}
 	}
 
+	// Determine if we should actually delete resources based on cleanupPolicy
+	shouldDelete := r.shouldDeleteResources(mission)
+
+	if shouldDelete {
+		// Step 1: Delete ephemeral Knight CRs
+		log.Info("Deleting ephemeral Knight CRs")
+		if err := r.deleteEphemeralKnights(ctx, mission); err != nil {
+			log.Error(err, "Failed to delete ephemeral knights, retrying")
+			return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+		}
+
+		// Step 2: Delete NATS consumers (best effort)
+		log.Info("Deleting NATS consumers")
+		if err := r.deleteNATSConsumers(ctx, mission); err != nil {
+			log.Error(err, "Failed to delete NATS consumers (best effort, continuing)")
+			// Continue even if this fails - consumers will be deleted when stream is deleted
+		}
+
+		// Step 3: Delete NATS streams
+		if mission.Status.NATSTasksStream != "" || mission.Status.NATSResultsStream != "" {
+			log.Info("Deleting NATS streams",
+				"tasksStream", mission.Status.NATSTasksStream,
+				"resultsStream", mission.Status.NATSResultsStream)
+			if err := r.deleteNATSStreams(ctx, mission); err != nil {
+				log.Error(err, "Failed to delete NATS streams, retrying with backoff")
+				return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+			}
+		}
+
+		// Step 4: Delete ephemeral RoundTable (owner ref handles cascade)
+		if mission.Status.RoundTableName != "" {
+			log.Info("Deleting ephemeral RoundTable", "name", mission.Status.RoundTableName)
+			if err := r.deleteEphemeralRoundTable(ctx, mission); err != nil {
+				log.Error(err, "Failed to delete RoundTable, retrying")
+				return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+			}
+		}
+	}
+
+	// Mark cleanup as done
+	meta.SetStatusCondition(&mission.Status.Conditions, metav1.Condition{
+		Type:               "CleanupComplete",
+		Status:             metav1.ConditionTrue,
+		Reason:             "CleanedUp",
+		Message:            "Mission cleanup completed",
+		ObservedGeneration: mission.Generation,
+	})
+
+	// Transition to terminal phase based on original outcome
+	if mission.Status.Phase != aiv1alpha1.MissionPhaseSucceeded && 
+	   mission.Status.Phase != aiv1alpha1.MissionPhaseFailed && 
+	   mission.Status.Phase != aiv1alpha1.MissionPhaseExpired {
+		// Determine terminal phase from chain results
+		allSucceeded := true
+		for _, cs := range mission.Status.ChainStatuses {
+			if cs.Phase == aiv1alpha1.ChainPhaseFailed {
+				allSucceeded = false
+				break
+			}
+		}
+		if allSucceeded {
+			mission.Status.Phase = aiv1alpha1.MissionPhaseSucceeded
+		} else {
+			mission.Status.Phase = aiv1alpha1.MissionPhaseFailed
+		}
+	}
+
+	mission.Status.ObservedGeneration = mission.Generation
+	_ = r.Status().Update(ctx, mission)
+
 	// Self-delete if cleanupPolicy=Delete and TTL expired
 	if mission.Spec.CleanupPolicy == "Delete" &&
 		mission.Status.ExpiresAt != nil &&
@@ -672,31 +915,6 @@ func (r *MissionReconciler) reconcileCleaningUp(ctx context.Context, mission *ai
 		}
 		return ctrl.Result{}, nil
 	}
-
-	// Mark cleanup as done and transition to terminal phase
-	meta.SetStatusCondition(&mission.Status.Conditions, metav1.Condition{
-		Type:               "CleanupComplete",
-		Status:             metav1.ConditionTrue,
-		Reason:             "CleanedUp",
-		Message:            "Mission cleanup completed",
-		ObservedGeneration: mission.Generation,
-	})
-
-	// Transition to terminal phase based on chain results
-	allSucceeded := true
-	for _, cs := range mission.Status.ChainStatuses {
-		if cs.Phase == aiv1alpha1.ChainPhaseFailed {
-			allSucceeded = false
-			break
-		}
-	}
-	if allSucceeded {
-		mission.Status.Phase = aiv1alpha1.MissionPhaseSucceeded
-	} else {
-		mission.Status.Phase = aiv1alpha1.MissionPhaseFailed
-	}
-	mission.Status.ObservedGeneration = mission.Generation
-	_ = r.Status().Update(ctx, mission)
 
 	// If cleanupPolicy=Delete but TTL hasn't expired yet, requeue
 	if mission.Spec.CleanupPolicy == "Delete" && mission.Status.ExpiresAt != nil {
@@ -1097,11 +1315,504 @@ func (r *MissionReconciler) updateChainStatus(mission *aiv1alpha1.Mission, chain
 	})
 }
 
+// resolveKnightSpec resolves a MissionKnight's spec from either ephemeralSpec or templateRef.
+func (r *MissionReconciler) resolveKnightSpec(
+	mission *aiv1alpha1.Mission,
+	mk aiv1alpha1.MissionKnight,
+) (*aiv1alpha1.KnightSpec, error) {
+	var baseSpec *aiv1alpha1.KnightSpec
+
+	// Path A: Inline spec
+	if mk.EphemeralSpec != nil {
+		baseSpec = mk.EphemeralSpec.DeepCopy()
+	} else if mk.TemplateRef != "" {
+		// Path B: Template reference
+		var template *aiv1alpha1.MissionKnightTemplate
+		for i := range mission.Spec.KnightTemplates {
+			if mission.Spec.KnightTemplates[i].Name == mk.TemplateRef {
+				template = &mission.Spec.KnightTemplates[i]
+				break
+			}
+		}
+
+		if template == nil {
+			return nil, fmt.Errorf("template %q not found in mission.spec.knightTemplates", mk.TemplateRef)
+		}
+
+		baseSpec = template.Spec.DeepCopy()
+
+		// Apply overrides (if specified)
+		if mk.SpecOverrides != nil {
+			r.applySpecOverrides(baseSpec, mk.SpecOverrides)
+		}
+	} else {
+		return nil, fmt.Errorf("ephemeral knight %q has neither ephemeralSpec nor templateRef", mk.Name)
+	}
+
+	return baseSpec, nil
+}
+
+// applySpecOverrides applies KnightSpecOverrides to a KnightSpec (strategic merge).
+func (r *MissionReconciler) applySpecOverrides(
+	spec *aiv1alpha1.KnightSpec,
+	overrides *aiv1alpha1.KnightSpecOverrides,
+) {
+	if overrides.Model != "" {
+		spec.Model = overrides.Model
+	}
+	if overrides.Skills != nil {
+		spec.Skills = overrides.Skills
+	}
+	if overrides.Env != nil {
+		spec.Env = append(spec.Env, overrides.Env...)
+	}
+	if overrides.Prompt != nil {
+		spec.Prompt = overrides.Prompt
+	}
+	if overrides.Concurrency != nil {
+		spec.Concurrency = *overrides.Concurrency
+	}
+}
+
+// buildEphemeralKnight creates a Knight CR for an ephemeral mission knight.
+func (r *MissionReconciler) buildEphemeralKnight(
+	ctx context.Context,
+	mission *aiv1alpha1.Mission,
+	mk aiv1alpha1.MissionKnight,
+	rt *aiv1alpha1.RoundTable,
+) (*aiv1alpha1.Knight, error) {
+	// Resolve spec from template or inline
+	spec, err := r.resolveKnightSpec(mission, mk)
+	if err != nil {
+		return nil, err
+	}
+
+	// Generate knight name
+	knightName := fmt.Sprintf("%s-%s", mission.Name, mk.Name)
+
+	// Override NATS config to point at mission streams
+	natsPrefix := rt.Spec.NATS.SubjectPrefix
+	spec.NATS = aiv1alpha1.KnightNATS{
+		URL:           rt.Spec.NATS.URL,
+		Stream:        rt.Spec.NATS.TasksStream,
+		ResultsStream: rt.Spec.NATS.ResultsStream,
+		Subjects: []string{
+			fmt.Sprintf("%s.tasks.%s.>", natsPrefix, spec.Domain),
+		},
+		ConsumerName: fmt.Sprintf("msn-%s-%s", mission.Name, mk.Name),
+		MaxDeliver:   1, // Exactly-once delivery for mission tasks
+	}
+
+	// Inject mission secrets (if any)
+	if len(mission.Spec.Secrets) > 0 {
+		for _, secretRef := range mission.Spec.Secrets {
+			spec.EnvFrom = append(spec.EnvFrom, corev1.EnvFromSource{
+				SecretRef: &corev1.SecretEnvSource{
+					LocalObjectReference: secretRef,
+				},
+			})
+		}
+	}
+
+	// Ephemeral knights don't get persistent workspace
+	spec.Workspace = nil
+
+	// Use mission-scoped ServiceAccount
+	spec.ServiceAccountName = fmt.Sprintf("mission-%s", mission.Name)
+
+	// Build Knight CR
+	knight := &aiv1alpha1.Knight{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      knightName,
+			Namespace: mission.Namespace,
+			Labels: map[string]string{
+				aiv1alpha1.LabelMission:     mission.Name,
+				aiv1alpha1.LabelEphemeral:   "true",
+				aiv1alpha1.LabelRoundTable:  rt.Name,
+			},
+			OwnerReferences: []metav1.OwnerReference{
+				*metav1.NewControllerRef(mission, aiv1alpha1.GroupVersion.WithKind("Mission")),
+			},
+		},
+		Spec: *spec,
+	}
+
+	// Add role label if specified
+	if mk.Role != "" {
+		knight.Labels[aiv1alpha1.LabelRole] = mk.Role
+	}
+
+	return knight, nil
+}
+
+// ensureMissionServiceAccount creates a mission-scoped ServiceAccount if it doesn't exist.
+func (r *MissionReconciler) ensureMissionServiceAccount(ctx context.Context, mission *aiv1alpha1.Mission, saName string) error {
+	sa := &corev1.ServiceAccount{}
+	saKey := types.NamespacedName{Name: saName, Namespace: mission.Namespace}
+	err := r.Get(ctx, saKey, sa)
+
+	if err != nil && client.IgnoreNotFound(err) == nil {
+		// Create ServiceAccount
+		sa = &corev1.ServiceAccount{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      saName,
+				Namespace: mission.Namespace,
+				Labels: map[string]string{
+					aiv1alpha1.LabelMission:   mission.Name,
+					aiv1alpha1.LabelEphemeral: "true",
+				},
+				OwnerReferences: []metav1.OwnerReference{
+					*metav1.NewControllerRef(mission, aiv1alpha1.GroupVersion.WithKind("Mission")),
+				},
+			},
+		}
+
+		if err := r.Create(ctx, sa); err != nil {
+			return fmt.Errorf("failed to create ServiceAccount: %w", err)
+		}
+		logf.FromContext(ctx).Info("Created mission ServiceAccount", "name", saName)
+	} else if err != nil {
+		return fmt.Errorf("failed to get ServiceAccount: %w", err)
+	}
+
+	return nil
+}
+
+// ensureMissionNetworkPolicy creates a NetworkPolicy to isolate ephemeral knights if it doesn't exist.
+func (r *MissionReconciler) ensureMissionNetworkPolicy(ctx context.Context, mission *aiv1alpha1.Mission) error {
+	policyName := fmt.Sprintf("mission-%s-isolation", mission.Name)
+	policy := &networkingv1.NetworkPolicy{}
+	policyKey := types.NamespacedName{Name: policyName, Namespace: mission.Namespace}
+	err := r.Get(ctx, policyKey, policy)
+
+	if err != nil && client.IgnoreNotFound(err) == nil {
+		// Build NetworkPolicy
+		policy = r.buildMissionNetworkPolicy(mission, policyName)
+
+		if err := r.Create(ctx, policy); err != nil {
+			return fmt.Errorf("failed to create NetworkPolicy: %w", err)
+		}
+		logf.FromContext(ctx).Info("Created mission NetworkPolicy", "name", policyName)
+	} else if err != nil {
+		return fmt.Errorf("failed to get NetworkPolicy: %w", err)
+	}
+
+	return nil
+}
+
+// buildMissionNetworkPolicy constructs a NetworkPolicy that restricts ephemeral knight egress.
+func (r *MissionReconciler) buildMissionNetworkPolicy(mission *aiv1alpha1.Mission, policyName string) *networkingv1.NetworkPolicy {
+	return &networkingv1.NetworkPolicy{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      policyName,
+			Namespace: mission.Namespace,
+			Labels: map[string]string{
+				aiv1alpha1.LabelMission:   mission.Name,
+				aiv1alpha1.LabelEphemeral: "true",
+			},
+			OwnerReferences: []metav1.OwnerReference{
+				*metav1.NewControllerRef(mission, aiv1alpha1.GroupVersion.WithKind("Mission")),
+			},
+		},
+		Spec: networkingv1.NetworkPolicySpec{
+			// Apply to all ephemeral knights in this mission
+			PodSelector: metav1.LabelSelector{
+				MatchLabels: map[string]string{
+					aiv1alpha1.LabelMission: mission.Name,
+				},
+			},
+			PolicyTypes: []networkingv1.PolicyType{
+				networkingv1.PolicyTypeEgress,
+			},
+			Egress: []networkingv1.NetworkPolicyEgressRule{
+				// Allow egress to NATS server
+				{
+					To: []networkingv1.NetworkPolicyPeer{
+						{
+							NamespaceSelector: &metav1.LabelSelector{
+								MatchLabels: map[string]string{
+									"kubernetes.io/metadata.name": "database",
+								},
+							},
+							PodSelector: &metav1.LabelSelector{
+								MatchLabels: map[string]string{
+									"app.kubernetes.io/name": "nats",
+								},
+							},
+						},
+					},
+					Ports: []networkingv1.NetworkPolicyPort{
+						{
+							Protocol: ptr.To(corev1.ProtocolTCP),
+							Port:     ptr.To(intstr.FromInt(4222)),
+						},
+					},
+				},
+				// Allow DNS resolution (UDP and TCP)
+				{
+					To: []networkingv1.NetworkPolicyPeer{
+						{
+							NamespaceSelector: &metav1.LabelSelector{
+								MatchLabels: map[string]string{
+									"kubernetes.io/metadata.name": "kube-system",
+								},
+							},
+							PodSelector: &metav1.LabelSelector{
+								MatchLabels: map[string]string{
+									"k8s-app": "kube-dns",
+								},
+							},
+						},
+					},
+					Ports: []networkingv1.NetworkPolicyPort{
+						{
+							Protocol: ptr.To(corev1.ProtocolUDP),
+							Port:     ptr.To(intstr.FromInt(53)),
+						},
+						{
+							Protocol: ptr.To(corev1.ProtocolTCP),
+							Port:     ptr.To(intstr.FromInt(53)),
+						},
+					},
+				},
+				// Allow HTTPS egress for AI provider APIs
+				// Note: This allows egress to ANY HTTPS endpoint
+				// For stricter isolation, use an egress proxy with allowlisting
+				{
+					Ports: []networkingv1.NetworkPolicyPort{
+						{
+							Protocol: ptr.To(corev1.ProtocolTCP),
+							Port:     ptr.To(intstr.FromInt(443)),
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+// buildEphemeralRoundTable creates the spec for an ephemeral RoundTable for a mission.
+func (r *MissionReconciler) buildEphemeralRoundTable(
+	mission *aiv1alpha1.Mission,
+	name, natsPrefix, tasksStream, resultsStream string,
+) *aiv1alpha1.RoundTable {
+	// Get parent RoundTable for defaults (if specified)
+	var parentDefaults *aiv1alpha1.RoundTableDefaults
+	var parentPolicies *aiv1alpha1.RoundTablePolicies
+	natsURL := "nats://nats.database.svc.cluster.local:4222" // Default
+
+	if mission.Spec.RoundTableRef != "" {
+		parentRT := &aiv1alpha1.RoundTable{}
+		parentKey := types.NamespacedName{Name: mission.Spec.RoundTableRef, Namespace: mission.Namespace}
+		// Use background context for fetching defaults (non-critical)
+		if err := r.Get(context.Background(), parentKey, parentRT); err == nil {
+			if parentRT.Spec.Defaults != nil {
+				parentDefaults = parentRT.Spec.Defaults
+			}
+			if parentRT.Spec.Policies != nil {
+				parentPolicies = parentRT.Spec.Policies
+			}
+			if parentRT.Spec.NATS.URL != "" {
+				natsURL = parentRT.Spec.NATS.URL
+			}
+		}
+	}
+
+	// Apply mission template overrides
+	if mission.Spec.RoundTableTemplate != nil {
+		if mission.Spec.RoundTableTemplate.Defaults != nil {
+			parentDefaults = mission.Spec.RoundTableTemplate.Defaults
+		}
+		if mission.Spec.RoundTableTemplate.Policies != nil {
+			parentPolicies = mission.Spec.RoundTableTemplate.Policies
+		}
+		if mission.Spec.RoundTableTemplate.NATSURL != "" {
+			natsURL = mission.Spec.RoundTableTemplate.NATSURL
+		}
+	}
+
+	// Build RoundTable CR
+	rt := &aiv1alpha1.RoundTable{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: mission.Namespace,
+			Labels: map[string]string{
+				aiv1alpha1.LabelMission:   mission.Name,
+				aiv1alpha1.LabelEphemeral: "true",
+			},
+			OwnerReferences: []metav1.OwnerReference{
+				*metav1.NewControllerRef(mission, aiv1alpha1.GroupVersion.WithKind("Mission")),
+			},
+		},
+		Spec: aiv1alpha1.RoundTableSpec{
+			Ephemeral:  true,
+			MissionRef: mission.Name,
+			NATS: aiv1alpha1.RoundTableNATS{
+				URL:             natsURL,
+				SubjectPrefix:   natsPrefix,
+				TasksStream:     tasksStream,
+				ResultsStream:   resultsStream,
+				CreateStreams:   true,
+				StreamRetention: "WorkQueue", // ALWAYS WorkQueue for ephemeral
+			},
+		},
+	}
+
+	// Apply defaults (with fallback to sensible defaults)
+	if parentDefaults != nil {
+		rt.Spec.Defaults = parentDefaults
+	} else {
+		rt.Spec.Defaults = &aiv1alpha1.RoundTableDefaults{
+			Model:       "claude-sonnet-4-20250514",
+			Concurrency: 3,
+			TaskTimeout: 300,
+		}
+	}
+
+	// Apply policies (initialize if nil)
+	if parentPolicies != nil {
+		rt.Spec.Policies = parentPolicies
+	} else {
+		rt.Spec.Policies = &aiv1alpha1.RoundTablePolicies{}
+	}
+
+	// Override cost budget with mission budget
+	if mission.Spec.CostBudgetUSD != "" && mission.Spec.CostBudgetUSD != "0" {
+		rt.Spec.Policies.CostBudgetUSD = mission.Spec.CostBudgetUSD
+	}
+
+	// Set max knights to mission knight count
+	if rt.Spec.Policies == nil {
+		rt.Spec.Policies = &aiv1alpha1.RoundTablePolicies{}
+	}
+	knightCount := int32(len(mission.Spec.Knights))
+	rt.Spec.Policies.MaxKnights = knightCount
+
+	return rt
+}
+
+// shouldDeleteResources determines if resources should be deleted based on cleanup policy and mission outcome.
+func (r *MissionReconciler) shouldDeleteResources(mission *aiv1alpha1.Mission) bool {
+	switch mission.Spec.CleanupPolicy {
+	case "Delete":
+		return true
+	case "Retain":
+		return false
+	case "OnSuccess":
+		return mission.Status.Phase == aiv1alpha1.MissionPhaseSucceeded
+	case "OnFailure":
+		return mission.Status.Phase == aiv1alpha1.MissionPhaseFailed
+	default:
+		return true // Default to Delete
+	}
+}
+
+// deleteEphemeralKnights deletes all ephemeral Knight CRs owned by this mission.
+func (r *MissionReconciler) deleteEphemeralKnights(ctx context.Context, mission *aiv1alpha1.Mission) error {
+	for _, ks := range mission.Status.KnightStatuses {
+		if !ks.Ephemeral {
+			continue
+		}
+
+		knightName := fmt.Sprintf("%s-%s", mission.Name, ks.Name)
+		knight := &aiv1alpha1.Knight{}
+		if err := r.Get(ctx, types.NamespacedName{
+			Name:      knightName,
+			Namespace: mission.Namespace,
+		}, knight); err != nil {
+			if client.IgnoreNotFound(err) == nil {
+				continue // Already deleted
+			}
+			return err
+		}
+
+		if err := r.Delete(ctx, knight); err != nil {
+			return fmt.Errorf("failed to delete knight %s: %w", knightName, err)
+		}
+	}
+	return nil
+}
+
+// deleteNATSConsumers deletes all NATS consumers for this mission's streams (best effort).
+func (r *MissionReconciler) deleteNATSConsumers(ctx context.Context, mission *aiv1alpha1.Mission) error {
+	if r.natsClient == nil {
+		return nil // Gracefully skip if no NATS client
+	}
+
+	tasksStream := mission.Status.NATSTasksStream
+	resultsStream := mission.Status.NATSResultsStream
+
+	for _, ks := range mission.Status.KnightStatuses {
+		if !ks.Ephemeral {
+			continue
+		}
+
+		consumerName := fmt.Sprintf("msn-%s-%s", mission.Name, ks.Name)
+
+		// Delete from tasks stream (best effort)
+		if tasksStream != "" {
+			_ = r.natsClient.DeleteConsumer(tasksStream, consumerName)
+		}
+
+		// Delete from results stream (best effort)
+		if resultsStream != "" {
+			_ = r.natsClient.DeleteConsumer(resultsStream, consumerName)
+		}
+	}
+
+	return nil
+}
+
+// deleteNATSStreams deletes the mission's task and result streams.
+func (r *MissionReconciler) deleteNATSStreams(ctx context.Context, mission *aiv1alpha1.Mission) error {
+	if r.natsClient == nil {
+		return nil // Gracefully skip if no NATS client
+	}
+
+	// Delete tasks stream
+	if mission.Status.NATSTasksStream != "" {
+		if err := r.natsClient.DeleteStream(mission.Status.NATSTasksStream); err != nil {
+			return fmt.Errorf("failed to delete tasks stream: %w", err)
+		}
+	}
+
+	// Delete results stream
+	if mission.Status.NATSResultsStream != "" {
+		if err := r.natsClient.DeleteStream(mission.Status.NATSResultsStream); err != nil {
+			return fmt.Errorf("failed to delete results stream: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// deleteEphemeralRoundTable deletes the mission's ephemeral RoundTable CR.
+func (r *MissionReconciler) deleteEphemeralRoundTable(ctx context.Context, mission *aiv1alpha1.Mission) error {
+	if mission.Status.RoundTableName == "" {
+		return nil // No RoundTable to delete
+	}
+
+	rt := &aiv1alpha1.RoundTable{}
+	if err := r.Get(ctx, types.NamespacedName{
+		Name:      mission.Status.RoundTableName,
+		Namespace: mission.Namespace,
+	}, rt); err != nil {
+		if client.IgnoreNotFound(err) == nil {
+			return nil // Already deleted
+		}
+		return err
+	}
+
+	return r.Delete(ctx, rt)
+}
+
 // SetupWithManager sets up the controller with the Manager.
 func (r *MissionReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&aiv1alpha1.Mission{}).
 		Owns(&aiv1alpha1.Chain{}).
+		Owns(&aiv1alpha1.Knight{}).
+		Owns(&aiv1alpha1.RoundTable{}).
 		Named("mission").
 		Complete(r)
 }
