@@ -173,11 +173,19 @@ func (r *ChainReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	// Reset to Idle when spec changes (generation drift) and chain is not running
 	if chain.Status.ObservedGeneration != chain.Generation &&
 		chain.Status.Phase != aiv1alpha1.ChainPhaseRunning {
-		logf.FromContext(ctx).Info("Spec changed, resetting chain to Idle",
+		log := logf.FromContext(ctx)
+		log.Info("Spec changed, resetting chain to Idle",
 			"oldGen", chain.Status.ObservedGeneration,
 			"newGen", chain.Generation)
 		chain.Status.Phase = aiv1alpha1.ChainPhaseIdle
 		r.initStepStatuses(chain)
+		
+		// Attempt to restore completed steps from NATS KV (resume capability)
+		restored := r.restoreStepOutputsFromKV(ctx, chain)
+		if restored > 0 {
+			log.Info("Restored step outputs from NATS KV after spec change", "restored", restored)
+		}
+		
 		chain.Status.ObservedGeneration = chain.Generation
 		return ctrl.Result{}, r.Status().Update(ctx, chain)
 	}
@@ -190,7 +198,7 @@ func (r *ChainReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	case aiv1alpha1.ChainPhaseRunning:
 		return r.reconcileRunning(ctx, chain)
 
-	case aiv1alpha1.ChainPhaseSucceeded, aiv1alpha1.ChainPhaseFailed:
+	case aiv1alpha1.ChainPhaseSucceeded, aiv1alpha1.ChainPhaseFailed, aiv1alpha1.ChainPhasePartiallySucceeded:
 		// Terminal — no requeue
 		return ctrl.Result{}, nil
 
@@ -334,6 +342,13 @@ func (r *ChainReconciler) reconcileRunning(ctx context.Context, chain *aiv1alpha
 	if len(chain.Status.StepStatuses) == 0 {
 		log.Info("Initializing step statuses for manually triggered chain")
 		r.initStepStatuses(chain)
+		
+		// Attempt to restore completed steps from NATS KV (resume capability)
+		restored := r.restoreStepOutputsFromKV(ctx, chain)
+		if restored > 0 {
+			log.Info("Restored step outputs from NATS KV", "restored", restored)
+		}
+		
 		now := metav1.Now()
 		chain.Status.StartedAt = &now
 		chain.Status.ObservedGeneration = chain.Generation
@@ -416,13 +431,20 @@ func (r *ChainReconciler) reconcileRunning(ctx context.Context, chain *aiv1alpha
 				if resultErr != "" {
 					ss.Phase = aiv1alpha1.ChainStepPhaseFailed
 					ss.Error = resultErr
-					// Check retry
-					if chain.Spec.RetryPolicy != nil && ss.Retries < chain.Spec.RetryPolicy.MaxRetries {
+					// Check retry (per-step policy overrides chain-level)
+					retryPolicy := chain.Spec.RetryPolicy
+					if spec != nil && spec.Retry != nil {
+						retryPolicy = &aiv1alpha1.ChainRetryPolicy{
+							MaxRetries:     spec.Retry.MaxAttempts,
+							BackoffSeconds: spec.Retry.BackoffSeconds,
+						}
+					}
+					if retryPolicy != nil && ss.Retries < retryPolicy.MaxRetries {
 						ss.Retries++
 						ss.Phase = aiv1alpha1.ChainStepPhasePending
 						ss.CompletedAt = nil
 						ss.Error = ""
-						log.Info("Retrying step", "step", ss.Name, "retry", ss.Retries)
+						log.Info("Retrying step", "step", ss.Name, "retry", ss.Retries, "maxRetries", retryPolicy.MaxRetries)
 					}
 				} else {
 					ss.Phase = aiv1alpha1.ChainStepPhaseSucceeded
@@ -464,11 +486,20 @@ func (r *ChainReconciler) reconcileRunning(ctx context.Context, chain *aiv1alpha
 			continue
 		}
 
-		// Check if retry backoff applies
-		if ss.Retries > 0 && chain.Spec.RetryPolicy != nil && ss.CompletedAt != nil {
-			backoff := time.Duration(chain.Spec.RetryPolicy.BackoffSeconds) * time.Second
-			if time.Since(ss.CompletedAt.Time) < backoff {
-				continue
+		// Check if retry backoff applies (per-step policy overrides chain-level)
+		if ss.Retries > 0 && ss.CompletedAt != nil {
+			retryPolicy := chain.Spec.RetryPolicy
+			spec := specMap[step.Name]
+			if spec != nil && spec.Retry != nil {
+				retryPolicy = &aiv1alpha1.ChainRetryPolicy{
+					BackoffSeconds: spec.Retry.BackoffSeconds,
+				}
+			}
+			if retryPolicy != nil {
+				backoff := time.Duration(retryPolicy.BackoffSeconds) * time.Second
+				if time.Since(ss.CompletedAt.Time) < backoff {
+					continue
+				}
 			}
 		}
 
@@ -580,24 +611,57 @@ func (r *ChainReconciler) reconcileRunning(ctx context.Context, chain *aiv1alpha
 	if allTerminal {
 		now := metav1.Now()
 		chain.Status.CompletedAt = &now
-		if anyFailed {
+		
+		// Count hard failures, soft failures, and successes
+		hardFailures := 0
+		softFailures := 0
+		succeededSteps := 0
+		totalSteps := len(chain.Status.StepStatuses)
+		
+		for _, ss := range chain.Status.StepStatuses {
+			if ss.Phase == aiv1alpha1.ChainStepPhaseSucceeded {
+				succeededSteps++
+			} else if ss.Phase == aiv1alpha1.ChainStepPhaseFailed {
+				spec := specMap[ss.Name]
+				if spec != nil && spec.ContinueOnFailure {
+					softFailures++
+				} else {
+					hardFailures++
+				}
+			}
+		}
+		
+		if hardFailures > 0 {
+			// At least one hard failure — chain fails
 			chain.Status.Phase = aiv1alpha1.ChainPhaseFailed
 			chain.Status.RunsFailed++
 			meta.SetStatusCondition(&chain.Status.Conditions, metav1.Condition{
 				Type:               "Complete",
 				Status:             metav1.ConditionTrue,
 				Reason:             "Failed",
-				Message:            "One or more steps failed",
+				Message:            fmt.Sprintf("%d step(s) failed without continueOnFailure", hardFailures),
+				ObservedGeneration: chain.Generation,
+			})
+		} else if softFailures > 0 {
+			// No hard failures, but some soft failures
+			chain.Status.Phase = aiv1alpha1.ChainPhasePartiallySucceeded
+			chain.Status.RunsCompleted++ // Count as completed (not failed)
+			meta.SetStatusCondition(&chain.Status.Conditions, metav1.Condition{
+				Type:               "Complete",
+				Status:             metav1.ConditionTrue,
+				Reason:             "PartiallySucceeded",
+				Message:            fmt.Sprintf("%d/%d steps succeeded (%d failed with continueOnFailure)", succeededSteps, totalSteps, softFailures),
 				ObservedGeneration: chain.Generation,
 			})
 		} else {
+			// All steps succeeded
 			chain.Status.Phase = aiv1alpha1.ChainPhaseSucceeded
 			chain.Status.RunsCompleted++
 			meta.SetStatusCondition(&chain.Status.Conditions, metav1.Condition{
 				Type:               "Complete",
 				Status:             metav1.ConditionTrue,
 				Reason:             "Succeeded",
-				Message:            "All steps completed successfully",
+				Message:            fmt.Sprintf("All %d steps completed successfully", totalSteps),
 				ObservedGeneration: chain.Generation,
 			})
 		}
@@ -923,6 +987,61 @@ func (r *ChainReconciler) storeStepOutputToKV(ctx context.Context, chainName, st
 	} else {
 		log.Info("Stored step output to NATS KV", "bucket", "chain-outputs", "key", key, "size", len(data))
 	}
+}
+
+// restoreStepOutputsFromKV attempts to restore step outputs from NATS KV.
+// Returns the number of steps successfully restored.
+func (r *ChainReconciler) restoreStepOutputsFromKV(ctx context.Context, chain *aiv1alpha1.Chain) int {
+	log := logf.FromContext(ctx)
+
+	if err := r.ensureNATS(ctx); err != nil {
+		log.Error(err, "Failed to connect NATS for KV restore")
+		return 0
+	}
+
+	restored := 0
+	for i := range chain.Status.StepStatuses {
+		ss := &chain.Status.StepStatuses[i]
+		if ss.Phase != aiv1alpha1.ChainStepPhasePending {
+			continue // Only restore pending steps
+		}
+
+		key := chain.Name + "." + ss.Name
+		data, err := r.natsClient.KVGet("chain-outputs", key)
+		if err != nil {
+			log.V(1).Info("No stored output found for step", "step", ss.Name, "key", key)
+			continue
+		}
+
+		var kvValue map[string]interface{}
+		if err := json.Unmarshal(data, &kvValue); err != nil {
+			log.Error(err, "Failed to unmarshal KV value", "step", ss.Name)
+			continue
+		}
+
+		output, _ := kvValue["output"].(string)
+		errStr, _ := kvValue["error"].(string)
+
+		if errStr != "" {
+			ss.Phase = aiv1alpha1.ChainStepPhaseFailed
+			ss.Error = errStr
+			log.Info("Restored failed step from KV", "step", ss.Name)
+		} else {
+			ss.Phase = aiv1alpha1.ChainStepPhaseSucceeded
+			ss.Output = output
+			if len(ss.Output) > 1000 {
+				ss.Output = ss.Output[:1000] + "\n\n... [truncated — full output in NATS KV bucket 'chain-outputs', key '" + chain.Name + "." + ss.Name + "']"
+			}
+			log.Info("Restored successful step from KV", "step", ss.Name, "outputLen", len(output))
+		}
+
+		// Set completion time (approximate)
+		now := metav1.Now()
+		ss.CompletedAt = &now
+		restored++
+	}
+
+	return restored
 }
 
 // SetupWithManager sets up the controller with the Manager.
