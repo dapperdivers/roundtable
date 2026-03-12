@@ -363,6 +363,24 @@ func (r *MissionReconciler) reconcileProvisioning(ctx context.Context, mission *
 func (r *MissionReconciler) reconcileAssembling(ctx context.Context, mission *aiv1alpha1.Mission) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
+	// Ensure mission ServiceAccount exists for ephemeral knights.
+	// When roundTableRef is set, provisioning is skipped, but ephemeral knights
+	// still need a mission-scoped SA for their pods.
+	hasEphemeral := false
+	for _, mk := range mission.Spec.Knights {
+		if mk.Ephemeral {
+			hasEphemeral = true
+			break
+		}
+	}
+	if hasEphemeral {
+		serviceAccountName := fmt.Sprintf("mission-%s", mission.Name)
+		if err := r.ensureMissionServiceAccount(ctx, mission, serviceAccountName); err != nil {
+			return ctrl.Result{}, fmt.Errorf("failed to ensure ServiceAccount: %w", err)
+		}
+		log.Info("Ensured mission ServiceAccount", "name", serviceAccountName)
+	}
+
 	// Resolve the RoundTable lazily — only fetched when an ephemeral knight needs it.
 	var rt *aiv1alpha1.RoundTable
 	getRoundTable := func() (*aiv1alpha1.RoundTable, error) {
