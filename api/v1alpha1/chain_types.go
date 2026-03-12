@@ -117,6 +117,26 @@ type ChainStep struct {
 	// +kubebuilder:default=false
 	// +optional
 	ContinueOnFailure bool `json:"continueOnFailure,omitempty"`
+
+	// retry configures per-step retry behavior, overriding the chain-level retryPolicy.
+	// +optional
+	Retry *StepRetry `json:"retry,omitempty"`
+}
+
+// StepRetry configures retry behavior for an individual step.
+type StepRetry struct {
+	// maxAttempts is the maximum number of retry attempts for this step.
+	// +kubebuilder:default=0
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=10
+	// +optional
+	MaxAttempts int32 `json:"maxAttempts,omitempty"`
+
+	// backoffSeconds is the delay between retries in seconds.
+	// +kubebuilder:default=30
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	BackoffSeconds int32 `json:"backoffSeconds,omitempty"`
 }
 
 // ChainRetryPolicy configures retry behavior for failed steps.
@@ -135,15 +155,16 @@ type ChainRetryPolicy struct {
 }
 
 // ChainPhase represents the current lifecycle phase of the Chain.
-// +kubebuilder:validation:Enum=Idle;Running;Succeeded;Failed;Suspended
+// +kubebuilder:validation:Enum=Idle;Running;Succeeded;Failed;Suspended;PartiallySucceeded
 type ChainPhase string
 
 const (
-	ChainPhaseIdle      ChainPhase = "Idle"
-	ChainPhaseRunning   ChainPhase = "Running"
-	ChainPhaseSucceeded ChainPhase = "Succeeded"
-	ChainPhaseFailed    ChainPhase = "Failed"
-	ChainPhaseSuspended ChainPhase = "Suspended"
+	ChainPhaseIdle               ChainPhase = "Idle"
+	ChainPhaseRunning            ChainPhase = "Running"
+	ChainPhaseSucceeded          ChainPhase = "Succeeded"
+	ChainPhaseFailed             ChainPhase = "Failed"
+	ChainPhaseSuspended          ChainPhase = "Suspended"
+	ChainPhasePartiallySucceeded ChainPhase = "PartiallySucceeded"
 )
 
 // ChainStepPhase represents the status of an individual step.

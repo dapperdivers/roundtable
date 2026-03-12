@@ -144,6 +144,26 @@ spec:
                         Supports Go template variables: {{ .Date }} (YYYY-MM-DD), {{ .Chain }} (chain name), {{ .Step }} (step name).
                         When set, the controller dispatches a write task to the outputKnight after the step succeeds.
                       type: string
+                    retry:
+                      description: retry configures per-step retry behavior, overriding
+                        the chain-level retryPolicy.
+                      properties:
+                        backoffSeconds:
+                          default: 30
+                          description: backoffSeconds is the delay between retries
+                            in seconds.
+                          format: int32
+                          minimum: 1
+                          type: integer
+                        maxAttempts:
+                          default: 0
+                          description: maxAttempts is the maximum number of retry
+                            attempts for this step.
+                          format: int32
+                          maximum: 10
+                          minimum: 0
+                          type: integer
+                      type: object
                     task:
                       description: |-
                         task is the task prompt or instruction to send to the knight.
@@ -265,6 +285,7 @@ spec:
                 - Succeeded
                 - Failed
                 - Suspended
+                - PartiallySucceeded
                 type: string
               runsCompleted:
                 description: runsCompleted is the total number of successful chain
