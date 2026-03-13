@@ -564,11 +564,6 @@ func (r *MissionReconciler) pollPlanningResult(ctx context.Context, mission *aiv
 		natspkg.WithFallbackAutoDetect(),
 	)
 
-	// Clean up consumer after we get a result (or on error)
-	defer func() {
-		_ = r.natsClient.DeleteConsumer(resultsStream, consumerName)
-	}()
-
 	if err != nil {
 		log.V(1).Info("Planning result not yet available", "taskID", taskID, "error", err.Error())
 		return nil, nil
@@ -578,10 +573,11 @@ func (r *MissionReconciler) pollPlanningResult(ctx context.Context, mission *aiv
 		return nil, nil
 	}
 
-	// Ack the message
+	// Got the result — ack and clean up the consumer
 	if err := msg.Ack(); err != nil {
 		log.Error(err, "Failed to ack planning result message")
 	}
+	_ = r.natsClient.DeleteConsumer(resultsStream, consumerName)
 
 	// Parse result
 	var taskResult natspkg.TaskResult
