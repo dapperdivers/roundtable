@@ -1050,7 +1050,15 @@ func (r *MissionReconciler) publishBriefing(ctx context.Context, mission *aiv1al
 			Task:      fmt.Sprintf("[Mission: %s]\nObjective: %s\n\n%s", mission.Name, mission.Spec.Objective, mission.Spec.Briefing),
 		}
 
-		taskSubject := natspkg.TaskSubject("fleet-a", knight.Spec.Domain, mk.Name)
+		// Derive subject prefix from the knight's NATS config
+		briefingPrefix := natsPrefix(mission)
+		if len(knight.Spec.NATS.Subjects) > 0 {
+			parts := strings.SplitN(knight.Spec.NATS.Subjects[0], ".tasks.", 2)
+			if len(parts) == 2 {
+				briefingPrefix = parts[0]
+			}
+		}
+		taskSubject := natspkg.TaskSubject(briefingPrefix, knight.Spec.Domain, mk.Name)
 		if err := r.natsClient.PublishJSON(taskSubject, taskPayload); err != nil {
 			logf.FromContext(ctx).Error(err, "Failed to publish briefing to knight", "knight", mk.Name)
 		}

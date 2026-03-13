@@ -51,6 +51,8 @@ type natsConfig struct {
 }
 
 // defaultNATSConfig is the fallback when no RoundTable is specified.
+// This is only used for legacy chains without a roundTableRef or missionRef.
+// New chains should always resolve config from their parent RoundTable CR.
 var defaultNATSConfig = natsConfig{
 	SubjectPrefix: "fleet-a",
 	TasksStream:   "fleet_a_tasks",

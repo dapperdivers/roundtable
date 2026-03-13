@@ -991,15 +991,23 @@ func (r *KnightReconciler) SetupWithManager(mgr ctrl.Manager) error {
 // deriveResultsPrefix extracts the NATS subject prefix for results from task subjects.
 // e.g., ["fleet-a.tasks.security.>"] → "fleet-a.results"
 //       ["chelonian.tasks.frontend.>"] → "chelonian.results"
+//       ["rt-dev.tasks.operator.>"] → "rt-dev.results"
 func deriveResultsPrefix(subjects []string) string {
-	if len(subjects) == 0 {
-		return "fleet-a.results"
+	for _, subj := range subjects {
+		// Split on ".tasks." to reliably extract the table prefix
+		parts := strings.SplitN(subj, ".tasks.", 2)
+		if len(parts) == 2 && parts[0] != "" {
+			return parts[0] + ".results"
+		}
 	}
-	parts := strings.Split(subjects[0], ".")
-	if len(parts) >= 2 {
-		return parts[0] + ".results"
+	// Last resort: try splitting on dots
+	if len(subjects) > 0 {
+		parts := strings.Split(subjects[0], ".")
+		if len(parts) >= 2 {
+			return parts[0] + ".results"
+		}
 	}
-	return "fleet-a.results"
+	return "fleet-a.results" // ultimate fallback for legacy knights without subjects
 }
 
 func capitalizeFirst(s string) string {

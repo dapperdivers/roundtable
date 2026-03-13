@@ -519,7 +519,9 @@ func (r *MissionReconciler) buildPlanningPrompt(mission *aiv1alpha1.Mission) str
 	return sb.String()
 }
 
-// pollPlanningResult polls NATS for the planning result.
+// pollPlanningResult polls the NATS results stream for the planning result.
+// The planner knight publishes results to its own table's results stream,
+// so we need to resolve the correct stream and prefix from the planner knight's config.
 func (r *MissionReconciler) pollPlanningResult(ctx context.Context, mission *aiv1alpha1.Mission, taskID string) (*natspkg.TaskResult, error) {
 	log := logf.FromContext(ctx)
 
@@ -527,21 +529,70 @@ func (r *MissionReconciler) pollPlanningResult(ctx context.Context, mission *aiv
 		return nil, err
 	}
 
-	// Try to get result from NATS KV
-	result, err := r.natsClient.KVGet("task-results", taskID)
+	// Resolve the planner knight to determine which results stream to poll
+	plannerKnight, err := r.ensurePlannerKnight(ctx, mission)
 	if err != nil {
-		// Not found yet - this is normal while waiting
+		return nil, fmt.Errorf("failed to resolve planner knight: %w", err)
+	}
+
+	// Derive the results stream and subject prefix from the planner knight's NATS config.
+	// The planner publishes to its own table's results stream, not the mission's.
+	resultsStream := plannerKnight.Spec.NATS.ResultsStream
+	subjectPrefix := "fleet-a" // fallback
+	if len(plannerKnight.Spec.NATS.Subjects) > 0 {
+		// Extract prefix from first subject: "fleet-a.tasks.domain.>" → "fleet-a"
+		parts := strings.SplitN(plannerKnight.Spec.NATS.Subjects[0], ".tasks.", 2)
+		if len(parts) == 2 {
+			subjectPrefix = parts[0]
+		}
+	}
+
+	subject := natspkg.ResultSubject(subjectPrefix, taskID)
+	consumerName := fmt.Sprintf("mission-planner-%s", mission.Name)
+
+	log.V(1).Info("Polling for planning result",
+		"taskID", taskID,
+		"stream", resultsStream,
+		"subject", subject,
+		"consumer", consumerName)
+
+	msg, err := r.natsClient.PollMessage(subject, 2*time.Second,
+		natspkg.WithDurable(consumerName),
+		natspkg.WithAckExplicit(),
+		natspkg.WithBindStream(resultsStream),
+		natspkg.WithDeliverAll(),
+		natspkg.WithFallbackAutoDetect(),
+	)
+
+	// Clean up consumer after we get a result (or on error)
+	defer func() {
+		_ = r.natsClient.DeleteConsumer(resultsStream, consumerName)
+	}()
+
+	if err != nil {
+		log.V(1).Info("Planning result not yet available", "taskID", taskID, "error", err.Error())
+		return nil, nil
+	}
+	if msg == nil {
 		log.V(1).Info("Planning result not yet available", "taskID", taskID)
 		return nil, nil
 	}
 
-	// Parse result
-	var taskResult natspkg.TaskResult
-	if err := json.Unmarshal(result, &taskResult); err != nil {
-		return nil, fmt.Errorf("failed to parse task result: %w", err)
+	// Ack the message
+	if err := msg.Ack(); err != nil {
+		log.Error(err, "Failed to ack planning result message")
 	}
 
-	log.Info("Retrieved planning result", "taskID", taskID, "size", len(taskResult.GetOutput()))
+	// Parse result
+	var taskResult natspkg.TaskResult
+	if err := json.Unmarshal(msg.Data, &taskResult); err != nil {
+		return nil, fmt.Errorf("failed to parse planning result: %w", err)
+	}
+
+	log.Info("Retrieved planning result from stream",
+		"taskID", taskID,
+		"stream", resultsStream,
+		"outputLen", len(taskResult.GetOutput()))
 	return &taskResult, nil
 }
 
