@@ -3065,6 +3065,11 @@ spec:
                     format: int32
                     type: integer
                 type: object
+              planningTaskID:
+                description: |-
+                  planningTaskID is the NATS task ID dispatched to the planner knight.
+                  Used to prevent duplicate dispatches during reconcile loops.
+                type: string
               result:
                 description: result is a summary of the mission outcome.
                 type: string

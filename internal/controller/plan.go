@@ -162,7 +162,7 @@ func (r *MissionReconciler) reconcilePlanning(ctx context.Context, mission *aiv1
 	}
 
 	// Dispatch planning task if not already dispatched
-	if pr.RawOutput == "" {
+	if mission.Status.PlanningTaskID == "" {
 		taskID, err := r.dispatchPlanningTask(ctx, mission, plannerKnight)
 		if err != nil {
 			log.Error(err, "Failed to dispatch planning task")
@@ -170,21 +170,12 @@ func (r *MissionReconciler) reconcilePlanning(ctx context.Context, mission *aiv1
 			return ctrl.Result{RequeueAfter: 10 * time.Second}, r.Status().Update(ctx, mission)
 		}
 		log.Info("Dispatched planning task", "taskID", taskID, "knight", plannerKnight.Name)
-		// Store taskID in a temporary annotation
-		if mission.Annotations == nil {
-			mission.Annotations = make(map[string]string)
-		}
-		mission.Annotations["ai.roundtable.io/planning-task-id"] = taskID
-		return ctrl.Result{RequeueAfter: 2 * time.Second}, r.Update(ctx, mission)
+		mission.Status.PlanningTaskID = taskID
+		return ctrl.Result{RequeueAfter: 5 * time.Second}, r.Status().Update(ctx, mission)
 	}
 
 	// Poll for planning result
-	taskID := mission.Annotations["ai.roundtable.io/planning-task-id"]
-	if taskID == "" {
-		log.Error(fmt.Errorf("missing planning task ID"), "Cannot poll for result")
-		pr.Error = "planning task ID lost, cannot retrieve result"
-		return ctrl.Result{}, r.Status().Update(ctx, mission)
-	}
+	taskID := mission.Status.PlanningTaskID
 
 	result, err := r.pollPlanningResult(ctx, mission, taskID)
 	if err != nil {

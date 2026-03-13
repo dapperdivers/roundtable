@@ -285,6 +285,11 @@ type MissionStatus struct {
 	// +optional
 	ResultsConfigMap string `json:"resultsConfigMap,omitempty"`
 
+	// planningTaskID is the NATS task ID dispatched to the planner knight.
+	// Used to prevent duplicate dispatches during reconcile loops.
+	// +optional
+	PlanningTaskID string `json:"planningTaskID,omitempty"`
+
 	// planningResult contains the output from the planner knight.
 	// +optional
 	PlanningResult *PlanningResult `json:"planningResult,omitempty"`
