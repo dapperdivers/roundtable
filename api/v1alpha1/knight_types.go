@@ -99,6 +99,16 @@ type KnightSpec struct {
 	// +optional
 	TaskTimeout int32 `json:"taskTimeout,omitempty"`
 
+	// nixPackages lists nix packages to install during knight bootstrap.
+	// Packages are installed via: nix profile install nixpkgs#<pkg>
+	// +optional
+	NixPackages []string `json:"nixPackages,omitempty"`
+
+	// generatedSkills contains inline skill definitions created by the planner.
+	// Each skill is a markdown document mounted at /skills/<name>.md
+	// +optional
+	GeneratedSkills []GeneratedSkill `json:"generatedSkills,omitempty"`
+
 	// env defines additional environment variables for the knight container.
 	// +optional
 	Env []corev1.EnvVar `json:"env,omitempty"`
@@ -343,6 +353,18 @@ type KnightList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitzero"`
 	Items           []Knight `json:"items"`
+}
+
+// GeneratedSkill is an inline skill definition created by the planner.
+// Each skill is a markdown document that gets mounted into the knight's /skills/ directory.
+type GeneratedSkill struct {
+	// name is the skill filename (without .md extension).
+	// +kubebuilder:validation:Required
+	Name string `json:"name"`
+
+	// content is the full markdown skill document.
+	// +kubebuilder:validation:Required
+	Content string `json:"content"`
 }
 
 func init() {

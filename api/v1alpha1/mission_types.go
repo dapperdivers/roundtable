@@ -69,6 +69,12 @@ type MissionSpec struct {
 	// +optional
 	RoundTableRef string `json:"roundTableRef,omitempty"`
 
+	// metaMission enables the built-in planner knight to generate the execution plan.
+	// When true, the operator dispatches the objective to the planner knight,
+	// which reasons about what chains, knights, nix packages, and skills are needed.
+	// +optional
+	MetaMission bool `json:"metaMission,omitempty"`
+
 	// cleanupPolicy controls what happens to ephemeral resources after mission completion.
 	// +kubebuilder:default="Delete"
 	// +kubebuilder:validation:Enum=Delete;Retain
@@ -114,6 +120,21 @@ type MissionSpec struct {
 	// +kubebuilder:default=true
 	// +optional
 	RetainResults bool `json:"retainResults,omitempty"`
+
+	// planner configures the planning phase for meta-missions.
+	// If set, a planner knight generates chains and knight specs before assembly.
+	// +optional
+	Planner *MissionPlanner `json:"planner,omitempty"`
+
+	// generatedChains stores chains created by the planner during Planning phase.
+	// These chains are created as Chain CRs with owner references to the mission.
+	// +optional
+	GeneratedChains []GeneratedChain `json:"generatedChains,omitempty"`
+
+	// generatedKnights stores ephemeral knight specs created by the planner.
+	// These knights are added to the knights list during Planning phase.
+	// +optional
+	GeneratedKnights []MissionKnight `json:"generatedKnights,omitempty"`
 }
 
 // MissionKnight references a knight participating in a mission.
@@ -165,12 +186,13 @@ type MissionChainRef struct {
 }
 
 // MissionPhase represents the current lifecycle phase of the Mission.
-// +kubebuilder:validation:Enum=Pending;Provisioning;Assembling;Briefing;Active;Succeeded;Failed;Expired;CleaningUp
+// +kubebuilder:validation:Enum=Pending;Provisioning;Planning;Assembling;Briefing;Active;Succeeded;Failed;Expired;CleaningUp
 type MissionPhase string
 
 const (
 	MissionPhasePending      MissionPhase = "Pending"
 	MissionPhaseProvisioning MissionPhase = "Provisioning"
+	MissionPhasePlanning     MissionPhase = "Planning"
 	MissionPhaseAssembling   MissionPhase = "Assembling"
 	MissionPhaseBriefing     MissionPhase = "Briefing"
 	MissionPhaseActive       MissionPhase = "Active"
@@ -262,6 +284,10 @@ type MissionStatus struct {
 	// (only set when retainResults=true and mission is complete).
 	// +optional
 	ResultsConfigMap string `json:"resultsConfigMap,omitempty"`
+
+	// planningResult contains the output from the planner knight.
+	// +optional
+	PlanningResult *PlanningResult `json:"planningResult,omitempty"`
 }
 
 // MissionKnightTemplate is a named, reusable knight spec template.
@@ -339,6 +365,116 @@ type MissionChainStatus struct {
 	// phase is the chain's current phase.
 	// +optional
 	Phase ChainPhase `json:"phase,omitempty"`
+}
+
+// MissionPlanner configures the planning phase.
+type MissionPlanner struct {
+	// knightRef is the name of the knight to use as the planner.
+	// This knight should have planning, reasoning, and orchestration skills.
+	// +kubebuilder:validation:Required
+	KnightRef string `json:"knightRef"`
+
+	// templateRef references a KnightTemplate to use for the planner (alternative to knightRef).
+	// If set, an ephemeral planner knight is created from the template.
+	// +optional
+	TemplateRef string `json:"templateRef,omitempty"`
+
+	// ephemeralSpec defines an inline spec for an ephemeral planner knight.
+	// Mutually exclusive with knightRef and templateRef.
+	// +optional
+	EphemeralSpec *KnightSpec `json:"ephemeralSpec,omitempty"`
+
+	// timeout is the maximum time in seconds for planning to complete.
+	// +kubebuilder:default=300
+	// +kubebuilder:validation:Minimum=60
+	// +kubebuilder:validation:Maximum=1800
+	// +optional
+	Timeout int32 `json:"timeout,omitempty"`
+
+	// context provides additional information to the planner beyond the objective.
+	// Can include constraints, available resources, success criteria, etc.
+	// +optional
+	Context string `json:"context,omitempty"`
+
+	// allowSkillGeneration enables the planner to generate new skill definitions.
+	// When false, the planner can only use existing skills and templates.
+	// +kubebuilder:default=false
+	// +optional
+	AllowSkillGeneration bool `json:"allowSkillGeneration,omitempty"`
+
+	// maxChains limits the number of chains the planner can generate.
+	// +kubebuilder:default=5
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=20
+	// +optional
+	MaxChains int32 `json:"maxChains,omitempty"`
+
+	// maxKnights limits the number of ephemeral knights the planner can generate.
+	// +kubebuilder:default=10
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=50
+	// +optional
+	MaxKnights int32 `json:"maxKnights,omitempty"`
+}
+
+// GeneratedChain represents a chain definition created by the planner.
+type GeneratedChain struct {
+	// name is the chain name (must be unique within the mission).
+	// +kubebuilder:validation:Required
+	Name string `json:"name"`
+
+	// description explains what this chain accomplishes.
+	// +optional
+	Description string `json:"description,omitempty"`
+
+	// steps are the chain steps.
+	// +kubebuilder:validation:MinItems=1
+	Steps []ChainStep `json:"steps"`
+
+	// phase controls when this chain runs (Setup, Active, Teardown).
+	// +kubebuilder:default="Active"
+	// +kubebuilder:validation:Enum=Setup;Active;Teardown
+	// +optional
+	Phase string `json:"phase,omitempty"`
+
+	// input is the initial data for the chain.
+	// +optional
+	Input string `json:"input,omitempty"`
+
+	// timeout overrides the default chain timeout.
+	// +optional
+	Timeout *int32 `json:"timeout,omitempty"`
+
+	// retryPolicy configures retry behavior.
+	// +optional
+	RetryPolicy *ChainRetryPolicy `json:"retryPolicy,omitempty"`
+}
+
+// PlanningResult tracks the outcome of the planning phase.
+type PlanningResult struct {
+	// completedAt is when planning finished.
+	// +optional
+	CompletedAt *metav1.Time `json:"completedAt,omitempty"`
+
+	// chainsGenerated is the number of chains the planner created.
+	// +optional
+	ChainsGenerated int32 `json:"chainsGenerated,omitempty"`
+
+	// knightsGenerated is the number of ephemeral knights the planner created.
+	// +optional
+	KnightsGenerated int32 `json:"knightsGenerated,omitempty"`
+
+	// skillsGenerated is the number of new skills the planner created.
+	// +optional
+	SkillsGenerated int32 `json:"skillsGenerated,omitempty"`
+
+	// error contains any planning errors.
+	// +optional
+	Error string `json:"error,omitempty"`
+
+	// rawOutput is the complete planner output (truncated if large).
+	// +optional
+	RawOutput string `json:"rawOutput,omitempty"`
 }
 
 // +kubebuilder:object:root=true
