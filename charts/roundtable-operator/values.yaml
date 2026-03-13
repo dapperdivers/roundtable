@@ -76,3 +76,18 @@ dashboard:
 #       subjects: ["fleet-a.tasks.security.>"]
 #     taskTimeout: 300
 knights: {}
+
+# Built-in planner knight — ships with the operator for meta-missions
+planner:
+  enabled: true
+  domain: operator
+  model: claude-sonnet-4-20250514
+  skills:
+    - operator
+    - shared
+  concurrency: 1
+  taskTimeout: 600
+  arsenal:
+    repo: https://github.com/dapperdivers/roundtable-arsenal.git
+    ref: main
+    period: 5m

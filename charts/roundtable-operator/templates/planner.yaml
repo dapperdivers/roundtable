@@ -1,0 +1,31 @@
+{{- if .Values.planner.enabled }}
+---
+apiVersion: ai.roundtable.io/v1alpha1
+kind: Knight
+metadata:
+  name: {{ include "roundtable-operator.fullname" . }}-planner
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "roundtable-operator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: planner
+    ai.roundtable.io/role: planner
+spec:
+  domain: {{ .Values.planner.domain | default "operator" }}
+  model: {{ .Values.planner.model | default "claude-sonnet-4-20250514" }}
+  image: "{{ .Values.image.piKnight.repository }}:{{ .Values.image.piKnight.tag }}"
+  skills:
+    {{- toYaml .Values.planner.skills | nindent 4 }}
+  nats:
+    subjects:
+      - "{{ .Values.planner.natsPrefix | default "fleet-a" }}.tasks.operator.>"
+  concurrency: {{ .Values.planner.concurrency | default 1 }}
+  taskTimeout: {{ .Values.planner.taskTimeout | default 600 }}
+  {{- if .Values.planner.arsenal }}
+  arsenal:
+    {{- toYaml .Values.planner.arsenal | nindent 4 }}
+  {{- end }}
+  {{- if .Values.planner.envFrom }}
+  envFrom:
+    {{- toYaml .Values.planner.envFrom | nindent 4 }}
+  {{- end }}
+{{- end }}
