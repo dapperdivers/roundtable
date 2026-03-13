@@ -379,8 +379,18 @@ func (r *MissionReconciler) dispatchPlanningTask(ctx context.Context, mission *a
 		Task:   prompt,
 	}
 
-	// Publish to planner knight's task subject
+	// Publish to planner knight's task subject.
+	// For built-in (non-ephemeral) planner knights, derive the prefix from
+	// the knight's NATS subjects (e.g. "fleet-a.tasks.operator.>" → "fleet-a").
+	// Ephemeral planners use the mission's NATS prefix.
 	prefix := natsPrefix(mission)
+	if plannerKnight.Spec.NATS.Subjects != nil && len(plannerKnight.Spec.NATS.Subjects) > 0 {
+		// Extract prefix from first subject: "fleet-a.tasks.domain.>" → "fleet-a"
+		parts := strings.SplitN(plannerKnight.Spec.NATS.Subjects[0], ".tasks.", 2)
+		if len(parts) == 2 {
+			prefix = parts[0]
+		}
+	}
 	subject := natspkg.TaskSubject(prefix, plannerKnight.Spec.Domain, plannerKnight.Name)
 
 	if err := r.natsClient.PublishJSON(subject, payload); err != nil {
