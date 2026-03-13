@@ -1458,6 +1458,7 @@ spec:
                       - Succeeded
                       - Failed
                       - Suspended
+                      - PartiallySucceeded
                       type: string
                   required:
                   - name
