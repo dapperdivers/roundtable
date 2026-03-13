@@ -362,7 +362,7 @@ func (r *MissionReconciler) dispatchPlanningTask(ctx context.Context, mission *a
 	taskID := fmt.Sprintf("planning-%s-%s", mission.Name, uuid.New().String()[:8])
 
 	// Build planning prompt
-	prompt := r.buildPlanningPrompt(mission)
+	prompt := r.buildPlanningPrompt(ctx, mission)
 
 	// Construct task payload
 	payload := natspkg.TaskPayload{
@@ -397,7 +397,7 @@ func (r *MissionReconciler) dispatchPlanningTask(ctx context.Context, mission *a
 }
 
 // buildPlanningPrompt constructs the planning prompt for the planner knight.
-func (r *MissionReconciler) buildPlanningPrompt(mission *aiv1alpha1.Mission) string {
+func (r *MissionReconciler) buildPlanningPrompt(ctx context.Context, mission *aiv1alpha1.Mission) string {
 	var sb strings.Builder
 
 	sb.WriteString("You are a mission planner for the Round Table AI agent orchestration system. ")
@@ -432,12 +432,47 @@ func (r *MissionReconciler) buildPlanningPrompt(mission *aiv1alpha1.Mission) str
 	}
 
 	// Existing knights (if recruiting allowed)
-	if mission.Spec.RecruitExisting && len(mission.Spec.Knights) > 0 {
-		sb.WriteString("Existing Knights:\n")
+	if mission.Spec.RecruitExisting {
+		// First list any knights already in the mission spec
+		existingFound := false
 		for _, k := range mission.Spec.Knights {
 			if !k.Ephemeral {
+				if !existingFound {
+					sb.WriteString("Existing Knights Available (use ephemeral=false to recruit these):\n")
+					existingFound = true
+				}
 				sb.WriteString(fmt.Sprintf("- %s (role: %s)\n", k.Name, k.Role))
 			}
+		}
+
+		// Also list knights from the referenced RoundTable
+		if mission.Spec.RoundTableRef != "" {
+			var rt aiv1alpha1.RoundTable
+			if err := r.Get(ctx, types.NamespacedName{
+				Name:      mission.Spec.RoundTableRef,
+				Namespace: mission.Namespace,
+			}, &rt); err == nil {
+				// List all Knight CRs that belong to this RoundTable
+				var knightList aiv1alpha1.KnightList
+				if err := r.List(ctx, &knightList,
+					client.InNamespace(mission.Namespace),
+					client.MatchingLabels{"ai.roundtable.io/roundtable": rt.Name},
+				); err == nil && len(knightList.Items) > 0 {
+					if !existingFound {
+						sb.WriteString("Existing Knights Available (use ephemeral=false to recruit these):\n")
+						existingFound = true
+					}
+					for _, k := range knightList.Items {
+						sb.WriteString(fmt.Sprintf("- %s (domain: %s, skills: %v)\n",
+							k.Name, k.Spec.Domain, k.Spec.Skills))
+					}
+				}
+			}
+		}
+
+		if existingFound {
+			sb.WriteString("\n**IMPORTANT: When recruitExisting=true, prefer using existing knights with ephemeral=false. ")
+			sb.WriteString("Only create ephemeral knights if the existing ones don't cover the needed domains.**\n")
 		}
 	}
 
@@ -475,7 +510,12 @@ func (r *MissionReconciler) buildPlanningPrompt(mission *aiv1alpha1.Mission) str
   },
   "knights": [
     {
-      "name": "knight-name",
+      "name": "existing-knight-name",
+      "role": "description of role",
+      "ephemeral": false
+    },
+    {
+      "name": "new-knight-name",
       "role": "description of role",
       "ephemeral": true,
       "templateRef": "template-name",
@@ -507,7 +547,7 @@ func (r *MissionReconciler) buildPlanningPrompt(mission *aiv1alpha1.Mission) str
 
 	sb.WriteString("**Important Guidelines:**\n")
 	sb.WriteString("1. All knightRef values in chain steps must match knight names in the knights array\n")
-	sb.WriteString("2. Use templateRef to reference existing knight templates when possible\n")
+	sb.WriteString("2. When existing knights are listed, prefer ephemeral=false to use them directly; only use templateRef for new ephemeral knights\n")
 	sb.WriteString("3. Chain phases can be: Setup, Active, or Teardown\n")
 	sb.WriteString("4. Steps can use Go template syntax like {{ .Steps.stepName.Output }} to pass data\n")
 	sb.WriteString("5. Ensure step dependencies (dependsOn) form a valid DAG (no cycles)\n")
