@@ -36,9 +36,9 @@ type MissionSpec struct {
 	SuccessCriteria string `json:"successCriteria,omitempty"`
 
 	// knights lists the knights participating in this mission.
-	// +kubebuilder:validation:Required
-	// +kubebuilder:validation:MinItems=1
-	Knights []MissionKnight `json:"knights"`
+	// For meta-missions, this is populated by the planner during the Planning phase.
+	// +optional
+	Knights []MissionKnight `json:"knights,omitempty"`
 
 	// chains lists chains to execute as part of this mission.
 	// +optional

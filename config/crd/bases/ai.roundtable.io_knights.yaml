@@ -302,6 +302,26 @@ spec:
                       x-kubernetes-map-type: atomic
                   type: object
                 type: array
+              generatedSkills:
+                description: |-
+                  generatedSkills contains inline skill definitions created by the planner.
+                  Each skill is a markdown document mounted at /skills/<name>.md
+                items:
+                  description: |-
+                    GeneratedSkill is an inline skill definition created by the planner.
+                    Each skill is a markdown document that gets mounted into the knight's /skills/ directory.
+                  properties:
+                    content:
+                      description: content is the full markdown skill document.
+                      type: string
+                    name:
+                      description: name is the skill filename (without .md extension).
+                      type: string
+                  required:
+                  - content
+                  - name
+                  type: object
+                type: array
               image:
                 description: |-
                   image is the container image for the knight runtime.
@@ -352,6 +372,13 @@ spec:
                 required:
                 - subjects
                 type: object
+              nixPackages:
+                description: |-
+                  nixPackages lists nix packages to install during knight bootstrap.
+                  Packages are installed via: nix profile install nixpkgs#<pkg>
+                items:
+                  type: string
+                type: array
               prompt:
                 description: prompt allows overriding the knight's system prompt components.
                 properties:
