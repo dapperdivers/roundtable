@@ -162,4 +162,41 @@ var _ = Describe("Knight Controller", func() {
 			Expect(*deploy.Spec.Template.Spec.AutomountServiceAccountToken).To(BeTrue())
 		})
 	})
+
+	Describe("deriveResultsPrefix", func() {
+		It("returns fallback for empty subjects", func() {
+			Expect(deriveResultsPrefix(nil)).To(Equal("fleet-a.results"))
+			Expect(deriveResultsPrefix([]string{})).To(Equal("fleet-a.results"))
+		})
+
+		It("extracts fleet-a prefix", func() {
+			subjects := []string{"fleet-a.tasks.>"}
+			Expect(deriveResultsPrefix(subjects)).To(Equal("fleet-a.results"))
+		})
+
+		It("extracts rt-dev prefix", func() {
+			subjects := []string{"rt-dev.tasks.planning.>"}
+			Expect(deriveResultsPrefix(subjects)).To(Equal("rt-dev.results"))
+		})
+
+		It("extracts chelonian prefix", func() {
+			subjects := []string{"chelonian.tasks.mission.abc123"}
+			Expect(deriveResultsPrefix(subjects)).To(Equal("chelonian.results"))
+		})
+
+		It("uses first valid subject with .tasks.", func() {
+			subjects := []string{"bogus", "myfleet.tasks.something"}
+			Expect(deriveResultsPrefix(subjects)).To(Equal("myfleet.results"))
+		})
+
+		It("falls back to dot-split for malformed subject without .tasks.", func() {
+			subjects := []string{"something.else.entirely"}
+			Expect(deriveResultsPrefix(subjects)).To(Equal("something.results"))
+		})
+
+		It("returns fallback for single-segment subject", func() {
+			subjects := []string{"nope"}
+			Expect(deriveResultsPrefix(subjects)).To(Equal("fleet-a.results"))
+		})
+	})
 })
