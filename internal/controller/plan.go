@@ -74,12 +74,31 @@ type PlannerSkill struct {
 func (r *MissionReconciler) reconcilePlanning(ctx context.Context, mission *aiv1alpha1.Mission) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
-	// Skip if no planner configured - transition directly to Assembling
-	if mission.Spec.Planner == nil {
-		log.Info("No planner configured, skipping Planning phase")
+	// Skip if not a meta-mission — transition directly to Assembling
+	if !mission.Spec.MetaMission {
+		log.Info("Not a meta-mission, skipping Planning phase")
 		mission.Status.Phase = aiv1alpha1.MissionPhaseAssembling
 		mission.Status.ObservedGeneration = mission.Generation
 		return ctrl.Result{}, r.Status().Update(ctx, mission)
+	}
+
+	// Auto-initialize Planner spec with defaults if metaMission but no explicit planner config
+	if mission.Spec.Planner == nil {
+		log.Info("MetaMission enabled without explicit planner config, using defaults")
+		mission.Spec.Planner = &aiv1alpha1.MissionPlanner{
+			Timeout:    600,
+			MaxChains:  10,
+			MaxKnights: 10,
+		}
+		// Find the built-in planner knight
+		plannerKnights := &aiv1alpha1.KnightList{}
+		if err := r.List(ctx, plannerKnights, client.InNamespace(mission.Namespace), client.MatchingLabels{"ai.roundtable.io/role": "planner"}); err == nil && len(plannerKnights.Items) > 0 {
+			mission.Spec.Planner.KnightRef = plannerKnights.Items[0].Name
+			log.Info("Auto-discovered planner knight", "name", plannerKnights.Items[0].Name)
+		}
+		if err := r.Update(ctx, mission); err != nil {
+			return ctrl.Result{}, fmt.Errorf("failed to initialize planner config: %w", err)
+		}
 	}
 
 	// Initialize planning result if needed
