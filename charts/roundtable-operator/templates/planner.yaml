@@ -12,7 +12,7 @@ metadata:
 spec:
   domain: {{ .Values.planner.domain | default "operator" }}
   model: {{ .Values.planner.model | default "claude-sonnet-4-20250514" }}
-  image: "{{ .Values.image.piKnight.repository }}:{{ .Values.image.piKnight.tag }}"
+  image: "{{ .Values.images.piKnight.repository }}:{{ .Values.images.piKnight.tag }}"
   skills:
     {{- toYaml .Values.planner.skills | nindent 4 }}
   nats:
