@@ -145,6 +145,8 @@ func (r *MissionReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return r.reconcilePending(ctx, mission)
 	case aiv1alpha1.MissionPhaseProvisioning:
 		return r.reconcileProvisioning(ctx, mission)
+	case aiv1alpha1.MissionPhasePlanning:
+		return r.reconcilePlanning(ctx, mission)
 	case aiv1alpha1.MissionPhaseAssembling:
 		return r.reconcileAssembling(ctx, mission)
 	case aiv1alpha1.MissionPhaseBriefing:
@@ -260,13 +262,22 @@ func (r *MissionReconciler) reconcilePending(ctx context.Context, mission *aiv1a
 }
 
 // reconcileProvisioning creates the ephemeral RoundTable and NATS streams if needed.
+
+// nextPhaseAfterProvisioning returns Planning if metaMission, otherwise Assembling.
+func nextPhaseAfterProvisioning(mission *aiv1alpha1.Mission) aiv1alpha1.MissionPhase {
+	if mission.Spec.MetaMission {
+		return aiv1alpha1.MissionPhasePlanning
+	}
+	return aiv1alpha1.MissionPhaseAssembling
+}
+
 func (r *MissionReconciler) reconcileProvisioning(ctx context.Context, mission *aiv1alpha1.Mission) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
 	// If roundTableRef is already set, skip provisioning (using existing RT)
 	if mission.Spec.RoundTableRef != "" {
 		log.Info("Using existing RoundTable", "roundTable", mission.Spec.RoundTableRef)
-		mission.Status.Phase = aiv1alpha1.MissionPhaseAssembling
+		mission.Status.Phase = nextPhaseAfterProvisioning(mission)
 		mission.Status.ObservedGeneration = mission.Generation
 		return ctrl.Result{RequeueAfter: 1 * time.Second}, r.Status().Update(ctx, mission)
 	}
@@ -281,7 +292,7 @@ func (r *MissionReconciler) reconcileProvisioning(ctx context.Context, mission *
 	}
 	if !hasEphemeral {
 		log.Info("No ephemeral knights, skipping ephemeral RoundTable creation")
-		mission.Status.Phase = aiv1alpha1.MissionPhaseAssembling
+		mission.Status.Phase = nextPhaseAfterProvisioning(mission)
 		mission.Status.ObservedGeneration = mission.Generation
 		return ctrl.Result{RequeueAfter: 1 * time.Second}, r.Status().Update(ctx, mission)
 	}
@@ -352,7 +363,7 @@ func (r *MissionReconciler) reconcileProvisioning(ctx context.Context, mission *
 		"resultsStream", resultsStream)
 
 	// Transition to Assembling phase
-	mission.Status.Phase = aiv1alpha1.MissionPhaseAssembling
+	mission.Status.Phase = nextPhaseAfterProvisioning(mission)
 	mission.Status.ObservedGeneration = mission.Generation
 	if err := r.Status().Update(ctx, mission); err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to transition to Assembling: %w", err)
