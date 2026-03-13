@@ -59,6 +59,12 @@ type RoundTableSpec struct {
 	// +optional
 	SharedWorkspace *SharedWorkspaceConfig `json:"sharedWorkspace,omitempty"`
 
+	// knightTemplates defines reusable knight configurations that missions can reference.
+	// Templates provide defaults for domain, model, skills, NATS config, image, workspace, etc.
+	// Missions can override specific fields using specOverrides.
+	// +optional
+	KnightTemplates map[string]KnightSpec `json:"knightTemplates,omitempty"`
+
 	// suspended, if true, suspends all knights in this table.
 	// +kubebuilder:default=false
 	// +optional

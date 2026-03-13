@@ -1,0 +1,89 @@
+apiVersion: ai.roundtable.io/v1alpha1
+kind: RoundTable
+metadata:
+  name: security-ops
+  namespace: roundtable
+spec:
+  description: "Security operations fleet with reusable knight templates"
+  
+  # Shared NATS infrastructure
+  nats:
+    url: nats://nats.database.svc:4222
+    subjectPrefix: security-ops
+    tasksStream: security_ops_tasks
+    resultsStream: security_ops_results
+    createStreams: true
+    streamRetention: WorkQueue
+  
+  # Default settings for all knights
+  defaults:
+    model: claude-sonnet-4-20250514
+    image: ghcr.io/dapperdivers/roundtable-knight:v0.6.0
+    taskTimeout: 180
+    concurrency: 3
+  
+  # Reusable knight templates
+  knightTemplates:
+    # Security auditor template
+    auditor:
+      domain: security
+      model: claude-sonnet-4-20250514
+      skills:
+      - security
+      - nmap
+      - reconnaissance
+      - vulnerability-scanning
+      image: ghcr.io/dapperdivers/roundtable-knight:v0.6.0
+      concurrency: 2
+      taskTimeout: 300
+      nats:
+        subjects: ["security-ops.tasks.security.>"]
+    
+    # Penetration tester template
+    pentester:
+      domain: security
+      model: claude-opus-4-20250514
+      skills:
+      - security
+      - exploitation
+      - privilege-escalation
+      image: ghcr.io/dapperdivers/roundtable-knight:v0.6.0
+      concurrency: 1
+      taskTimeout: 600
+      nats:
+        subjects: ["security-ops.tasks.security.>"]
+    
+    # Report generator template
+    reporter:
+      domain: research
+      model: claude-sonnet-4-20250514
+      skills:
+      - research
+      - documentation
+      - markdown
+      image: ghcr.io/dapperdivers/roundtable-knight:v0.6.0
+      concurrency: 4
+      taskTimeout: 120
+      nats:
+        subjects: ["security-ops.tasks.research.>"]
+    
+    # Infrastructure analyst template
+    infra-analyst:
+      domain: infrastructure
+      model: claude-haiku-35-20241022
+      skills:
+      - infrastructure
+      - kubernetes
+      - networking
+      - cloud
+      image: ghcr.io/dapperdivers/roundtable-knight:v0.6.0
+      concurrency: 3
+      taskTimeout: 180
+      nats:
+        subjects: ["security-ops.tasks.infrastructure.>"]
+  
+  # Policies
+  policies:
+    maxConcurrentTasks: 20
+    costBudgetUSD: "500"
+    maxMissions: 10

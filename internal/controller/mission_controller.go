@@ -213,8 +213,10 @@ func (r *MissionReconciler) reconcilePending(ctx context.Context, mission *aiv1a
 		}
 		knightNames[knight.Name] = true
 
-		// If using templateRef, validate it exists
-		if knight.TemplateRef != "" && !templateNames[knight.TemplateRef] {
+		// If using templateRef, validate it exists in mission-level templates.
+		// Note: RoundTable-level templates are validated later during assembling
+		// (they require a Get call we defer to avoid premature fetches).
+		if knight.TemplateRef != "" && !templateNames[knight.TemplateRef] && mission.Spec.RoundTableRef == "" {
 			mission.Status.Phase = aiv1alpha1.MissionPhaseFailed
 			mission.Status.Result = fmt.Sprintf("Knight %s references unknown template: %s", knight.Name, knight.TemplateRef)
 			mission.Status.ObservedGeneration = mission.Generation
@@ -1347,9 +1349,13 @@ func (r *MissionReconciler) updateChainStatus(mission *aiv1alpha1.Mission, chain
 }
 
 // resolveKnightSpec resolves a MissionKnight's spec from either ephemeralSpec or templateRef.
+// Templates are resolved with the following priority:
+// 1. Mission-level knightTemplates (highest priority)
+// 2. RoundTable-level knightTemplates (fallback)
 func (r *MissionReconciler) resolveKnightSpec(
 	mission *aiv1alpha1.Mission,
 	mk aiv1alpha1.MissionKnight,
+	rt *aiv1alpha1.RoundTable,
 ) (*aiv1alpha1.KnightSpec, error) {
 	var baseSpec *aiv1alpha1.KnightSpec
 
@@ -1357,20 +1363,29 @@ func (r *MissionReconciler) resolveKnightSpec(
 	if mk.EphemeralSpec != nil {
 		baseSpec = mk.EphemeralSpec.DeepCopy()
 	} else if mk.TemplateRef != "" {
-		// Path B: Template reference
-		var template *aiv1alpha1.MissionKnightTemplate
+		// Path B: Template reference (check both Mission and RoundTable)
+		var templateSpec *aiv1alpha1.KnightSpec
+
+		// 1. Check mission-level templates first (higher priority)
 		for i := range mission.Spec.KnightTemplates {
 			if mission.Spec.KnightTemplates[i].Name == mk.TemplateRef {
-				template = &mission.Spec.KnightTemplates[i]
+				templateSpec = mission.Spec.KnightTemplates[i].Spec.DeepCopy()
 				break
 			}
 		}
 
-		if template == nil {
-			return nil, fmt.Errorf("template %q not found in mission.spec.knightTemplates", mk.TemplateRef)
+		// 2. If not found, check RoundTable-level templates
+		if templateSpec == nil && rt != nil && rt.Spec.KnightTemplates != nil {
+			if rtTemplate, ok := rt.Spec.KnightTemplates[mk.TemplateRef]; ok {
+				templateSpec = rtTemplate.DeepCopy()
+			}
 		}
 
-		baseSpec = template.Spec.DeepCopy()
+		if templateSpec == nil {
+			return nil, fmt.Errorf("template %q not found in mission.spec.knightTemplates or roundTable.spec.knightTemplates", mk.TemplateRef)
+		}
+
+		baseSpec = templateSpec
 
 		// Apply overrides (if specified)
 		if mk.SpecOverrides != nil {
@@ -1412,8 +1427,8 @@ func (r *MissionReconciler) buildEphemeralKnight(
 	mk aiv1alpha1.MissionKnight,
 	rt *aiv1alpha1.RoundTable,
 ) (*aiv1alpha1.Knight, error) {
-	// Resolve spec from template or inline
-	spec, err := r.resolveKnightSpec(mission, mk)
+	// Resolve spec from template or inline (checks both mission and RoundTable templates)
+	spec, err := r.resolveKnightSpec(mission, mk, rt)
 	if err != nil {
 		return nil, err
 	}

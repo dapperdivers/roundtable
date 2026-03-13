@@ -23,6 +23,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -199,6 +200,37 @@ var _ = Describe("Mission Controller", func() {
 			if phase == aiv1alpha1.MissionPhaseAssembling && !called {
 				makeKnightReady()
 				called = true
+			}
+		}
+	}
+
+	// makeEphemeralKnightsReady finds all ephemeral knights for the mission and marks them Ready.
+	makeEphemeralKnightsReady := func() {
+		mission := &aiv1alpha1.Mission{}
+		if err := k8sClient.Get(ctx, missionNN, mission); err != nil {
+			return
+		}
+		for _, mk := range mission.Spec.Knights {
+			if !mk.Ephemeral {
+				continue
+			}
+			ephName := fmt.Sprintf("%s-%s", mission.Name, mk.Name)
+			knight := &aiv1alpha1.Knight{}
+			nn := types.NamespacedName{Name: ephName, Namespace: namespace}
+			if err := k8sClient.Get(ctx, nn, knight); err != nil {
+				continue
+			}
+			knight.Status.Phase = aiv1alpha1.KnightPhaseReady
+			knight.Status.Ready = true
+			_ = k8sClient.Status().Update(ctx, knight)
+		}
+	}
+
+	// readyEphemeralsOnAssembling returns a callback that marks ephemeral knights ready during Assembling.
+	readyEphemeralsOnAssembling := func() func(aiv1alpha1.MissionPhase) {
+		return func(phase aiv1alpha1.MissionPhase) {
+			if phase == aiv1alpha1.MissionPhaseAssembling {
+				makeEphemeralKnightsReady()
 			}
 		}
 	}
@@ -727,10 +759,12 @@ var _ = Describe("Mission Controller", func() {
 		It("should stay in Assembling and set KnightsReady=False", func() {
 			r := newReconciler()
 
-			// Drive to Assembling (won't progress further - knight doesn't exist)
+			// Drive to Assembling — it won't progress further since knight doesn't exist
 			driveToPhase(r, aiv1alpha1.MissionPhaseAssembling, 10, readyOnProvisioning())
-			// One more reconcile to set KnightsReady condition
-			_, _ = r.Reconcile(ctx, reconcile.Request{NamespacedName: missionNN})
+			// A few more reconciles to set KnightsReady condition (stays in Assembling)
+			for i := 0; i < 3; i++ {
+				_, _ = r.Reconcile(ctx, reconcile.Request{NamespacedName: missionNN})
+			}
 
 			mission := &aiv1alpha1.Mission{}
 			Expect(k8sClient.Get(ctx, missionNN, mission)).To(Succeed())
@@ -817,6 +851,486 @@ var _ = Describe("Mission Controller", func() {
 			condition := meta.FindStatusCondition(mission.Status.Conditions, "CleanupComplete")
 			Expect(condition).NotTo(BeNil())
 			Expect(condition.Status).To(Equal(metav1.ConditionTrue))
+		})
+	})
+
+	Context("Knight Templates", func() {
+		var (
+			roundTableName = "test-roundtable"
+			rtNN           = types.NamespacedName{Name: roundTableName, Namespace: namespace}
+		)
+
+		createRoundTableWithTemplates := func() {
+			rt := &aiv1alpha1.RoundTable{}
+			err := k8sClient.Get(ctx, rtNN, rt)
+			if err != nil && errors.IsNotFound(err) {
+				rt = &aiv1alpha1.RoundTable{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      roundTableName,
+						Namespace: namespace,
+					},
+					Spec: aiv1alpha1.RoundTableSpec{
+						Description: "RoundTable with knight templates",
+						NATS: aiv1alpha1.RoundTableNATS{
+							URL:           "nats://nats.test:4222",
+							SubjectPrefix: "test-fleet",
+							TasksStream:   "test_tasks",
+							ResultsStream: "test_results",
+						},
+						KnightTemplates: map[string]aiv1alpha1.KnightSpec{
+							"auditor": {
+								Domain: "security",
+								Model:  "claude-sonnet-4-20250514",
+								Skills: []string{"security", "nmap", "reconnaissance"},
+								NATS: aiv1alpha1.KnightNATS{
+									Subjects: []string{"test-fleet.tasks.security.>"},
+								},
+								Concurrency: 2,
+								TaskTimeout: 300,
+							},
+							"pentester": {
+								Domain: "security",
+								Model:  "claude-opus-4-20250514",
+								Skills: []string{"security", "exploitation"},
+								NATS: aiv1alpha1.KnightNATS{
+									Subjects: []string{"test-fleet.tasks.security.>"},
+								},
+								Concurrency: 1,
+								TaskTimeout: 600,
+							},
+							"reporter": {
+								Domain: "research",
+								Model:  "claude-haiku-35-20241022",
+								Skills: []string{"research", "documentation"},
+								NATS: aiv1alpha1.KnightNATS{
+									Subjects: []string{"test-fleet.tasks.research.>"},
+								},
+								Concurrency: 4,
+								TaskTimeout: 120,
+							},
+						},
+					},
+				}
+				Expect(k8sClient.Create(ctx, rt)).To(Succeed())
+
+				// Mark RoundTable as ready
+				rt.Status.Phase = aiv1alpha1.RoundTablePhaseReady
+				Expect(k8sClient.Status().Update(ctx, rt)).To(Succeed())
+			}
+		}
+
+		deleteRoundTable := func() {
+			rt := &aiv1alpha1.RoundTable{}
+			if err := k8sClient.Get(ctx, rtNN, rt); err == nil {
+				_ = k8sClient.Delete(ctx, rt)
+			}
+		}
+
+		Context("When using RoundTable templates", func() {
+			BeforeEach(func() {
+				createRoundTableWithTemplates()
+			})
+
+			AfterEach(func() {
+				deleteMission()
+				deleteRoundTable()
+			})
+
+			It("should create ephemeral knight from RoundTable template", func() {
+				createMission(aiv1alpha1.MissionSpec{
+					Objective:     "Test RoundTable templates",
+					RoundTableRef: roundTableName,
+					Knights: []aiv1alpha1.MissionKnight{
+						{
+							Name:        "test-auditor",
+							Ephemeral:   true,
+							TemplateRef: "auditor",
+							Role:        "security-analyst",
+						},
+					},
+					TTL:     3600,
+					Timeout: 1800,
+				})
+
+				r := newReconciler()
+
+				// Reconcile until Assembling creates the ephemeral knight
+				for i := 0; i < 15; i++ {
+					_, _ = r.Reconcile(ctx, reconcile.Request{NamespacedName: missionNN})
+					makeEphemeralKnightsReady()
+				}
+
+				// Verify ephemeral knight was created with template values
+				ephemeralKnightName := fmt.Sprintf("%s-%s", missionName, "test-auditor")
+				ephemeralKnightNN := types.NamespacedName{Name: ephemeralKnightName, Namespace: namespace}
+				knight := &aiv1alpha1.Knight{}
+				Expect(k8sClient.Get(ctx, ephemeralKnightNN, knight)).To(Succeed())
+
+				// Verify template values
+				Expect(knight.Spec.Domain).To(Equal("security"))
+				Expect(knight.Spec.Model).To(Equal("claude-sonnet-4-20250514"))
+				Expect(knight.Spec.Skills).To(ConsistOf("security", "nmap", "reconnaissance"))
+				Expect(knight.Spec.Concurrency).To(Equal(int32(2)))
+				Expect(knight.Spec.TaskTimeout).To(Equal(int32(300)))
+
+				// Verify labels
+				Expect(knight.Labels[aiv1alpha1.LabelMission]).To(Equal(missionName))
+				Expect(knight.Labels[aiv1alpha1.LabelEphemeral]).To(Equal("true"))
+				Expect(knight.Labels[aiv1alpha1.LabelRole]).To(Equal("security-analyst"))
+
+				// Cleanup
+				_ = k8sClient.Delete(ctx, knight)
+			})
+
+			It("should apply specOverrides on top of RoundTable template", func() {
+				overrideConcurrency := int32(5)
+				createMission(aiv1alpha1.MissionSpec{
+					Objective:     "Test template overrides",
+					RoundTableRef: roundTableName,
+					Knights: []aiv1alpha1.MissionKnight{
+						{
+							Name:        "test-pentester",
+							Ephemeral:   true,
+							TemplateRef: "pentester",
+							SpecOverrides: &aiv1alpha1.KnightSpecOverrides{
+								Model:       "claude-sonnet-4-20250514", // Override opus → sonnet
+								Skills:      []string{"security", "custom-skill"},
+								Concurrency: &overrideConcurrency,
+								Env: []corev1.EnvVar{
+									{Name: "TARGET_URL", Value: "https://example.com"},
+								},
+							},
+						},
+					},
+					TTL:     3600,
+					Timeout: 1800,
+				})
+
+				r := newReconciler()
+				for i := 0; i < 15; i++ {
+					_, _ = r.Reconcile(ctx, reconcile.Request{NamespacedName: missionNN})
+					makeEphemeralKnightsReady()
+				}
+
+				ephemeralKnightName := fmt.Sprintf("%s-%s", missionName, "test-pentester")
+				ephemeralKnightNN := types.NamespacedName{Name: ephemeralKnightName, Namespace: namespace}
+				knight := &aiv1alpha1.Knight{}
+				Expect(k8sClient.Get(ctx, ephemeralKnightNN, knight)).To(Succeed())
+
+				// Verify overrides applied
+				Expect(knight.Spec.Model).To(Equal("claude-sonnet-4-20250514")) // Overridden
+				Expect(knight.Spec.Skills).To(ConsistOf("security", "custom-skill")) // Overridden
+				Expect(knight.Spec.Concurrency).To(Equal(int32(5))) // Overridden
+				Expect(knight.Spec.Domain).To(Equal("security")) // From template
+				Expect(knight.Spec.TaskTimeout).To(Equal(int32(600))) // From template
+
+				// Verify environment variables added
+				found := false
+				for _, env := range knight.Spec.Env {
+					if env.Name == "TARGET_URL" && env.Value == "https://example.com" {
+						found = true
+						break
+					}
+				}
+				Expect(found).To(BeTrue(), "Expected TARGET_URL env var to be present")
+
+				// Cleanup
+				_ = k8sClient.Delete(ctx, knight)
+			})
+
+			It("should prioritize mission-level template over RoundTable template", func() {
+				createMission(aiv1alpha1.MissionSpec{
+					Objective:     "Test template priority",
+					RoundTableRef: roundTableName,
+					// Mission-level template overrides RoundTable template with same name
+					KnightTemplates: []aiv1alpha1.MissionKnightTemplate{
+						{
+							Name: "auditor", // Same name as RoundTable template
+							Spec: aiv1alpha1.KnightSpec{
+								Domain:      "incident-response",
+								Model:       "claude-opus-4-20250514",
+								Skills:      []string{"forensics", "incident-response"},
+								Concurrency: 10,
+								TaskTimeout: 900,
+								NATS: aiv1alpha1.KnightNATS{
+									Subjects: []string{"mission.tasks.ir.>"},
+								},
+							},
+						},
+					},
+					Knights: []aiv1alpha1.MissionKnight{
+						{
+							Name:        "test-auditor",
+							Ephemeral:   true,
+							TemplateRef: "auditor", // Should use mission-level template
+						},
+					},
+					TTL:     3600,
+					Timeout: 1800,
+				})
+
+				r := newReconciler()
+				driveToPhase(r, aiv1alpha1.MissionPhaseActive, 20, readyOnProvisioning(), readyEphemeralsOnAssembling())
+
+				ephemeralKnightName := fmt.Sprintf("%s-%s", missionName, "test-auditor")
+				ephemeralKnightNN := types.NamespacedName{Name: ephemeralKnightName, Namespace: namespace}
+				knight := &aiv1alpha1.Knight{}
+				Expect(k8sClient.Get(ctx, ephemeralKnightNN, knight)).To(Succeed())
+
+				// Verify mission-level template values (not RoundTable template values)
+				Expect(knight.Spec.Domain).To(Equal("incident-response")) // From mission template
+				Expect(knight.Spec.Model).To(Equal("claude-opus-4-20250514")) // From mission template
+				Expect(knight.Spec.Skills).To(ConsistOf("forensics", "incident-response")) // From mission template
+				Expect(knight.Spec.Concurrency).To(Equal(int32(10))) // From mission template
+				Expect(knight.Spec.TaskTimeout).To(Equal(int32(900))) // From mission template
+
+				// Should NOT have RoundTable template values
+				Expect(knight.Spec.Domain).NotTo(Equal("security"))
+				Expect(knight.Spec.Concurrency).NotTo(Equal(int32(2)))
+
+				// Cleanup
+				_ = k8sClient.Delete(ctx, knight)
+			})
+
+			It("should use multiple templates from RoundTable", func() {
+				createMission(aiv1alpha1.MissionSpec{
+					Objective:     "Test multiple templates",
+					RoundTableRef: roundTableName,
+					Knights: []aiv1alpha1.MissionKnight{
+						{
+							Name:        "auditor1",
+							Ephemeral:   true,
+							TemplateRef: "auditor",
+						},
+						{
+							Name:        "pentester1",
+							Ephemeral:   true,
+							TemplateRef: "pentester",
+						},
+						{
+							Name:        "reporter1",
+							Ephemeral:   true,
+							TemplateRef: "reporter",
+						},
+					},
+					TTL:     3600,
+					Timeout: 1800,
+				})
+
+				r := newReconciler()
+				for i := 0; i < 15; i++ {
+					_, _ = r.Reconcile(ctx, reconcile.Request{NamespacedName: missionNN})
+					makeEphemeralKnightsReady()
+				}
+
+				// Verify all three knights created with correct templates
+				knights := []struct {
+					name        string
+					domain      string
+					model       string
+					concurrency int32
+				}{
+					{"auditor1", "security", "claude-sonnet-4-20250514", 2},
+					{"pentester1", "security", "claude-opus-4-20250514", 1},
+					{"reporter1", "research", "claude-haiku-35-20241022", 4},
+				}
+
+				for _, k := range knights {
+					ephemeralKnightName := fmt.Sprintf("%s-%s", missionName, k.name)
+					ephemeralKnightNN := types.NamespacedName{Name: ephemeralKnightName, Namespace: namespace}
+					knight := &aiv1alpha1.Knight{}
+					Expect(k8sClient.Get(ctx, ephemeralKnightNN, knight)).To(Succeed())
+
+					Expect(knight.Spec.Domain).To(Equal(k.domain))
+					Expect(knight.Spec.Model).To(Equal(k.model))
+					Expect(knight.Spec.Concurrency).To(Equal(k.concurrency))
+
+					// Cleanup
+					_ = k8sClient.Delete(ctx, knight)
+				}
+			})
+		})
+
+		Context("When template reference is invalid", func() {
+			BeforeEach(func() {
+				createRoundTableWithTemplates()
+			})
+
+			AfterEach(func() {
+				deleteMission()
+				deleteRoundTable()
+			})
+
+			It("should fail when templateRef not found in mission or RoundTable", func() {
+				createMission(aiv1alpha1.MissionSpec{
+					Objective:     "Test invalid template",
+					RoundTableRef: roundTableName,
+					Knights: []aiv1alpha1.MissionKnight{
+						{
+							Name:        "test-knight",
+							Ephemeral:   true,
+							TemplateRef: "nonexistent-template", // Template doesn't exist
+						},
+					},
+					TTL:     3600,
+					Timeout: 1800,
+				})
+
+				r := newReconciler()
+
+				// Reconcile should fail or set an error condition
+				// Drive a few iterations to let the controller process
+				for i := 0; i < 5; i++ {
+					_, _ = r.Reconcile(ctx, reconcile.Request{NamespacedName: missionNN})
+				}
+
+				// Mission should have error condition or stay in early phase
+				mission := &aiv1alpha1.Mission{}
+				Expect(k8sClient.Get(ctx, missionNN, mission)).To(Succeed())
+
+				// Should not progress to Active phase due to error
+				Expect(mission.Status.Phase).NotTo(Equal(aiv1alpha1.MissionPhaseActive))
+
+				// Should have error condition
+				knightReadyCond := meta.FindStatusCondition(mission.Status.Conditions, "KnightsReady")
+				if knightReadyCond != nil {
+					Expect(knightReadyCond.Status).To(Equal(metav1.ConditionFalse))
+				}
+			})
+
+			It("should fail when ephemeral=true but neither ephemeralSpec nor templateRef", func() {
+				createMission(aiv1alpha1.MissionSpec{
+					Objective:     "Test missing spec",
+					RoundTableRef: roundTableName,
+					Knights: []aiv1alpha1.MissionKnight{
+						{
+							Name:      "test-knight",
+							Ephemeral: true,
+							// No ephemeralSpec, no templateRef
+						},
+					},
+					TTL:     3600,
+					Timeout: 1800,
+				})
+
+				r := newReconciler()
+
+				// Reconcile should fail
+				for i := 0; i < 5; i++ {
+					_, _ = r.Reconcile(ctx, reconcile.Request{NamespacedName: missionNN})
+				}
+
+				mission := &aiv1alpha1.Mission{}
+				Expect(k8sClient.Get(ctx, missionNN, mission)).To(Succeed())
+
+				// Should not progress to Active
+				Expect(mission.Status.Phase).NotTo(Equal(aiv1alpha1.MissionPhaseActive))
+			})
+		})
+
+		Context("When RoundTable has no templates", func() {
+			var emptyRTName = "empty-roundtable"
+			var emptyRTNN = types.NamespacedName{Name: emptyRTName, Namespace: namespace}
+
+			BeforeEach(func() {
+				rt := &aiv1alpha1.RoundTable{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      emptyRTName,
+						Namespace: namespace,
+					},
+					Spec: aiv1alpha1.RoundTableSpec{
+						Description: "RoundTable without templates",
+						NATS: aiv1alpha1.RoundTableNATS{
+							URL:           "nats://nats.test:4222",
+							SubjectPrefix: "test-fleet",
+							TasksStream:   "test_tasks",
+							ResultsStream: "test_results",
+						},
+						// No knightTemplates
+					},
+				}
+				Expect(k8sClient.Create(ctx, rt)).To(Succeed())
+				rt.Status.Phase = aiv1alpha1.RoundTablePhaseReady
+				Expect(k8sClient.Status().Update(ctx, rt)).To(Succeed())
+			})
+
+			AfterEach(func() {
+				deleteMission()
+				rt := &aiv1alpha1.RoundTable{}
+				if err := k8sClient.Get(ctx, emptyRTNN, rt); err == nil {
+					_ = k8sClient.Delete(ctx, rt)
+				}
+			})
+
+			It("should fail gracefully when templateRef used but RoundTable has no templates", func() {
+				createMission(aiv1alpha1.MissionSpec{
+					Objective:     "Test empty RoundTable",
+					RoundTableRef: emptyRTName,
+					Knights: []aiv1alpha1.MissionKnight{
+						{
+							Name:        "test-knight",
+							Ephemeral:   true,
+							TemplateRef: "auditor", // Template doesn't exist
+						},
+					},
+					TTL:     3600,
+					Timeout: 1800,
+				})
+
+				r := newReconciler()
+
+				// Reconcile should fail gracefully
+				for i := 0; i < 5; i++ {
+					_, _ = r.Reconcile(ctx, reconcile.Request{NamespacedName: missionNN})
+				}
+
+				mission := &aiv1alpha1.Mission{}
+				Expect(k8sClient.Get(ctx, missionNN, mission)).To(Succeed())
+
+				// Should not progress to Active
+				Expect(mission.Status.Phase).NotTo(Equal(aiv1alpha1.MissionPhaseActive))
+			})
+
+			It("should work with inline ephemeralSpec when RoundTable has no templates", func() {
+				createMission(aiv1alpha1.MissionSpec{
+					Objective:     "Test inline spec",
+					RoundTableRef: emptyRTName,
+					Knights: []aiv1alpha1.MissionKnight{
+						{
+							Name:      "test-knight",
+							Ephemeral: true,
+							EphemeralSpec: &aiv1alpha1.KnightSpec{
+								Domain:      "general",
+								Model:       "claude-sonnet-4-20250514",
+								Skills:      []string{"general"},
+								Concurrency: 3,
+								TaskTimeout: 180,
+								NATS: aiv1alpha1.KnightNATS{
+									Subjects: []string{"test.tasks.general.>"},
+								},
+							},
+						},
+					},
+					TTL:     3600,
+					Timeout: 1800,
+				})
+
+				r := newReconciler()
+				driveToPhase(r, aiv1alpha1.MissionPhaseActive, 20, readyOnProvisioning(), readyEphemeralsOnAssembling())
+
+				// Verify ephemeral knight created with inline spec
+				ephemeralKnightName := fmt.Sprintf("%s-%s", missionName, "test-knight")
+				ephemeralKnightNN := types.NamespacedName{Name: ephemeralKnightName, Namespace: namespace}
+				knight := &aiv1alpha1.Knight{}
+				Expect(k8sClient.Get(ctx, ephemeralKnightNN, knight)).To(Succeed())
+
+				Expect(knight.Spec.Domain).To(Equal("general"))
+				Expect(knight.Spec.Model).To(Equal("claude-sonnet-4-20250514"))
+				Expect(knight.Spec.Concurrency).To(Equal(int32(3)))
+
+				// Cleanup
+				_ = k8sClient.Delete(ctx, knight)
+			})
 		})
 	})
 })
