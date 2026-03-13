@@ -213,8 +213,10 @@ func (r *MissionReconciler) reconcilePending(ctx context.Context, mission *aiv1a
 		}
 		knightNames[knight.Name] = true
 
-		// If using templateRef, validate it exists
-		if knight.TemplateRef != "" && !templateNames[knight.TemplateRef] {
+		// If using templateRef, validate it exists in mission-level templates.
+		// Note: RoundTable-level templates are validated later during assembling
+		// (they require a Get call we defer to avoid premature fetches).
+		if knight.TemplateRef != "" && !templateNames[knight.TemplateRef] && mission.Spec.RoundTableRef == "" {
 			mission.Status.Phase = aiv1alpha1.MissionPhaseFailed
 			mission.Status.Result = fmt.Sprintf("Knight %s references unknown template: %s", knight.Name, knight.TemplateRef)
 			mission.Status.ObservedGeneration = mission.Generation
