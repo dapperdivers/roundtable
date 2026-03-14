@@ -54,14 +54,12 @@ var _ = Describe("Chain Controller", func() {
 					NATS: aiv1alpha1.RoundTableNATS{
 						URL:           "nats://localhost:4222",
 						SubjectPrefix: "test-table",
+						TasksStream:   "test_table_tasks",
+						ResultsStream: "test_table_results",
 					},
 				},
 			}
 			Expect(k8sClient.Create(ctx, rt)).To(Succeed())
-			// Set status with stream info
-			rt.Status.TasksStream = "test_table_tasks"
-			rt.Status.ResultsStream = "test_table_results"
-			Expect(k8sClient.Status().Update(ctx, rt)).To(Succeed())
 		}
 	}
 
