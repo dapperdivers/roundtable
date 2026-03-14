@@ -400,8 +400,9 @@ var _ = Describe("Chain Controller", func() {
 	Context("Artifact Output Knight Default", func() {
 		It("should default outputKnight to gawain", func() {
 			chain := &aiv1alpha1.Chain{
-				Spec: aiv1alpha1.ChainSpec{},
+				Spec: aiv1alpha1.ChainSpec{
 					RoundTableRef: roundTableName,
+				},
 			}
 			knightName := chain.Spec.OutputKnight
 			if knightName == "" {
