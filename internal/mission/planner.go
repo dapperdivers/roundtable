@@ -1,7 +1,4 @@
-// Meta-missions planning phase implementation
-// This code should be integrated into internal/controller/mission_controller.go
-
-package controller
+package mission
 
 import (
 	"context"
@@ -14,6 +11,7 @@ import (
 	"github.com/google/uuid"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -23,56 +21,31 @@ import (
 	natspkg "github.com/dapperdivers/roundtable/pkg/nats"
 )
 
-// PlannerOutput represents the JSON output from the planner knight.
-type PlannerOutput struct {
-	PlanVersion string          `json:"planVersion"`
-	Metadata    PlannerMetadata `json:"metadata"`
-	Chains      []PlannerChain  `json:"chains,omitempty"`
-	Knights     []PlannerKnight `json:"knights,omitempty"`
-	Skills      []PlannerSkill  `json:"skills,omitempty"`
+// Planner encapsulates all planning logic extracted from MissionReconciler.
+type Planner struct {
+	Client client.Client
+	Scheme *runtime.Scheme
+	NATS   *natspkg.Provider
 }
 
-type PlannerMetadata struct {
-	Objective         string `json:"objective"`
-	Reasoning         string `json:"reasoning,omitempty"`
-	EstimatedDuration string `json:"estimatedDuration,omitempty"`
-	EstimatedCost     string `json:"estimatedCost,omitempty"`
+// natsClient returns the NATS client from the provider.
+func (p *Planner) natsClient() (natspkg.Client, error) {
+	if p.NATS == nil {
+		return nil, fmt.Errorf("NATS provider not configured")
+	}
+	return p.NATS.Client()
 }
 
-type PlannerChain struct {
-	Name        string                      `json:"name"`
-	Description string                      `json:"description,omitempty"`
-	Phase       string                      `json:"phase,omitempty"`
-	Steps       []aiv1alpha1.ChainStep      `json:"steps"`
-	Input       string                      `json:"input,omitempty"`
-	Timeout     *int32                      `json:"timeout,omitempty"`
-	RetryPolicy *aiv1alpha1.ChainRetryPolicy `json:"retryPolicy,omitempty"`
+// natsPrefix returns the NATS subject prefix for this mission.
+func natsPrefix(mission *aiv1alpha1.Mission) string {
+	if mission.Spec.NATSPrefix != "" {
+		return mission.Spec.NATSPrefix
+	}
+	return fmt.Sprintf("mission-%s", mission.Name)
 }
 
-type PlannerKnight struct {
-	Name          string                             `json:"name"`
-	Role          string                             `json:"role,omitempty"`
-	Ephemeral     bool                               `json:"ephemeral"`
-	TemplateRef   string                             `json:"templateRef,omitempty"`
-	EphemeralSpec *aiv1alpha1.KnightSpec             `json:"ephemeralSpec,omitempty"`
-	SpecOverrides *aiv1alpha1.KnightSpecOverrides    `json:"specOverrides,omitempty"`
-}
-
-type PlannerSkill struct {
-	Name        string `json:"name"`
-	Description string `json:"description,omitempty"`
-	Type        string `json:"type,omitempty"`
-	Content     string `json:"content,omitempty"`
-	Source      *struct {
-		URL    string `json:"url"`
-		SHA256 string `json:"sha256,omitempty"`
-	} `json:"source,omitempty"`
-	Enabled bool `json:"enabled,omitempty"`
-}
-
-// reconcilePlanning handles the Planning phase for meta-missions.
-// ADD TO RECONCILE SWITCH CASE between Provisioning and Assembling
-func (r *MissionReconciler) reconcilePlanning(ctx context.Context, mission *aiv1alpha1.Mission) (ctrl.Result, error) {
+// ReconcilePlanning handles the Planning phase for meta-missions.
+func (p *Planner) ReconcilePlanning(ctx context.Context, mission *aiv1alpha1.Mission) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
 	// Skip if not a meta-mission — transition directly to Assembling
@@ -80,7 +53,7 @@ func (r *MissionReconciler) reconcilePlanning(ctx context.Context, mission *aiv1
 		log.Info("Not a meta-mission, skipping Planning phase")
 		mission.Status.Phase = aiv1alpha1.MissionPhaseAssembling
 		mission.Status.ObservedGeneration = mission.Generation
-		return ctrl.Result{}, r.Status().Update(ctx, mission)
+		return ctrl.Result{}, p.Client.Status().Update(ctx, mission)
 	}
 
 	// Auto-initialize Planner spec with defaults if metaMission but no explicit planner config
@@ -93,11 +66,11 @@ func (r *MissionReconciler) reconcilePlanning(ctx context.Context, mission *aiv1
 		}
 		// Find the built-in planner knight
 		plannerKnights := &aiv1alpha1.KnightList{}
-		if err := r.List(ctx, plannerKnights, client.InNamespace(mission.Namespace), client.MatchingLabels{"ai.roundtable.io/role": "planner"}); err == nil && len(plannerKnights.Items) > 0 {
+		if err := p.Client.List(ctx, plannerKnights, client.InNamespace(mission.Namespace), client.MatchingLabels{"ai.roundtable.io/role": "planner"}); err == nil && len(plannerKnights.Items) > 0 {
 			mission.Spec.Planner.KnightRef = plannerKnights.Items[0].Name
 			log.Info("Auto-discovered planner knight", "name", plannerKnights.Items[0].Name)
 		}
-		if err := r.Update(ctx, mission); err != nil {
+		if err := p.Client.Update(ctx, mission); err != nil {
 			return ctrl.Result{}, fmt.Errorf("failed to initialize planner config: %w", err)
 		}
 	}
@@ -106,7 +79,7 @@ func (r *MissionReconciler) reconcilePlanning(ctx context.Context, mission *aiv1
 	if mission.Status.PlanningResult == nil {
 		log.Info("Initializing planning phase")
 		mission.Status.PlanningResult = &aiv1alpha1.PlanningResult{}
-		return ctrl.Result{}, r.Status().Update(ctx, mission)
+		return ctrl.Result{}, p.Client.Status().Update(ctx, mission)
 	}
 
 	pr := mission.Status.PlanningResult
@@ -118,7 +91,7 @@ func (r *MissionReconciler) reconcilePlanning(ctx context.Context, mission *aiv1
 			"knights", pr.KnightsGenerated)
 		mission.Status.Phase = aiv1alpha1.MissionPhaseAssembling
 		mission.Status.ObservedGeneration = mission.Generation
-		return ctrl.Result{}, r.Status().Update(ctx, mission)
+		return ctrl.Result{}, p.Client.Status().Update(ctx, mission)
 	}
 
 	// Check for planning error (terminal state)
@@ -127,7 +100,7 @@ func (r *MissionReconciler) reconcilePlanning(ctx context.Context, mission *aiv1
 		mission.Status.Phase = aiv1alpha1.MissionPhaseFailed
 		mission.Status.Result = fmt.Sprintf("Planning failed: %s", pr.Error)
 		mission.Status.ObservedGeneration = mission.Generation
-		return ctrl.Result{}, r.Status().Update(ctx, mission)
+		return ctrl.Result{}, p.Client.Status().Update(ctx, mission)
 	}
 
 	// Check timeout
@@ -143,15 +116,15 @@ func (r *MissionReconciler) reconcilePlanning(ctx context.Context, mission *aiv1
 		pr.Error = fmt.Sprintf("planning timeout after %d seconds", timeout)
 		now := metav1.Now()
 		pr.CompletedAt = &now
-		return ctrl.Result{}, r.Status().Update(ctx, mission)
+		return ctrl.Result{}, p.Client.Status().Update(ctx, mission)
 	}
 
 	// Ensure planner knight exists
-	plannerKnight, err := r.ensurePlannerKnight(ctx, mission)
+	plannerKnight, err := p.ensurePlannerKnight(ctx, mission)
 	if err != nil {
 		log.Error(err, "Failed to ensure planner knight")
 		pr.Error = fmt.Sprintf("failed to create planner knight: %v", err)
-		return ctrl.Result{RequeueAfter: 10 * time.Second}, r.Status().Update(ctx, mission)
+		return ctrl.Result{RequeueAfter: 10 * time.Second}, p.Client.Status().Update(ctx, mission)
 	}
 
 	// Wait for planner knight to be ready
@@ -164,21 +137,21 @@ func (r *MissionReconciler) reconcilePlanning(ctx context.Context, mission *aiv1
 
 	// Dispatch planning task if not already dispatched
 	if mission.Status.PlanningTaskID == "" {
-		taskID, err := r.dispatchPlanningTask(ctx, mission, plannerKnight)
+		taskID, err := p.dispatchPlanningTask(ctx, mission, plannerKnight)
 		if err != nil {
 			log.Error(err, "Failed to dispatch planning task")
 			pr.Error = fmt.Sprintf("failed to dispatch planning task: %v", err)
-			return ctrl.Result{RequeueAfter: 10 * time.Second}, r.Status().Update(ctx, mission)
+			return ctrl.Result{RequeueAfter: 10 * time.Second}, p.Client.Status().Update(ctx, mission)
 		}
 		log.Info("Dispatched planning task", "taskID", taskID, "knight", plannerKnight.Name)
 		mission.Status.PlanningTaskID = taskID
-		return ctrl.Result{RequeueAfter: 5 * time.Second}, r.Status().Update(ctx, mission)
+		return ctrl.Result{RequeueAfter: 5 * time.Second}, p.Client.Status().Update(ctx, mission)
 	}
 
 	// Poll for planning result
 	taskID := mission.Status.PlanningTaskID
 
-	result, err := r.pollPlanningResult(ctx, mission, taskID)
+	result, err := p.pollPlanningResult(ctx, mission, taskID)
 	if err != nil {
 		log.Error(err, "Failed to poll planning result")
 		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
@@ -197,38 +170,38 @@ func (r *MissionReconciler) reconcilePlanning(ctx context.Context, mission *aiv1
 		pr.RawOutput = util.Truncate(result.GetOutput(), 10000)
 		now := metav1.Now()
 		pr.CompletedAt = &now
-		return ctrl.Result{}, r.Status().Update(ctx, mission)
+		return ctrl.Result{}, p.Client.Status().Update(ctx, mission)
 	}
 
 	// Parse planner output
 	output := result.GetOutput()
-	plan, err := r.parsePlannerOutput(output)
+	plan, err := p.parsePlannerOutput(output)
 	if err != nil {
 		log.Error(err, "Failed to parse planner output")
 		pr.Error = fmt.Sprintf("failed to parse planner output: %v", err)
 		pr.RawOutput = util.Truncate(output, 10000)
 		now := metav1.Now()
 		pr.CompletedAt = &now
-		return ctrl.Result{}, r.Status().Update(ctx, mission)
+		return ctrl.Result{}, p.Client.Status().Update(ctx, mission)
 	}
 
 	// Validate plan
-	if err := r.validatePlan(ctx, mission, plan); err != nil {
+	if err := p.validatePlan(ctx, mission, plan); err != nil {
 		log.Error(err, "Plan validation failed")
 		pr.Error = fmt.Sprintf("plan validation failed: %v", err)
 		pr.RawOutput = util.Truncate(output, 10000)
 		now := metav1.Now()
 		pr.CompletedAt = &now
-		return ctrl.Result{}, r.Status().Update(ctx, mission)
+		return ctrl.Result{}, p.Client.Status().Update(ctx, mission)
 	}
 
 	// Apply plan to mission spec
-	if err := r.applyPlan(ctx, mission, plan); err != nil {
+	if err := p.applyPlan(ctx, mission, plan); err != nil {
 		log.Error(err, "Failed to apply plan")
 		pr.Error = fmt.Sprintf("failed to apply plan: %v", err)
 		now := metav1.Now()
 		pr.CompletedAt = &now
-		return ctrl.Result{}, r.Status().Update(ctx, mission)
+		return ctrl.Result{}, p.Client.Status().Update(ctx, mission)
 	}
 
 	// Mark planning complete
@@ -248,21 +221,21 @@ func (r *MissionReconciler) reconcilePlanning(ctx context.Context, mission *aiv1
 	delete(mission.Annotations, "ai.roundtable.io/planning-task-id")
 
 	// Update spec and status together
-	if err := r.Update(ctx, mission); err != nil {
+	if err := p.Client.Update(ctx, mission); err != nil {
 		return ctrl.Result{}, err
 	}
-	return ctrl.Result{}, r.Status().Update(ctx, mission)
+	return ctrl.Result{}, p.Client.Status().Update(ctx, mission)
 }
 
 // ensurePlannerKnight creates or retrieves the planner knight.
-func (r *MissionReconciler) ensurePlannerKnight(ctx context.Context, mission *aiv1alpha1.Mission) (*aiv1alpha1.Knight, error) {
+func (p *Planner) ensurePlannerKnight(ctx context.Context, mission *aiv1alpha1.Mission) (*aiv1alpha1.Knight, error) {
 	log := logf.FromContext(ctx)
 	planner := mission.Spec.Planner
 
 	// If knightRef provided, fetch existing knight
 	if planner.KnightRef != "" && planner.TemplateRef == "" && planner.EphemeralSpec == nil {
 		knight := &aiv1alpha1.Knight{}
-		err := r.Get(ctx, types.NamespacedName{
+		err := p.Client.Get(ctx, types.NamespacedName{
 			Name:      planner.KnightRef,
 			Namespace: mission.Namespace,
 		}, knight)
@@ -278,7 +251,7 @@ func (r *MissionReconciler) ensurePlannerKnight(ctx context.Context, mission *ai
 
 	// Check if already exists
 	knight := &aiv1alpha1.Knight{}
-	err := r.Get(ctx, types.NamespacedName{
+	err := p.Client.Get(ctx, types.NamespacedName{
 		Name:      plannerKnightName,
 		Namespace: mission.Namespace,
 	}, knight)
@@ -294,7 +267,7 @@ func (r *MissionReconciler) ensurePlannerKnight(ctx context.Context, mission *ai
 	var spec *aiv1alpha1.KnightSpec
 	if planner.TemplateRef != "" {
 		// Fetch from RoundTable templates
-		rt, err := r.resolveRoundTable(ctx, mission)
+		rt, err := p.resolveRoundTable(ctx, mission)
 		if err != nil {
 			return nil, fmt.Errorf("failed to resolve RoundTable: %w", err)
 		}
@@ -343,7 +316,7 @@ func (r *MissionReconciler) ensurePlannerKnight(ctx context.Context, mission *ai
 		Spec: *spec,
 	}
 
-	if err := r.Create(ctx, knight); err != nil {
+	if err := p.Client.Create(ctx, knight); err != nil {
 		return nil, fmt.Errorf("failed to create planner knight: %w", err)
 	}
 
@@ -352,10 +325,10 @@ func (r *MissionReconciler) ensurePlannerKnight(ctx context.Context, mission *ai
 }
 
 // dispatchPlanningTask sends the planning task to the planner knight via NATS.
-func (r *MissionReconciler) dispatchPlanningTask(ctx context.Context, mission *aiv1alpha1.Mission, plannerKnight *aiv1alpha1.Knight) (string, error) {
+func (p *Planner) dispatchPlanningTask(ctx context.Context, mission *aiv1alpha1.Mission, plannerKnight *aiv1alpha1.Knight) (string, error) {
 	log := logf.FromContext(ctx)
 
-	client, err := r.natsClient()
+	natsClient, err := p.natsClient()
 	if err != nil {
 		return "", err
 	}
@@ -364,7 +337,7 @@ func (r *MissionReconciler) dispatchPlanningTask(ctx context.Context, mission *a
 	taskID := fmt.Sprintf("planning-%s-%s", mission.Name, uuid.New().String()[:8])
 
 	// Build planning prompt
-	prompt := r.buildPlanningPrompt(ctx, mission)
+	prompt := p.buildPlanningPrompt(ctx, mission)
 
 	// Construct task payload
 	payload := natspkg.TaskPayload{
@@ -373,12 +346,8 @@ func (r *MissionReconciler) dispatchPlanningTask(ctx context.Context, mission *a
 	}
 
 	// Publish to planner knight's task subject.
-	// For built-in (non-ephemeral) planner knights, derive the prefix from
-	// the knight's NATS subjects (e.g. "table-prefix.tasks.operator.>" → "table-prefix").
-	// Ephemeral planners use the mission's NATS prefix.
 	prefix := natsPrefix(mission)
 	if plannerKnight.Spec.NATS.Subjects != nil && len(plannerKnight.Spec.NATS.Subjects) > 0 {
-		// Extract prefix from first subject: "table-prefix.tasks.domain.>" → "table-prefix"
 		parts := strings.SplitN(plannerKnight.Spec.NATS.Subjects[0], ".tasks.", 2)
 		if len(parts) == 2 {
 			prefix = parts[0]
@@ -386,7 +355,7 @@ func (r *MissionReconciler) dispatchPlanningTask(ctx context.Context, mission *a
 	}
 	subject := natspkg.TaskSubject(prefix, plannerKnight.Spec.Domain, plannerKnight.Name)
 
-	if err := client.PublishJSON(subject, payload); err != nil {
+	if err := natsClient.PublishJSON(subject, payload); err != nil {
 		return "", fmt.Errorf("failed to publish planning task: %w", err)
 	}
 
@@ -399,7 +368,7 @@ func (r *MissionReconciler) dispatchPlanningTask(ctx context.Context, mission *a
 }
 
 // buildPlanningPrompt constructs the planning prompt for the planner knight.
-func (r *MissionReconciler) buildPlanningPrompt(ctx context.Context, mission *aiv1alpha1.Mission) string {
+func (p *Planner) buildPlanningPrompt(ctx context.Context, mission *aiv1alpha1.Mission) string {
 	var sb strings.Builder
 
 	sb.WriteString("You are a mission planner for the Round Table AI agent orchestration system. ")
@@ -435,7 +404,6 @@ func (r *MissionReconciler) buildPlanningPrompt(ctx context.Context, mission *ai
 
 	// Existing knights (if recruiting allowed)
 	if mission.Spec.RecruitExisting {
-		// First list any knights already in the mission spec
 		existingFound := false
 		for _, k := range mission.Spec.Knights {
 			if !k.Ephemeral {
@@ -447,16 +415,14 @@ func (r *MissionReconciler) buildPlanningPrompt(ctx context.Context, mission *ai
 			}
 		}
 
-		// Also list knights from the referenced RoundTable
 		if mission.Spec.RoundTableRef != "" {
 			var rt aiv1alpha1.RoundTable
-			if err := r.Get(ctx, types.NamespacedName{
+			if err := p.Client.Get(ctx, types.NamespacedName{
 				Name:      mission.Spec.RoundTableRef,
 				Namespace: mission.Namespace,
 			}, &rt); err == nil {
-				// List all Knight CRs that belong to this RoundTable
 				var knightList aiv1alpha1.KnightList
-				if err := r.List(ctx, &knightList,
+				if err := p.Client.List(ctx, &knightList,
 					client.InNamespace(mission.Namespace),
 					client.MatchingLabels{"ai.roundtable.io/roundtable": rt.Name},
 				); err == nil && len(knightList.Items) > 0 {
@@ -562,30 +528,24 @@ func (r *MissionReconciler) buildPlanningPrompt(ctx context.Context, mission *ai
 }
 
 // pollPlanningResult polls the NATS results stream for the planning result.
-// The planner knight publishes results to its own table's results stream,
-// so we need to resolve the correct stream and prefix from the planner knight's config.
-func (r *MissionReconciler) pollPlanningResult(ctx context.Context, mission *aiv1alpha1.Mission, taskID string) (*natspkg.TaskResult, error) {
+func (p *Planner) pollPlanningResult(ctx context.Context, mission *aiv1alpha1.Mission, taskID string) (*natspkg.TaskResult, error) {
 	log := logf.FromContext(ctx)
 
-	client, err := r.natsClient()
+	natsClient, err := p.natsClient()
 	if err != nil {
 		return nil, err
 	}
 
 	// Resolve the planner knight to determine which results stream to poll
-	plannerKnight, err := r.ensurePlannerKnight(ctx, mission)
+	plannerKnight, err := p.ensurePlannerKnight(ctx, mission)
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve planner knight: %w", err)
 	}
 
-	// Derive the results stream and subject prefix from the planner knight's NATS config.
-	// The planner publishes to its own table's results stream, not the mission's.
 	resultsStream := plannerKnight.Spec.NATS.ResultsStream
 	
-	// Extract prefix from planner knight's subjects
 	var subjectPrefix string
 	if len(plannerKnight.Spec.NATS.Subjects) > 0 {
-		// Extract prefix from first subject: "table-prefix.tasks.domain.>" → "table-prefix"
 		parts := strings.SplitN(plannerKnight.Spec.NATS.Subjects[0], ".tasks.", 2)
 		if len(parts) == 2 {
 			subjectPrefix = parts[0]
@@ -606,7 +566,7 @@ func (r *MissionReconciler) pollPlanningResult(ctx context.Context, mission *aiv
 		"subject", subject,
 		"consumer", consumerName)
 
-	msg, err := client.PollMessage(subject, 2*time.Second,
+	msg, err := natsClient.PollMessage(subject, 2*time.Second,
 		natspkg.WithDurable(consumerName),
 		natspkg.WithAckExplicit(),
 		natspkg.WithBindStream(resultsStream),
@@ -623,13 +583,11 @@ func (r *MissionReconciler) pollPlanningResult(ctx context.Context, mission *aiv
 		return nil, nil
 	}
 
-	// Got the result — ack and clean up the consumer
 	if err := msg.Ack(); err != nil {
 		log.Error(err, "Failed to ack planning result message")
 	}
-	_ = client.DeleteConsumer(resultsStream, consumerName)
+	_ = natsClient.DeleteConsumer(resultsStream, consumerName)
 
-	// Parse result
 	var taskResult natspkg.TaskResult
 	if err := json.Unmarshal(msg.Data, &taskResult); err != nil {
 		return nil, fmt.Errorf("failed to parse planning result: %w", err)
@@ -643,8 +601,7 @@ func (r *MissionReconciler) pollPlanningResult(ctx context.Context, mission *aiv
 }
 
 // parsePlannerOutput parses the JSON output from the planner knight.
-func (r *MissionReconciler) parsePlannerOutput(output string) (*PlannerOutput, error) {
-	// Try to extract JSON if it's wrapped in markdown code blocks
+func (p *Planner) parsePlannerOutput(output string) (*PlannerOutput, error) {
 	output = extractJSON(output)
 
 	var plan PlannerOutput
@@ -657,7 +614,6 @@ func (r *MissionReconciler) parsePlannerOutput(output string) (*PlannerOutput, e
 
 // extractJSON extracts JSON from markdown code blocks if present.
 func extractJSON(s string) string {
-	// Look for ```json ... ``` or ``` ... ```
 	if idx := strings.Index(s, "```json"); idx >= 0 {
 		s = s[idx+7:]
 		if idx := strings.Index(s, "```"); idx >= 0 {
@@ -674,25 +630,21 @@ func extractJSON(s string) string {
 }
 
 // validatePlan validates the planner output against schema and constraints.
-func (r *MissionReconciler) validatePlan(ctx context.Context, mission *aiv1alpha1.Mission, plan *PlannerOutput) error {
+func (p *Planner) validatePlan(ctx context.Context, mission *aiv1alpha1.Mission, plan *PlannerOutput) error {
 	log := logf.FromContext(ctx)
 
-	// Validate plan version
 	if plan.PlanVersion != "v1alpha1" {
 		return fmt.Errorf("unsupported plan version: %s (expected v1alpha1)", plan.PlanVersion)
 	}
 
-	// Validate metadata
 	if plan.Metadata.Objective == "" {
 		return fmt.Errorf("metadata.objective is required")
 	}
 
-	// Validate at least one chain or knight
 	if len(plan.Chains) == 0 && len(plan.Knights) == 0 {
 		return fmt.Errorf("plan must contain at least one chain or knight")
 	}
 
-	// Validate chain count against limits
 	maxChains := mission.Spec.Planner.MaxChains
 	if maxChains == 0 {
 		maxChains = 5
@@ -701,7 +653,6 @@ func (r *MissionReconciler) validatePlan(ctx context.Context, mission *aiv1alpha
 		return fmt.Errorf("too many chains: %d > %d", len(plan.Chains), maxChains)
 	}
 
-	// Validate knight count against limits
 	maxKnights := mission.Spec.Planner.MaxKnights
 	if maxKnights == 0 {
 		maxKnights = 10
@@ -710,7 +661,6 @@ func (r *MissionReconciler) validatePlan(ctx context.Context, mission *aiv1alpha
 		return fmt.Errorf("too many knights: %d > %d", len(plan.Knights), maxKnights)
 	}
 
-	// Validate skill generation if any skills present
 	if len(plan.Skills) > 0 && !mission.Spec.Planner.AllowSkillGeneration {
 		return fmt.Errorf("skill generation not allowed but plan includes %d skills", len(plan.Skills))
 	}
@@ -718,7 +668,6 @@ func (r *MissionReconciler) validatePlan(ctx context.Context, mission *aiv1alpha
 		return fmt.Errorf("too many skills: %d > 10 (hard limit)", len(plan.Skills))
 	}
 
-	// Build knight name map for validation
 	knightNames := make(map[string]bool)
 	for _, k := range plan.Knights {
 		if k.Name == "" {
@@ -729,11 +678,9 @@ func (r *MissionReconciler) validatePlan(ctx context.Context, mission *aiv1alpha
 		}
 		knightNames[k.Name] = true
 
-		// Validate knight has either templateRef or ephemeralSpec
 		if !k.Ephemeral {
-			// Non-ephemeral knights must already exist
 			knight := &aiv1alpha1.Knight{}
-			err := r.Get(ctx, types.NamespacedName{
+			err := p.Client.Get(ctx, types.NamespacedName{
 				Name:      k.Name,
 				Namespace: mission.Namespace,
 			}, knight)
@@ -741,26 +688,22 @@ func (r *MissionReconciler) validatePlan(ctx context.Context, mission *aiv1alpha
 				return fmt.Errorf("non-ephemeral knight %q not found: %w", k.Name, err)
 			}
 		} else {
-			// Ephemeral knights need templateRef or ephemeralSpec
 			if k.TemplateRef == "" && k.EphemeralSpec == nil {
 				return fmt.Errorf("ephemeral knight %q must have templateRef or ephemeralSpec", k.Name)
 			}
 
-			// If templateRef, verify template exists
 			if k.TemplateRef != "" {
-				if err := r.validateTemplateExists(ctx, mission, k.TemplateRef); err != nil {
+				if err := p.validateTemplateExists(ctx, mission, k.TemplateRef); err != nil {
 					return fmt.Errorf("knight %q: %w", k.Name, err)
 				}
 			}
 		}
 
-		// Validate knight name is RFC 1123 compliant
 		if !util.IsValidK8sName(k.Name) {
 			return fmt.Errorf("invalid knight name %q: must be RFC 1123 DNS label", k.Name)
 		}
 	}
 
-	// Validate chains
 	chainNames := make(map[string]bool)
 	for i, chain := range plan.Chains {
 		if chain.Name == "" {
@@ -771,22 +714,18 @@ func (r *MissionReconciler) validatePlan(ctx context.Context, mission *aiv1alpha
 		}
 		chainNames[chain.Name] = true
 
-		// Validate chain name
 		if !util.IsValidK8sName(chain.Name) {
 			return fmt.Errorf("invalid chain name %q: must be RFC 1123 DNS label", chain.Name)
 		}
 
-		// Validate phase
 		if chain.Phase != "" && chain.Phase != "Setup" && chain.Phase != "Active" && chain.Phase != "Teardown" {
 			return fmt.Errorf("chain %q: invalid phase %q (must be Setup, Active, or Teardown)", chain.Name, chain.Phase)
 		}
 
-		// Validate steps
 		if len(chain.Steps) == 0 {
 			return fmt.Errorf("chain %q: at least one step is required", chain.Name)
 		}
 
-		// Validate each step
 		stepNames := make(map[string]bool)
 		for j, step := range chain.Steps {
 			if step.Name == "" {
@@ -808,7 +747,6 @@ func (r *MissionReconciler) validatePlan(ctx context.Context, mission *aiv1alpha
 			}
 		}
 
-		// Validate DAG (no cycles in dependencies)
 		nodes := make([]util.DAGNode, len(chain.Steps))
 		for i, step := range chain.Steps {
 			nodes[i] = util.DAGNode{
@@ -821,7 +759,6 @@ func (r *MissionReconciler) validatePlan(ctx context.Context, mission *aiv1alpha
 		}
 	}
 
-	// Validate skills
 	skillNames := make(map[string]bool)
 	for i, skill := range plan.Skills {
 		if skill.Name == "" {
@@ -832,7 +769,6 @@ func (r *MissionReconciler) validatePlan(ctx context.Context, mission *aiv1alpha
 		}
 		skillNames[skill.Name] = true
 
-		// Validate skill name is safe
 		if !util.IsValidSkillName(skill.Name) {
 			return fmt.Errorf("invalid skill name %q: must be alphanumeric with hyphens", skill.Name)
 		}
@@ -847,16 +783,14 @@ func (r *MissionReconciler) validatePlan(ctx context.Context, mission *aiv1alpha
 }
 
 // validateTemplateExists checks if a knight template exists in mission or RoundTable.
-func (r *MissionReconciler) validateTemplateExists(ctx context.Context, mission *aiv1alpha1.Mission, templateName string) error {
-	// Check mission templates
+func (p *Planner) validateTemplateExists(ctx context.Context, mission *aiv1alpha1.Mission, templateName string) error {
 	for _, t := range mission.Spec.KnightTemplates {
 		if t.Name == templateName {
 			return nil
 		}
 	}
 
-	// Check RoundTable templates
-	rt, err := r.resolveRoundTable(ctx, mission)
+	rt, err := p.resolveRoundTable(ctx, mission)
 	if err != nil {
 		return fmt.Errorf("failed to resolve RoundTable: %w", err)
 	}
@@ -869,10 +803,9 @@ func (r *MissionReconciler) validateTemplateExists(ctx context.Context, mission 
 }
 
 // applyPlan applies the validated plan to the mission spec.
-func (r *MissionReconciler) applyPlan(ctx context.Context, mission *aiv1alpha1.Mission, plan *PlannerOutput) error {
+func (p *Planner) applyPlan(ctx context.Context, mission *aiv1alpha1.Mission, plan *PlannerOutput) error {
 	log := logf.FromContext(ctx)
 
-	// Convert planner knights to MissionKnight format
 	for _, pk := range plan.Knights {
 		mk := aiv1alpha1.MissionKnight{
 			Name:          pk.Name,
@@ -885,7 +818,6 @@ func (r *MissionReconciler) applyPlan(ctx context.Context, mission *aiv1alpha1.M
 		mission.Spec.GeneratedKnights = append(mission.Spec.GeneratedKnights, mk)
 	}
 
-	// Convert planner chains to GeneratedChain format and create Chain CRs
 	for _, pc := range plan.Chains {
 		gc := aiv1alpha1.GeneratedChain{
 			Name:        pc.Name,
@@ -897,14 +829,12 @@ func (r *MissionReconciler) applyPlan(ctx context.Context, mission *aiv1alpha1.M
 			RetryPolicy: pc.RetryPolicy,
 		}
 
-		// Set default phase if not specified
 		if gc.Phase == "" {
 			gc.Phase = "Active"
 		}
 
 		mission.Spec.GeneratedChains = append(mission.Spec.GeneratedChains, gc)
 
-		// Create Chain CR
 		chainName := fmt.Sprintf("%s-%s", mission.Name, pc.Name)
 		chain := &aiv1alpha1.Chain{
 			ObjectMeta: metav1.ObjectMeta{
@@ -927,18 +857,15 @@ func (r *MissionReconciler) applyPlan(ctx context.Context, mission *aiv1alpha1.M
 			},
 		}
 
-		// Set timeout if specified
 		if pc.Timeout != nil {
 			chain.Spec.Timeout = *pc.Timeout
 		}
 
-		// Set retry policy if specified
 		if pc.RetryPolicy != nil {
 			chain.Spec.RetryPolicy = pc.RetryPolicy
 		}
 
-		// Create or update chain
-		if err := r.Create(ctx, chain); err != nil {
+		if err := p.Client.Create(ctx, chain); err != nil {
 			if client.IgnoreAlreadyExists(err) != nil {
 				return fmt.Errorf("failed to create chain %q: %w", chainName, err)
 			}
@@ -947,18 +874,15 @@ func (r *MissionReconciler) applyPlan(ctx context.Context, mission *aiv1alpha1.M
 			log.Info("Created chain CR", "chain", chainName, "steps", len(pc.Steps))
 		}
 
-		// Add chain reference to mission spec
 		mission.Spec.Chains = append(mission.Spec.Chains, aiv1alpha1.MissionChainRef{
 			Name:  pc.Name,
 			Phase: pc.Phase,
 		})
 	}
 
-	// Handle skill generation if present (stored as ConfigMaps)
 	if len(plan.Skills) > 0 {
-		if err := r.createSkillConfigMaps(ctx, mission, plan.Skills); err != nil {
+		if err := p.createSkillConfigMaps(ctx, mission, plan.Skills); err != nil {
 			log.Error(err, "Failed to create skill ConfigMaps (non-fatal)")
-			// Don't fail the whole plan for skill creation issues
 		}
 	}
 
@@ -971,7 +895,7 @@ func (r *MissionReconciler) applyPlan(ctx context.Context, mission *aiv1alpha1.M
 }
 
 // createSkillConfigMaps creates ConfigMaps for generated skills.
-func (r *MissionReconciler) createSkillConfigMaps(ctx context.Context, mission *aiv1alpha1.Mission, skills []PlannerSkill) error {
+func (p *Planner) createSkillConfigMaps(ctx context.Context, mission *aiv1alpha1.Mission, skills []PlannerSkill) error {
 	log := logf.FromContext(ctx)
 
 	for _, skill := range skills {
@@ -996,7 +920,7 @@ func (r *MissionReconciler) createSkillConfigMaps(ctx context.Context, mission *
 			},
 		}
 
-		if err := r.Create(ctx, cm); err != nil {
+		if err := p.Client.Create(ctx, cm); err != nil {
 			if client.IgnoreAlreadyExists(err) != nil {
 				return fmt.Errorf("failed to create skill ConfigMap %q: %w", cmName, err)
 			}
@@ -1010,14 +934,13 @@ func (r *MissionReconciler) createSkillConfigMaps(ctx context.Context, mission *
 }
 
 // resolveRoundTable resolves the RoundTable for this mission.
-// MUST BE IMPLEMENTED IN mission_controller.go - this is a placeholder
-func (r *MissionReconciler) resolveRoundTable(ctx context.Context, mission *aiv1alpha1.Mission) (*aiv1alpha1.RoundTable, error) {
+func (p *Planner) resolveRoundTable(ctx context.Context, mission *aiv1alpha1.Mission) (*aiv1alpha1.RoundTable, error) {
 	if mission.Spec.RoundTableRef == "" {
 		return nil, fmt.Errorf("no RoundTable reference configured")
 	}
 
 	rt := &aiv1alpha1.RoundTable{}
-	err := r.Get(ctx, types.NamespacedName{
+	err := p.Client.Get(ctx, types.NamespacedName{
 		Name:      mission.Spec.RoundTableRef,
 		Namespace: mission.Namespace,
 	}, rt)

@@ -38,6 +38,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	aiv1alpha1 "github.com/dapperdivers/roundtable/api/v1alpha1"
+	"github.com/dapperdivers/roundtable/internal/mission"
 	"github.com/dapperdivers/roundtable/internal/status"
 	natspkg "github.com/dapperdivers/roundtable/pkg/nats"
 )
@@ -59,8 +60,9 @@ type MissionReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
 
-	NATS *natspkg.Provider
-	mu   sync.Mutex
+	NATS    *natspkg.Provider
+	Planner *mission.Planner
+	mu      sync.Mutex
 }
 
 // natsClient returns the shared NATS client, or an error if the provider is not configured.
@@ -146,7 +148,7 @@ func (r *MissionReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	case aiv1alpha1.MissionPhaseProvisioning:
 		return r.reconcileProvisioning(ctx, mission)
 	case aiv1alpha1.MissionPhasePlanning:
-		return r.reconcilePlanning(ctx, mission)
+		return r.Planner.ReconcilePlanning(ctx, mission)
 	case aiv1alpha1.MissionPhaseAssembling:
 		return r.reconcileAssembling(ctx, mission)
 	case aiv1alpha1.MissionPhaseBriefing:
