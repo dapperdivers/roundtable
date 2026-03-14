@@ -26,13 +26,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dapperdivers/roundtable/internal/util"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	kutilintstr "k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -562,7 +562,7 @@ func (r *KnightReconciler) buildPodSpec(ctx context.Context, knight *aiv1alpha1.
 
 	// Build environment variables — matching pi-knight runtime expectations
 	env := []corev1.EnvVar{
-		{Name: "KNIGHT_NAME", Value: capitalizeFirst(knight.Name)},
+		{Name: "KNIGHT_NAME", Value: util.Capitalize(knight.Name)},
 		{Name: "KNIGHT_MODEL", Value: knight.Spec.Model},
 		{Name: "NATS_URL", Value: knight.Spec.NATS.URL},
 		{Name: "NATS_TASKS_STREAM", Value: knight.Spec.NATS.Stream},
@@ -714,7 +714,7 @@ func (r *KnightReconciler) buildPodSpec(ctx context.Context, knight *aiv1alpha1.
 			ProbeHandler: corev1.ProbeHandler{
 				HTTPGet: &corev1.HTTPGetAction{
 					Path: "/health",
-					Port: intstrPort(probePort),
+					Port: util.IntstrPort(probePort),
 				},
 			},
 			InitialDelaySeconds: 5,
@@ -725,7 +725,7 @@ func (r *KnightReconciler) buildPodSpec(ctx context.Context, knight *aiv1alpha1.
 			ProbeHandler: corev1.ProbeHandler{
 				HTTPGet: &corev1.HTTPGetAction{
 					Path: "/health",
-					Port: intstrPort(probePort),
+					Port: util.IntstrPort(probePort),
 				},
 			},
 			PeriodSeconds: 30,
@@ -734,7 +734,7 @@ func (r *KnightReconciler) buildPodSpec(ctx context.Context, knight *aiv1alpha1.
 			ProbeHandler: corev1.ProbeHandler{
 				HTTPGet: &corev1.HTTPGetAction{
 					Path: "/ready",
-					Port: intstrPort(probePort),
+					Port: util.IntstrPort(probePort),
 				},
 			},
 			PeriodSeconds: 15,
@@ -871,17 +871,17 @@ done`
 	return corev1.PodSpec{
 		Containers:    containers,
 		Volumes:       volumes,
-		EnableServiceLinks: boolPtr(false),
+		EnableServiceLinks: util.BoolPtr(false),
 		SecurityContext: &corev1.PodSecurityContext{
 			RunAsUser:           &runAsUser,
 			RunAsGroup:          &runAsGroup,
 			FSGroup:             &fsGroup,
-			FSGroupChangePolicy: fsGroupChangePolicyPtr(corev1.FSGroupChangeOnRootMismatch),
+			FSGroupChangePolicy: util.FSGroupChangePolicyPtr(corev1.FSGroupChangeOnRootMismatch),
 		},
 		// Use knight-specific ServiceAccount if configured, otherwise namespace default
 		ServiceAccountName: knight.Spec.ServiceAccountName,
 		// Auto-mount SA token — knights may need it for in-cluster access
-		AutomountServiceAccountToken: boolPtr(true),
+		AutomountServiceAccountToken: util.BoolPtr(true),
 	}
 }
 
@@ -1008,25 +1008,6 @@ func deriveResultsPrefix(subjects []string) string {
 		}
 	}
 	return "fleet-a.results" // ultimate fallback for legacy knights without subjects
-}
-
-func capitalizeFirst(s string) string {
-	if s == "" {
-		return s
-	}
-	return strings.ToUpper(s[:1]) + s[1:]
-}
-
-func boolPtr(b bool) *bool {
-	return &b
-}
-
-func fsGroupChangePolicyPtr(p corev1.PodFSGroupChangePolicy) *corev1.PodFSGroupChangePolicy {
-	return &p
-}
-
-func intstrPort(port int) kutilintstr.IntOrString {
-	return kutilintstr.FromInt32(int32(port))
 }
 
 // end of file

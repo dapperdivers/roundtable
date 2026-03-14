@@ -26,6 +26,7 @@ import (
 	"text/template"
 	"time"
 
+	"github.com/dapperdivers/roundtable/internal/util"
 	"github.com/robfig/cron/v3"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -89,7 +90,7 @@ func (r *ChainReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	// Handle deletion
 	if chain.DeletionTimestamp != nil {
 		r.removeCronEntry(req.NamespacedName)
-		chain.Finalizers = removeString(chain.Finalizers, chainFinalizer)
+		chain.Finalizers = util.RemoveString(chain.Finalizers, chainFinalizer)
 		if err := r.Update(ctx, chain); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -97,7 +98,7 @@ func (r *ChainReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	}
 
 	// Add finalizer
-	if !containsString(chain.Finalizers, chainFinalizer) {
+	if !util.ContainsString(chain.Finalizers, chainFinalizer) {
 		chain.Finalizers = append(chain.Finalizers, chainFinalizer)
 		if err := r.Update(ctx, chain); err != nil {
 			return ctrl.Result{}, err
@@ -258,64 +259,15 @@ func (r *ChainReconciler) validateTemplates(chain *aiv1alpha1.Chain) error {
 }
 
 func (r *ChainReconciler) validateDAG(chain *aiv1alpha1.Chain) error {
-	stepNames := make(map[string]bool)
-	for _, s := range chain.Spec.Steps {
-		stepNames[s.Name] = true
-	}
-
-	// Build adjacency: step -> depends on
-	deps := make(map[string][]string)
-	for _, s := range chain.Spec.Steps {
-		for _, d := range s.DependsOn {
-			if !stepNames[d] {
-				return fmt.Errorf("step %q depends on unknown step %q", s.Name, d)
-			}
-			deps[s.Name] = append(deps[s.Name], d)
+	// Convert ChainSteps to DAGNodes
+	nodes := make([]util.DAGNode, len(chain.Spec.Steps))
+	for i, step := range chain.Spec.Steps {
+		nodes[i] = util.DAGNode{
+			Name:      step.Name,
+			DependsOn: step.DependsOn,
 		}
 	}
-
-	// Kahn's algorithm
-	inDegree := make(map[string]int)
-	for _, s := range chain.Spec.Steps {
-		inDegree[s.Name] = 0
-	}
-	for _, s := range chain.Spec.Steps {
-		for _, d := range s.DependsOn {
-			_ = d
-			inDegree[s.Name]++
-		}
-	}
-
-	queue := []string{}
-	for name, deg := range inDegree {
-		if deg == 0 {
-			queue = append(queue, name)
-		}
-	}
-
-	visited := 0
-	for len(queue) > 0 {
-		node := queue[0]
-		queue = queue[1:]
-		visited++
-
-		// Find steps that depend on this node
-		for _, s := range chain.Spec.Steps {
-			for _, d := range s.DependsOn {
-				if d == node {
-					inDegree[s.Name]--
-					if inDegree[s.Name] == 0 {
-						queue = append(queue, s.Name)
-					}
-				}
-			}
-		}
-	}
-
-	if visited != len(chain.Spec.Steps) {
-		return fmt.Errorf("chain DAG contains a cycle")
-	}
-	return nil
+	return util.ValidateDAG(nodes)
 }
 
 // initStepStatuses initializes step status entries for all steps.
@@ -1054,22 +1006,3 @@ func (r *ChainReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(r)
 }
 
-// Helpers
-func containsString(slice []string, s string) bool {
-	for _, item := range slice {
-		if item == s {
-			return true
-		}
-	}
-	return false
-}
-
-func removeString(slice []string, s string) []string {
-	result := make([]string, 0, len(slice))
-	for _, item := range slice {
-		if item != s {
-			result = append(result, item)
-		}
-	}
-	return result
-}
