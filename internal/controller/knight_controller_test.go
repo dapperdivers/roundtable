@@ -164,14 +164,14 @@ var _ = Describe("Knight Controller", func() {
 	})
 
 	Describe("deriveResultsPrefix", func() {
-		It("returns fallback for empty subjects", func() {
+		It("returns empty string for empty subjects", func() {
 			Expect(deriveResultsPrefix(nil)).To(Equal(""))
 			Expect(deriveResultsPrefix([]string{})).To(Equal(""))
 		})
 
-		It("extracts fleet-a prefix", func() {
-			subjects := []string{"fleet-a.tasks.>"}
-			Expect(deriveResultsPrefix(subjects)).To(Equal("fleet-a.results"))
+		It("extracts table-prefix from tasks subject", func() {
+			subjects := []string{"table-prefix.tasks.>"}
+			Expect(deriveResultsPrefix(subjects)).To(Equal("table-prefix.results"))
 		})
 
 		It("extracts rt-dev prefix", func() {
@@ -194,7 +194,7 @@ var _ = Describe("Knight Controller", func() {
 			Expect(deriveResultsPrefix(subjects)).To(Equal("something.results"))
 		})
 
-		It("returns fallback for single-segment subject", func() {
+		It("returns empty string for single-segment subject", func() {
 			subjects := []string{"nope"}
 			Expect(deriveResultsPrefix(subjects)).To(Equal(""))
 		})

@@ -374,11 +374,11 @@ func (r *MissionReconciler) dispatchPlanningTask(ctx context.Context, mission *a
 
 	// Publish to planner knight's task subject.
 	// For built-in (non-ephemeral) planner knights, derive the prefix from
-	// the knight's NATS subjects (e.g. "fleet-a.tasks.operator.>" → "fleet-a").
+	// the knight's NATS subjects (e.g. "table-prefix.tasks.operator.>" → "table-prefix").
 	// Ephemeral planners use the mission's NATS prefix.
 	prefix := natsPrefix(mission)
 	if plannerKnight.Spec.NATS.Subjects != nil && len(plannerKnight.Spec.NATS.Subjects) > 0 {
-		// Extract prefix from first subject: "fleet-a.tasks.domain.>" → "fleet-a"
+		// Extract prefix from first subject: "table-prefix.tasks.domain.>" → "table-prefix"
 		parts := strings.SplitN(plannerKnight.Spec.NATS.Subjects[0], ".tasks.", 2)
 		if len(parts) == 2 {
 			prefix = parts[0]
@@ -581,13 +581,20 @@ func (r *MissionReconciler) pollPlanningResult(ctx context.Context, mission *aiv
 	// Derive the results stream and subject prefix from the planner knight's NATS config.
 	// The planner publishes to its own table's results stream, not the mission's.
 	resultsStream := plannerKnight.Spec.NATS.ResultsStream
-	subjectPrefix := "fleet-a" // fallback
+	
+	// Extract prefix from planner knight's subjects
+	var subjectPrefix string
 	if len(plannerKnight.Spec.NATS.Subjects) > 0 {
-		// Extract prefix from first subject: "fleet-a.tasks.domain.>" → "fleet-a"
+		// Extract prefix from first subject: "table-prefix.tasks.domain.>" → "table-prefix"
 		parts := strings.SplitN(plannerKnight.Spec.NATS.Subjects[0], ".tasks.", 2)
 		if len(parts) == 2 {
 			subjectPrefix = parts[0]
 		}
+	}
+	
+	if subjectPrefix == "" {
+		return nil, fmt.Errorf("cannot derive NATS subject prefix from planner knight %q subjects: %v",
+			plannerKnight.Name, plannerKnight.Spec.NATS.Subjects)
 	}
 
 	subject := natspkg.ResultSubject(subjectPrefix, taskID)
