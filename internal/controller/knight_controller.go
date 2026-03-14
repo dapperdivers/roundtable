@@ -20,13 +20,11 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
 	"time"
 
-	"github.com/dapperdivers/roundtable/internal/util"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -41,6 +39,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	aiv1alpha1 "github.com/dapperdivers/roundtable/api/v1alpha1"
+	knightpkg "github.com/dapperdivers/roundtable/internal/knight"
 )
 
 const (
@@ -60,37 +59,6 @@ func nixToolsHash(tools []string) string {
 	return hex.EncodeToString(h[:8]) // 16-char hex prefix
 }
 
-// deploymentSpecHash computes a deterministic hash of the desired deployment spec
-// fields (containers, volumes, labels, annotations) to detect actual changes.
-func deploymentSpecHash(deploy *appsv1.Deployment) string {
-	hashInput := struct {
-		Labels      map[string]string              `json:"labels"`
-		Annotations map[string]string              `json:"annotations"`
-		Spec        corev1.PodSpec                  `json:"spec"`
-		Replicas    *int32                          `json:"replicas"`
-		Strategy    appsv1.DeploymentStrategyType   `json:"strategy"`
-	}{
-		Labels:      deploy.Spec.Template.Labels,
-		Annotations: filterAnnotations(deploy.Spec.Template.Annotations),
-		Spec:        deploy.Spec.Template.Spec,
-		Replicas:    deploy.Spec.Replicas,
-		Strategy:    deploy.Spec.Strategy.Type,
-	}
-	data, _ := json.Marshal(hashInput)
-	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:8])
-}
-
-// filterAnnotations returns annotations without the spec-hash itself to avoid circular hashing.
-func filterAnnotations(annotations map[string]string) map[string]string {
-	filtered := make(map[string]string, len(annotations))
-	for k, v := range annotations {
-		if k != specHashAnnotation {
-			filtered[k] = v
-		}
-	}
-	return filtered
-}
 
 // KnightReconciler reconciles a Knight object
 type KnightReconciler struct {
@@ -250,7 +218,7 @@ func (r *KnightReconciler) reconcileConfigMap(ctx context.Context, knight *aiv1a
 		}
 
 		// Generate mise.toml for tool provisioning
-		cm.Data["mise.toml"] = r.generateMiseToml(knight)
+		cm.Data["mise.toml"] = knightpkg.GenerateMiseToml(knight)
 
 		// Generate apt.txt for system packages
 		if knight.Spec.Tools != nil && len(knight.Spec.Tools.Apt) > 0 {
@@ -262,7 +230,7 @@ func (r *KnightReconciler) reconcileConfigMap(ctx context.Context, knight *aiv1a
 
 		// Generate flake.nix for Nix-managed tools
 		if knight.Spec.Tools != nil && len(knight.Spec.Tools.Nix) > 0 {
-			cm.Data["flake.nix"] = r.generateFlakeNix(knight)
+			cm.Data["flake.nix"] = knightpkg.GenerateFlakeNix(knight)
 		}
 
 		// Generate TOOLS.md listing available tools and paths
@@ -476,7 +444,7 @@ func (r *KnightReconciler) reconcileDeployment(ctx context.Context, knight *aiv1
 	desired.Spec.Template.Spec = r.buildPodSpec(ctx, knight)
 
 	// Compute hash of desired state
-	desiredHash := deploymentSpecHash(desired)
+	desiredHash := knightpkg.DeploymentSpecHash(desired)
 
 	// Fetch or create the deployment
 	deploy := &appsv1.Deployment{
@@ -535,357 +503,25 @@ func (r *KnightReconciler) reconcileDeployment(ctx context.Context, knight *aiv1
 
 // buildPodSpec constructs the complete pod spec for a knight.
 // Matches the proven deployment pattern from the working Helm-based knights.
-func (r *KnightReconciler) buildPodSpec(ctx context.Context, knight *aiv1alpha1.Knight) corev1.PodSpec {
-	configMapName := fmt.Sprintf("knight-%s-config", knight.Name)
 
-	// Determine workspace PVC name
-	pvcName := knight.Name
-	if knight.Spec.Workspace != nil && knight.Spec.Workspace.ExistingClaim != "" {
-		pvcName = knight.Spec.Workspace.ExistingClaim
-	}
+// buildPodSpec constructs the complete pod spec for a knight using the composable builder.
+func (r *KnightReconciler) buildPodSpec(ctx context.Context, k *aiv1alpha1.Knight) corev1.PodSpec {
+	configMapName := fmt.Sprintf("knight-%s-config", k.Name)
 
-	// Determine image — Knight CR overrides operator default
-	image := knight.Spec.Image
-	if image == "" {
-		image = r.DefaultImage
-	}
-	if image == "" {
-		image = "ghcr.io/dapperdivers/pi-knight:latest"
-	}
+	builder := knightpkg.NewPodBuilder(k, r.DefaultImage).
+		WithReader(r.Client).
+		WithWorkspace().
+		WithConfig(configMapName).
+		WithNixStore().
+		WithVault().
+		WithSharedWorkspace(ctx).
+		WithArsenal().
+		WithSkillFilter().
+		WithGitSync()
 
-	// Resource requests only — no limits.
-	// Nix flake builds need burst memory; runtime is ~256Mi.
-	// Following onedr0p pattern: requests for scheduling, no limits for flexibility.
-
-	// Task timeout in milliseconds (pi-knight expects TASK_TIMEOUT_MS)
-	taskTimeoutMs := int64(knight.Spec.TaskTimeout) * 1000
-
-	// Build environment variables — matching pi-knight runtime expectations
-	env := []corev1.EnvVar{
-		{Name: "KNIGHT_NAME", Value: util.Capitalize(knight.Name)},
-		{Name: "KNIGHT_MODEL", Value: knight.Spec.Model},
-		{Name: "NATS_URL", Value: knight.Spec.NATS.URL},
-		{Name: "NATS_TASKS_STREAM", Value: knight.Spec.NATS.Stream},
-		{Name: "NATS_RESULTS_STREAM", Value: knight.Spec.NATS.ResultsStream},
-		{Name: "NATS_RESULTS_PREFIX", Value: deriveResultsPrefix(knight.Spec.NATS.Subjects)},
-		{Name: "SUBSCRIBE_TOPICS", Value: strings.Join(knight.Spec.NATS.Subjects, ",")},
-		{Name: "MAX_CONCURRENT_TASKS", Value: fmt.Sprintf("%d", knight.Spec.Concurrency)},
-		{Name: "TASK_TIMEOUT_MS", Value: fmt.Sprintf("%d", taskTimeoutMs)},
-		{Name: "METRICS_PORT", Value: "3000"},
-		{Name: "LOG_LEVEL", Value: "info"},
-		{Name: "TZ", Value: "America/Chicago"},
-	}
-
-	// Append user-defined env vars (can override defaults)
-	env = append(env, knight.Spec.Env...)
-
-	// --- Volumes ---
-	volumes := []corev1.Volume{
-		{
-			Name: "data",
-			VolumeSource: corev1.VolumeSource{
-				PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
-					ClaimName: pvcName,
-				},
-			},
-		},
-		{
-			Name: "config",
-			VolumeSource: corev1.VolumeSource{
-				ConfigMap: &corev1.ConfigMapVolumeSource{
-					LocalObjectReference: corev1.LocalObjectReference{Name: configMapName},
-				},
-			},
-		},
-		// arsenal: git-sync populates skills here (emptyDir for now, git-sync initContainer future)
-		{Name: "arsenal", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
-		// skills: skill-filter symlinks active categories here
-		{Name: "skills", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
-	}
-
-	// Volume mounts for the knight container
-	volumeMounts := []corev1.VolumeMount{
-		{Name: "data", MountPath: "/data"},
-		{Name: "config", MountPath: "/config", ReadOnly: true},
-		{Name: "arsenal", MountPath: "/arsenal", ReadOnly: true},
-		{Name: "skills", MountPath: "/skills", ReadOnly: true},
-	}
-
-	// Nix store mount (if tools.nix is configured)
-	if knight.Spec.Tools != nil && len(knight.Spec.Tools.Nix) > 0 {
-		nixPVCName := fmt.Sprintf("knight-%s-nix", knight.Name)
-		volumes = append(volumes, corev1.Volume{
-			Name: "nix",
-			VolumeSource: corev1.VolumeSource{
-				PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
-					ClaimName: nixPVCName,
-				},
-			},
-		})
-		volumeMounts = append(volumeMounts, corev1.VolumeMount{
-			Name:      "nix",
-			MountPath: "/nix",
-		})
-	}
-
-	// Vault mount (if configured)
-	if knight.Spec.Vault != nil {
-		claimName := knight.Spec.Vault.ClaimName
-		if claimName == "" {
-			claimName = "obsidian-vault"
-		}
-
-		// PVC source must be ReadOnly=false when writablePaths exist,
-		// otherwise the kernel-level RO on the volume blocks ALL writes,
-		// even SubPath mounts marked ReadOnly=false.
-		pvcReadOnly := knight.Spec.Vault.ReadOnly
-		if len(knight.Spec.Vault.WritablePaths) > 0 {
-			pvcReadOnly = false
-		}
-		volumes = append(volumes, corev1.Volume{
-			Name: "vault",
-			VolumeSource: corev1.VolumeSource{
-				PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
-					ClaimName: claimName,
-					ReadOnly:  pvcReadOnly,
-				},
-			},
-		})
-		volumeMounts = append(volumeMounts, corev1.VolumeMount{
-			Name:      "vault",
-			MountPath: "/vault",
-			ReadOnly:  knight.Spec.Vault.ReadOnly,
-		})
-
-		// Writable subpaths override the read-only base mount
-		for _, wp := range knight.Spec.Vault.WritablePaths {
-			volumeMounts = append(volumeMounts, corev1.VolumeMount{
-				Name:      "vault",
-				MountPath: fmt.Sprintf("/vault/%s", strings.TrimSuffix(wp, "/")),
-				SubPath:   strings.TrimSuffix(wp, "/"),
-				ReadOnly:  false,
-			})
-		}
-	}
-
-	// Shared workspace mount (from parent RoundTable)
-	if tableName, ok := knight.Labels["ai.roundtable.io/table"]; ok {
-		rt := &aiv1alpha1.RoundTable{}
-		if err := r.Get(ctx, types.NamespacedName{Name: tableName, Namespace: knight.Namespace}, rt); err == nil {
-			if rt.Spec.SharedWorkspace != nil {
-				mountPath := rt.Spec.SharedWorkspace.MountPath
-				if mountPath == "" {
-					mountPath = "/shared"
-				}
-				volumes = append(volumes, corev1.Volume{
-					Name: "shared-workspace",
-					VolumeSource: corev1.VolumeSource{
-						PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
-							ClaimName: rt.Spec.SharedWorkspace.ClaimName,
-						},
-					},
-				})
-				volumeMounts = append(volumeMounts, corev1.VolumeMount{
-					Name:      "shared-workspace",
-					MountPath: mountPath,
-				})
-			}
-		}
-	}
-
-	// Health probe port
-	probePort := 3000
-
-	// Main knight container
-	knightContainer := corev1.Container{
-		Name:    "app",
-		Image:   image,
-		Env:     env,
-		EnvFrom: knight.Spec.EnvFrom,
-		Resources: corev1.ResourceRequirements{
-			Requests: corev1.ResourceList{
-				corev1.ResourceMemory: resource.MustParse("256Mi"),
-				corev1.ResourceCPU:    resource.MustParse("100m"),
-			},
-		},
-		VolumeMounts: volumeMounts,
-		// Startup probe: generous timeout for Nix flake builds (up to 10 min)
-		StartupProbe: &corev1.Probe{
-			ProbeHandler: corev1.ProbeHandler{
-				HTTPGet: &corev1.HTTPGetAction{
-					Path: "/health",
-					Port: util.IntstrPort(probePort),
-				},
-			},
-			InitialDelaySeconds: 5,
-			PeriodSeconds:       10,
-			FailureThreshold:    60, // 10 minutes (60 * 10s)
-		},
-		LivenessProbe: &corev1.Probe{
-			ProbeHandler: corev1.ProbeHandler{
-				HTTPGet: &corev1.HTTPGetAction{
-					Path: "/health",
-					Port: util.IntstrPort(probePort),
-				},
-			},
-			PeriodSeconds: 30,
-		},
-		ReadinessProbe: &corev1.Probe{
-			ProbeHandler: corev1.ProbeHandler{
-				HTTPGet: &corev1.HTTPGetAction{
-					Path: "/ready",
-					Port: util.IntstrPort(probePort),
-				},
-			},
-			PeriodSeconds: 15,
-		},
-	}
-
-	// Skill-filter sidecar — uses alpine with symlink script (matches working pattern)
-	skillCategories := strings.Join(knight.Spec.Skills, " ")
-	// Arsenal path: git-sync creates /arsenal/<repo-name> symlink
-	arsenalPath := "/arsenal"
-	if knight.Spec.Arsenal != nil {
-		// git-sync creates a worktree at /arsenal/<repo-basename>
-		repo := knight.Spec.Arsenal.Repo
-		if repo == "" {
-			repo = "https://github.com/dapperdivers/roundtable-arsenal"
-		}
-		parts := strings.Split(strings.TrimSuffix(repo, ".git"), "/")
-		arsenalPath = "/arsenal/" + parts[len(parts)-1]
-	}
-
-	skillFilterScript := fmt.Sprintf(`
-ARSENAL="%s"
-TARGET="/skills"
-SKILL_CATEGORIES="%s"`, arsenalPath, skillCategories) + `
-EXPECTED=$(echo $SKILL_CATEGORIES | wc -w)
-LINKED=0
-while [ "$LINKED" -lt "$EXPECTED" ]; do
-  LINKED=0
-  if [ -d "$ARSENAL" ]; then
-    for cat in $SKILL_CATEGORIES; do
-      src="$ARSENAL/$cat"
-      dst="$TARGET/$cat"
-      if [ -d "$src" ] && [ ! -L "$dst" ]; then
-        ln -sf "$src" "$dst"
-        echo "Linked $cat"
-      fi
-      [ -L "$dst" ] && LINKED=$((LINKED + 1))
-    done
-  fi
-  [ "$LINKED" -lt "$EXPECTED" ] && sleep 2
-done
-echo "All categories linked ($LINKED/$EXPECTED)"
-while true; do
-  if [ -d "$ARSENAL" ]; then
-    for cat in $SKILL_CATEGORIES; do
-      src="$ARSENAL/$cat"
-      dst="$TARGET/$cat"
-      if [ -d "$src" ]; then
-        current=$(readlink "$dst" 2>/dev/null || echo "")
-        if [ "$current" != "$src" ]; then
-          ln -sf "$src" "$dst"
-          echo "Re-linked $cat"
-        fi
-      fi
-    done
-  fi
-  sleep 60
-done`
-
-	skillFilterContainer := corev1.Container{
-		Name:    "skill-filter",
-		Image:   "alpine:3.21",
-		Command: []string{"/bin/sh", "-c"},
-		Args:    []string{skillFilterScript},
-		Env: []corev1.EnvVar{
-			{Name: "SKILL_CATEGORIES", Value: skillCategories},
-		},
-		Resources: corev1.ResourceRequirements{
-			Requests: corev1.ResourceList{
-				corev1.ResourceMemory: resource.MustParse("8Mi"),
-				corev1.ResourceCPU:    resource.MustParse("5m"),
-			},
-			Limits: corev1.ResourceList{
-				corev1.ResourceMemory: resource.MustParse("16Mi"),
-				corev1.ResourceCPU:    resource.MustParse("50m"),
-			},
-		},
-		VolumeMounts: []corev1.VolumeMount{
-			{Name: "arsenal", MountPath: "/arsenal", ReadOnly: true},
-			{Name: "skills", MountPath: "/skills"},
-		},
-	}
-
-	// Git-sync sidecar for the skill arsenal
-	containers := []corev1.Container{knightContainer, skillFilterContainer}
-	if knight.Spec.Arsenal != nil {
-		arsenalRepo := knight.Spec.Arsenal.Repo
-		if arsenalRepo == "" {
-			arsenalRepo = "https://github.com/dapperdivers/roundtable-arsenal"
-		}
-		arsenalRef := knight.Spec.Arsenal.Ref
-		if arsenalRef == "" {
-			arsenalRef = "main"
-		}
-		arsenalPeriod := knight.Spec.Arsenal.Period
-		if arsenalPeriod == "" {
-			arsenalPeriod = "300s"
-		}
-		arsenalImage := knight.Spec.Arsenal.Image
-		if arsenalImage == "" {
-			arsenalImage = "registry.k8s.io/git-sync/git-sync:v4.4.0"
-		}
-
-		gitSyncContainer := corev1.Container{
-			Name:  "git-sync",
-			Image: arsenalImage,
-			Env: []corev1.EnvVar{
-				{Name: "GITSYNC_REPO", Value: arsenalRepo},
-				{Name: "GITSYNC_REF", Value: arsenalRef},
-				{Name: "GITSYNC_ROOT", Value: "/arsenal"},
-				{Name: "GITSYNC_PERIOD", Value: arsenalPeriod},
-			},
-			Resources: corev1.ResourceRequirements{
-				Requests: corev1.ResourceList{
-					corev1.ResourceMemory: resource.MustParse("32Mi"),
-					corev1.ResourceCPU:    resource.MustParse("10m"),
-				},
-				Limits: corev1.ResourceList{
-					corev1.ResourceMemory: resource.MustParse("64Mi"),
-				},
-			},
-			VolumeMounts: []corev1.VolumeMount{
-				{Name: "arsenal", MountPath: "/arsenal"},
-			},
-		}
-		containers = append(containers, gitSyncContainer)
-	}
-
-	// Pod security context — fsGroup 1000 for PVC write access
-	fsGroup := int64(1000)
-	runAsUser := int64(1000)
-	runAsGroup := int64(1000)
-
-	return corev1.PodSpec{
-		Containers:    containers,
-		Volumes:       volumes,
-		EnableServiceLinks: util.BoolPtr(false),
-		SecurityContext: &corev1.PodSecurityContext{
-			RunAsUser:           &runAsUser,
-			RunAsGroup:          &runAsGroup,
-			FSGroup:             &fsGroup,
-			FSGroupChangePolicy: util.FSGroupChangePolicyPtr(corev1.FSGroupChangeOnRootMismatch),
-		},
-		// Use knight-specific ServiceAccount if configured, otherwise namespace default
-		ServiceAccountName: knight.Spec.ServiceAccountName,
-		// Auto-mount SA token — knights may need it for in-cluster access
-		AutomountServiceAccountToken: util.BoolPtr(true),
-	}
+	return builder.Build(ctx)
 }
 
-// updateStatus sets the Knight's status based on current state.
 func (r *KnightReconciler) updateStatus(ctx context.Context, knight *aiv1alpha1.Knight, reconcileErr error) error {
 	// Check deployment readiness
 	deploy := &appsv1.Deployment{}
@@ -934,47 +570,7 @@ func (r *KnightReconciler) updateStatus(ctx context.Context, knight *aiv1alpha1.
 	return r.Status().Update(ctx, knight)
 }
 
-// generateFlakeNix produces a Nix flake for tool provisioning.
-func (r *KnightReconciler) generateFlakeNix(knight *aiv1alpha1.Knight) string {
-	var sb strings.Builder
-	sb.WriteString("# Auto-generated by roundtable-operator\n")
-	sb.WriteString("# Knight: " + knight.Name + "\n")
-	sb.WriteString("{\n")
-	sb.WriteString("  inputs.nixpkgs.url = \"github:NixOS/nixpkgs/nixos-unstable\";\n")
-	sb.WriteString("  outputs = { self, nixpkgs }:\n")
-	sb.WriteString("    let\n")
-	sb.WriteString("      system = \"x86_64-linux\";\n")
-	sb.WriteString("      pkgs = nixpkgs.legacyPackages.${system};\n")
-	sb.WriteString("    in {\n")
-	sb.WriteString("      packages.${system}.default = pkgs.buildEnv {\n")
-	sb.WriteString("        name = \"knight-" + knight.Name + "-tools\";\n")
-	sb.WriteString("        paths = with pkgs; [\n")
-	for _, pkg := range knight.Spec.Tools.Nix {
-		sb.WriteString("          " + pkg + "\n")
-	}
-	sb.WriteString("        ];\n")
-	sb.WriteString("      };\n")
-	sb.WriteString("    };\n")
-	sb.WriteString("}\n")
-	return sb.String()
-}
 
-// generateMiseToml produces the mise configuration for tool provisioning.
-func (r *KnightReconciler) generateMiseToml(knight *aiv1alpha1.Knight) string {
-	var sb strings.Builder
-	sb.WriteString("# Auto-generated by roundtable-operator\n")
-	sb.WriteString("# Knight: " + knight.Name + "\n")
-	sb.WriteString("# Domain: " + knight.Spec.Domain + "\n\n")
-
-	if knight.Spec.Tools != nil && len(knight.Spec.Tools.Mise) > 0 {
-		sb.WriteString("[tools]\n")
-		for _, tool := range knight.Spec.Tools.Mise {
-			sb.WriteString(fmt.Sprintf("%s = \"latest\"\n", tool))
-		}
-	}
-
-	return sb.String()
-}
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *KnightReconciler) SetupWithManager(mgr ctrl.Manager) error {
@@ -987,27 +583,7 @@ func (r *KnightReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(r)
 }
 
-// Helpers
-// deriveResultsPrefix extracts the NATS subject prefix for results from task subjects.
-// e.g., ["fleet-a.tasks.security.>"] → "fleet-a.results"
-//       ["chelonian.tasks.frontend.>"] → "chelonian.results"
-//       ["rt-dev.tasks.operator.>"] → "rt-dev.results"
+// deriveResultsPrefix is a re-export from the knight package for backward compatibility with tests.
 func deriveResultsPrefix(subjects []string) string {
-	for _, subj := range subjects {
-		// Split on ".tasks." to reliably extract the table prefix
-		parts := strings.SplitN(subj, ".tasks.", 2)
-		if len(parts) == 2 && parts[0] != "" {
-			return parts[0] + ".results"
-		}
-	}
-	// Last resort: try splitting on dots
-	if len(subjects) > 0 {
-		parts := strings.Split(subjects[0], ".")
-		if len(parts) >= 2 {
-			return parts[0] + ".results"
-		}
-	}
-	return "fleet-a.results" // ultimate fallback for legacy knights without subjects
+	return knightpkg.DeriveResultsPrefix(subjects)
 }
-
-// end of file
