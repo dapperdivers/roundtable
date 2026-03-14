@@ -37,6 +37,7 @@ import (
 
 	aiv1alpha1 "github.com/dapperdivers/roundtable/api/v1alpha1"
 	"github.com/dapperdivers/roundtable/internal/controller"
+	"github.com/dapperdivers/roundtable/internal/mission"
 	natspkg "github.com/dapperdivers/roundtable/pkg/nats"
 	// +kubebuilder:scaffold:imports
 )
@@ -219,10 +220,16 @@ func main() {
 		setupLog.Error(err, "Failed to create controller", "controller", "RoundTable")
 		os.Exit(1)
 	}
-	if err := (&controller.MissionReconciler{
+	missionPlanner := &mission.Planner{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
 		NATS:   natsProvider,
+	}
+	if err := (&controller.MissionReconciler{
+		Client:  mgr.GetClient(),
+		Scheme:  mgr.GetScheme(),
+		NATS:    natsProvider,
+		Planner: missionPlanner,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "Mission")
 		os.Exit(1)
