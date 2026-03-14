@@ -172,8 +172,10 @@ var _ = Describe("Chain Controller", func() {
 		It("should pass through non-template strings unchanged", func() {
 			r := newReconciler()
 			chain := &aiv1alpha1.Chain{
-				Spec: aiv1alpha1.ChainSpec{Steps: []aiv1alpha1.ChainStep{{Name: "a"}}},
+				Spec: aiv1alpha1.ChainSpec{
 					RoundTableRef: roundTableName,
+					Steps: []aiv1alpha1.ChainStep{{Name: "a"}},
+				},
 			}
 			result, err := r.renderTemplate(chain, "plain task with no templates")
 			Expect(err).NotTo(HaveOccurred())
