@@ -355,7 +355,8 @@ func (r *MissionReconciler) ensurePlannerKnight(ctx context.Context, mission *ai
 func (r *MissionReconciler) dispatchPlanningTask(ctx context.Context, mission *aiv1alpha1.Mission, plannerKnight *aiv1alpha1.Knight) (string, error) {
 	log := logf.FromContext(ctx)
 
-	if err := r.ensureNATS(ctx); err != nil {
+	client, err := r.NATS.Client()
+	if err != nil {
 		return "", err
 	}
 
@@ -385,7 +386,7 @@ func (r *MissionReconciler) dispatchPlanningTask(ctx context.Context, mission *a
 	}
 	subject := natspkg.TaskSubject(prefix, plannerKnight.Spec.Domain, plannerKnight.Name)
 
-	if err := r.natsClient.PublishJSON(subject, payload); err != nil {
+	if err := client.PublishJSON(subject, payload); err != nil {
 		return "", fmt.Errorf("failed to publish planning task: %w", err)
 	}
 
@@ -566,7 +567,8 @@ func (r *MissionReconciler) buildPlanningPrompt(ctx context.Context, mission *ai
 func (r *MissionReconciler) pollPlanningResult(ctx context.Context, mission *aiv1alpha1.Mission, taskID string) (*natspkg.TaskResult, error) {
 	log := logf.FromContext(ctx)
 
-	if err := r.ensureNATS(ctx); err != nil {
+	client, err := r.NATS.Client()
+	if err != nil {
 		return nil, err
 	}
 
@@ -597,7 +599,7 @@ func (r *MissionReconciler) pollPlanningResult(ctx context.Context, mission *aiv
 		"subject", subject,
 		"consumer", consumerName)
 
-	msg, err := r.natsClient.PollMessage(subject, 2*time.Second,
+	msg, err := client.PollMessage(subject, 2*time.Second,
 		natspkg.WithDurable(consumerName),
 		natspkg.WithAckExplicit(),
 		natspkg.WithBindStream(resultsStream),
@@ -618,7 +620,7 @@ func (r *MissionReconciler) pollPlanningResult(ctx context.Context, mission *aiv
 	if err := msg.Ack(); err != nil {
 		log.Error(err, "Failed to ack planning result message")
 	}
-	_ = r.natsClient.DeleteConsumer(resultsStream, consumerName)
+	_ = client.DeleteConsumer(resultsStream, consumerName)
 
 	// Parse result
 	var taskResult natspkg.TaskResult

@@ -59,8 +59,8 @@ type MissionReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
 
-	natsClient natspkg.Client
-	mu         sync.Mutex
+	NATS *natspkg.Provider
+	mu   sync.Mutex
 }
 
 // +kubebuilder:rbac:groups=ai.roundtable.io,resources=missions,verbs=get;list;watch;create;update;patch;delete
@@ -956,25 +956,12 @@ func (r *MissionReconciler) updateKnightStatuses(ctx context.Context, mission *a
 	}
 }
 
-// ensureNATS connects to NATS if not already connected.
-func (r *MissionReconciler) ensureNATS(ctx context.Context) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
 
-	if r.natsClient != nil && r.natsClient.IsConnected() {
-		return nil
-	}
-
-	log := logf.FromContext(ctx)
-	config := natspkg.DefaultConfig()
-	r.natsClient = natspkg.NewClient(config, log)
-
-	return r.natsClient.Connect()
-}
 
 // publishBriefing publishes the mission briefing to NATS.
 func (r *MissionReconciler) publishBriefing(ctx context.Context, mission *aiv1alpha1.Mission) error {
-	if err := r.ensureNATS(ctx); err != nil {
+	client, err := r.NATS.Client()
+	if err != nil {
 		return err
 	}
 
@@ -993,7 +980,7 @@ func (r *MissionReconciler) publishBriefing(ctx context.Context, mission *aiv1al
 	// Publish to mission briefing subject
 	prefix := natsPrefix(mission)
 	subject := fmt.Sprintf("%s.briefing", prefix)
-	if err := r.natsClient.PublishJSON(subject, payload); err != nil {
+	if err := client.PublishJSON(subject, payload); err != nil {
 		return err
 	}
 
@@ -1026,7 +1013,7 @@ func (r *MissionReconciler) publishBriefing(ctx context.Context, mission *aiv1al
 			}
 		}
 		taskSubject := natspkg.TaskSubject(briefingPrefix, knight.Spec.Domain, mk.Name)
-		if err := r.natsClient.PublishJSON(taskSubject, taskPayload); err != nil {
+		if err := client.PublishJSON(taskSubject, taskPayload); err != nil {
 			logf.FromContext(ctx).Error(err, "Failed to publish briefing to knight", "knight", mk.Name)
 		}
 	}
@@ -1040,9 +1027,10 @@ func (r *MissionReconciler) publishBriefing(ctx context.Context, mission *aiv1al
 func (r *MissionReconciler) storeResultsToKV(ctx context.Context, mission *aiv1alpha1.Mission) error {
 	log := logf.FromContext(ctx)
 
-	if r.natsClient == nil || !r.natsClient.IsConnected() {
+	client, err := r.NATS.Client()
+	if err != nil || !client.IsConnected() {
 		log.Info("NATS not available, skipping KV results storage")
-		return fmt.Errorf("NATS client not available")
+		return fmt.Errorf("NATS client not available: %w", err)
 	}
 
 	kvKey := mission.Name
@@ -1145,7 +1133,7 @@ func (r *MissionReconciler) storeResultsToKV(ctx context.Context, mission *aiv1a
 		return fmt.Errorf("failed to marshal results: %w", err)
 	}
 
-	if err := r.natsClient.KVPut(kvBucket, kvKey, resultsJSON); err != nil {
+	if err := client.KVPut(kvBucket, kvKey, resultsJSON); err != nil {
 		return fmt.Errorf("failed to store results in NATS KV: %w", err)
 	}
 
@@ -1767,7 +1755,8 @@ func (r *MissionReconciler) deleteEphemeralKnights(ctx context.Context, mission 
 
 // deleteNATSConsumers deletes all NATS consumers for this mission's streams (best effort).
 func (r *MissionReconciler) deleteNATSConsumers(ctx context.Context, mission *aiv1alpha1.Mission) error {
-	if r.natsClient == nil {
+	client, err := r.NATS.Client()
+	if err != nil {
 		return nil // Gracefully skip if no NATS client
 	}
 
@@ -1783,12 +1772,12 @@ func (r *MissionReconciler) deleteNATSConsumers(ctx context.Context, mission *ai
 
 		// Delete from tasks stream (best effort)
 		if tasksStream != "" {
-			_ = r.natsClient.DeleteConsumer(tasksStream, consumerName)
+			_ = client.DeleteConsumer(tasksStream, consumerName)
 		}
 
 		// Delete from results stream (best effort)
 		if resultsStream != "" {
-			_ = r.natsClient.DeleteConsumer(resultsStream, consumerName)
+			_ = client.DeleteConsumer(resultsStream, consumerName)
 		}
 	}
 
@@ -1797,20 +1786,21 @@ func (r *MissionReconciler) deleteNATSConsumers(ctx context.Context, mission *ai
 
 // deleteNATSStreams deletes the mission's task and result streams.
 func (r *MissionReconciler) deleteNATSStreams(ctx context.Context, mission *aiv1alpha1.Mission) error {
-	if r.natsClient == nil {
+	client, err := r.NATS.Client()
+	if err != nil {
 		return nil // Gracefully skip if no NATS client
 	}
 
 	// Delete tasks stream
 	if mission.Status.NATSTasksStream != "" {
-		if err := r.natsClient.DeleteStream(mission.Status.NATSTasksStream); err != nil {
+		if err := client.DeleteStream(mission.Status.NATSTasksStream); err != nil {
 			return fmt.Errorf("failed to delete tasks stream: %w", err)
 		}
 	}
 
 	// Delete results stream
 	if mission.Status.NATSResultsStream != "" {
-		if err := r.natsClient.DeleteStream(mission.Status.NATSResultsStream); err != nil {
+		if err := client.DeleteStream(mission.Status.NATSResultsStream); err != nil {
 			return fmt.Errorf("failed to delete results stream: %w", err)
 		}
 	}

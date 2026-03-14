@@ -65,9 +65,9 @@ type ChainReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
 
-	natsClient natspkg.Client
-	cron       *cron.Cron
-	mu         sync.Mutex
+	NATS *natspkg.Provider
+	cron *cron.Cron
+	mu   sync.Mutex
 	// cronEntries maps chain namespace/name to cron entry ID
 	cronEntries map[string]cron.EntryID
 }
@@ -665,21 +665,7 @@ func (r *ChainReconciler) renderTemplate(chain *aiv1alpha1.Chain, taskStr string
 	return buf.String(), nil
 }
 
-// ensureNATS ensures the NATS client is initialized and connected.
-func (r *ChainReconciler) ensureNATS(ctx context.Context) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
 
-	if r.natsClient != nil && r.natsClient.IsConnected() {
-		return nil
-	}
-
-	log := logf.FromContext(ctx)
-	config := natspkg.DefaultConfig()
-	r.natsClient = natspkg.NewClient(config, log)
-
-	return r.natsClient.Connect()
-}
 
 // resolveNATSConfig looks up the chain's RoundTable and returns the NATS configuration.
 // Falls back to defaultNATSConfig if no roundTableRef is specified.
@@ -702,12 +688,13 @@ func (r *ChainReconciler) resolveNATSConfig(ctx context.Context, chain *aiv1alph
 
 // publishTask publishes a task to NATS JetStream.
 func (r *ChainReconciler) publishTask(ctx context.Context, nc natsConfig, domain, knightName string, payload natspkg.TaskPayload) error {
-	if err := r.ensureNATS(ctx); err != nil {
+	client, err := r.NATS.Client()
+	if err != nil {
 		return err
 	}
 
 	subject := natspkg.TaskSubject(nc.SubjectPrefix, domain, knightName)
-	return r.natsClient.PublishJSON(subject, payload)
+	return client.PublishJSON(subject, payload)
 }
 
 // pollResult checks for a result message for a given chain step.
@@ -715,7 +702,8 @@ func (r *ChainReconciler) publishTask(ctx context.Context, nc natsConfig, domain
 func (r *ChainReconciler) pollResult(ctx context.Context, nc natsConfig, chainName, stepName, taskID string) (*natspkg.TaskResult, error) {
 	log := logf.FromContext(ctx)
 
-	if err := r.ensureNATS(ctx); err != nil {
+	client, err := r.NATS.Client()
+	if err != nil {
 		return nil, err
 	}
 
@@ -731,7 +719,7 @@ func (r *ChainReconciler) pollResult(ctx context.Context, nc natsConfig, chainNa
 	// Use ephemeral consumer with explicit ack (compatible with both Limits and WorkQueue retention)
 	consumerName := natspkg.ChainConsumerName(chainName, stepName)
 	
-	msg, err := r.natsClient.PollMessage(subject, 2*time.Second,
+	msg, err := client.PollMessage(subject, 2*time.Second,
 		natspkg.WithDurable(consumerName),
 		natspkg.WithAckExplicit(),
 		natspkg.WithBindStream(nc.ResultsStream),
@@ -741,7 +729,7 @@ func (r *ChainReconciler) pollResult(ctx context.Context, nc natsConfig, chainNa
 	
 	// Clean up ephemeral consumer
 	defer func() {
-		_ = r.natsClient.DeleteConsumer(nc.ResultsStream, consumerName)
+		_ = client.DeleteConsumer(nc.ResultsStream, consumerName)
 	}()
 
 	if err != nil {
@@ -875,7 +863,8 @@ func (r *ChainReconciler) renderOutputPath(chain *aiv1alpha1.Chain, step *aiv1al
 
 // writeArtifact dispatches a write task to the outputKnight.
 func (r *ChainReconciler) writeArtifact(ctx context.Context, nc natsConfig, chain *aiv1alpha1.Chain, stepName, outputPath, content string) error {
-	if err := r.ensureNATS(ctx); err != nil {
+	client, err := r.NATS.Client()
+	if err != nil {
 		return err
 	}
 
@@ -903,7 +892,7 @@ func (r *ChainReconciler) writeArtifact(ctx context.Context, nc natsConfig, chai
 	}
 
 	subject := natspkg.TaskSubject(nc.SubjectPrefix, knight.Spec.Domain, knightName)
-	return r.natsClient.PublishJSON(subject, payload)
+	return client.PublishJSON(subject, payload)
 }
 
 // storeStepOutputToKV stores the full step output to the NATS KV "chain-outputs" bucket.
@@ -911,7 +900,8 @@ func (r *ChainReconciler) writeArtifact(ctx context.Context, nc natsConfig, chai
 func (r *ChainReconciler) storeStepOutputToKV(ctx context.Context, chainName, stepName, output, errStr, knight string, startedAt, completedAt *metav1.Time) {
 	log := logf.FromContext(ctx)
 
-	if err := r.ensureNATS(ctx); err != nil {
+	client, err := r.NATS.Client()
+	if err != nil {
 		log.Error(err, "Failed to connect NATS for KV store", "step", stepName)
 		return
 	}
@@ -936,7 +926,7 @@ func (r *ChainReconciler) storeStepOutputToKV(ctx context.Context, chainName, st
 	}
 
 	key := chainName + "." + stepName
-	if err := r.natsClient.KVPut("chain-outputs", key, data); err != nil {
+	if err := client.KVPut("chain-outputs", key, data); err != nil {
 		log.Error(err, "Failed to store step output to KV", "key", key)
 	} else {
 		log.Info("Stored step output to NATS KV", "bucket", "chain-outputs", "key", key, "size", len(data))
@@ -948,7 +938,8 @@ func (r *ChainReconciler) storeStepOutputToKV(ctx context.Context, chainName, st
 func (r *ChainReconciler) restoreStepOutputsFromKV(ctx context.Context, chain *aiv1alpha1.Chain) int {
 	log := logf.FromContext(ctx)
 
-	if err := r.ensureNATS(ctx); err != nil {
+	client, err := r.NATS.Client()
+	if err != nil {
 		log.Error(err, "Failed to connect NATS for KV restore")
 		return 0
 	}
@@ -961,7 +952,7 @@ func (r *ChainReconciler) restoreStepOutputsFromKV(ctx context.Context, chain *a
 		}
 
 		key := chain.Name + "." + ss.Name
-		data, err := r.natsClient.KVGet("chain-outputs", key)
+		data, err := client.KVGet("chain-outputs", key)
 		if err != nil {
 			log.V(1).Info("No stored output found for step", "step", ss.Name, "key", key)
 			continue
@@ -1000,6 +991,11 @@ func (r *ChainReconciler) restoreStepOutputsFromKV(ctx context.Context, chain *a
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *ChainReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	// Initialize cron scheduler
+	r.cron = cron.New()
+	r.cron.Start()
+	r.cronEntries = make(map[string]cron.EntryID)
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&aiv1alpha1.Chain{}).
 		Named("chain").

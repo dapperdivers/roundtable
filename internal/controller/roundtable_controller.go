@@ -38,7 +38,7 @@ type RoundTableReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
 
-	natsClient natspkg.Client
+	NATS *natspkg.Provider
 }
 
 // +kubebuilder:rbac:groups=ai.roundtable.io,resources=roundtables,verbs=get;list;watch;create;update;patch;delete
@@ -277,17 +277,10 @@ func (r *RoundTableReconciler) countActiveMissions(ctx context.Context, rt *aiv1
 
 // ensureStreams creates or verifies JetStream streams for this RoundTable.
 func (r *RoundTableReconciler) ensureStreams(ctx context.Context, rt *aiv1alpha1.RoundTable) error {
-	log := logf.FromContext(ctx)
-
-	// Ensure NATS client is initialized
-	if r.natsClient == nil {
-		url := rt.Spec.NATS.URL
-		if url == "" {
-			url = "nats://nats.database.svc:4222"
-		}
-		config := natspkg.DefaultConfig()
-		config.URL = url
-		r.natsClient = natspkg.NewClient(config, log)
+	// Get shared NATS client
+	client, err := r.NATS.Client()
+	if err != nil {
+		return fmt.Errorf("failed to connect to NATS: %w", err)
 	}
 
 	// Map retention policy string to enum
@@ -307,7 +300,7 @@ func (r *RoundTableReconciler) ensureStreams(ctx context.Context, rt *aiv1alpha1
 		Retention: retention,
 		Storage:   natspkg.StorageFile,
 	}
-	if err := r.natsClient.CreateStream(tasksStreamConfig); err != nil {
+	if err := client.CreateStream(tasksStreamConfig); err != nil {
 		return fmt.Errorf("tasks stream: %w", err)
 	}
 
@@ -319,7 +312,7 @@ func (r *RoundTableReconciler) ensureStreams(ctx context.Context, rt *aiv1alpha1
 		Retention: retention,
 		Storage:   natspkg.StorageFile,
 	}
-	if err := r.natsClient.CreateStream(resultsStreamConfig); err != nil {
+	if err := client.CreateStream(resultsStreamConfig); err != nil {
 		return fmt.Errorf("results stream: %w", err)
 	}
 
