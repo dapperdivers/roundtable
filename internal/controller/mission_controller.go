@@ -38,6 +38,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	aiv1alpha1 "github.com/dapperdivers/roundtable/api/v1alpha1"
+	"github.com/dapperdivers/roundtable/internal/status"
 	natspkg "github.com/dapperdivers/roundtable/pkg/nats"
 )
 
@@ -106,14 +107,14 @@ func (r *MissionReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 
 	// Initialize status
 	if mission.Status.Phase == "" {
-		mission.Status.Phase = aiv1alpha1.MissionPhasePending
 		now := metav1.Now()
 		mission.Status.StartedAt = &now
 		expiresAt := metav1.NewTime(now.Add(time.Duration(mission.Spec.TTL) * time.Second))
 		mission.Status.ExpiresAt = &expiresAt
 		r.initKnightStatuses(mission)
-		mission.Status.ObservedGeneration = mission.Generation
-		return ctrl.Result{}, r.Status().Update(ctx, mission)
+		return ctrl.Result{}, status.ForMission(mission).
+			Phase(aiv1alpha1.MissionPhasePending).
+			Apply(ctx, r.Client)
 	}
 
 	// Check TTL expiration in any non-terminal phase
@@ -124,19 +125,10 @@ func (r *MissionReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 			// Go straight to CleaningUp in a single status update to avoid
 			// double-update conflicts (the old code set Expired then immediately
 			// overwrote to CleaningUp — the second update stomped the first).
-			mission.Status.Phase = aiv1alpha1.MissionPhaseCleaningUp
-			now := metav1.Now()
-			mission.Status.CompletedAt = &now
-			mission.Status.Result = "Mission expired (TTL exceeded)"
-			meta.SetStatusCondition(&mission.Status.Conditions, metav1.Condition{
-				Type:               "Complete",
-				Status:             metav1.ConditionTrue,
-				Reason:             "Expired",
-				Message:            "Mission TTL expired",
-				ObservedGeneration: mission.Generation,
-			})
-			mission.Status.ObservedGeneration = mission.Generation
-			return ctrl.Result{RequeueAfter: 5 * time.Second}, r.Status().Update(ctx, mission)
+			return ctrl.Result{RequeueAfter: 5 * time.Second}, status.ForMission(mission).
+				Complete("Mission expired (TTL exceeded)", aiv1alpha1.MissionPhaseCleaningUp).
+				Condition("Complete", "Expired", "Mission TTL expired", metav1.ConditionTrue).
+				Apply(ctx, r.Client)
 		}
 	}
 
@@ -208,10 +200,9 @@ func (r *MissionReconciler) reconcilePending(ctx context.Context, mission *aiv1a
 	knightNames := make(map[string]bool)
 	for _, knight := range mission.Spec.Knights {
 		if knightNames[knight.Name] {
-			mission.Status.Phase = aiv1alpha1.MissionPhaseFailed
-			mission.Status.Result = fmt.Sprintf("Duplicate knight name: %s", knight.Name)
-			mission.Status.ObservedGeneration = mission.Generation
-			return ctrl.Result{}, r.Status().Update(ctx, mission)
+			return ctrl.Result{}, status.ForMission(mission).
+				Failed(fmt.Sprintf("Duplicate knight name: %s", knight.Name)).
+				Apply(ctx, r.Client)
 		}
 		knightNames[knight.Name] = true
 
@@ -219,10 +210,9 @@ func (r *MissionReconciler) reconcilePending(ctx context.Context, mission *aiv1a
 		// Note: RoundTable-level templates are validated later during assembling
 		// (they require a Get call we defer to avoid premature fetches).
 		if knight.TemplateRef != "" && !templateNames[knight.TemplateRef] && mission.Spec.RoundTableRef == "" {
-			mission.Status.Phase = aiv1alpha1.MissionPhaseFailed
-			mission.Status.Result = fmt.Sprintf("Knight %s references unknown template: %s", knight.Name, knight.TemplateRef)
-			mission.Status.ObservedGeneration = mission.Generation
-			return ctrl.Result{}, r.Status().Update(ctx, mission)
+			return ctrl.Result{}, status.ForMission(mission).
+				Failed(fmt.Sprintf("Knight %s references unknown template: %s", knight.Name, knight.TemplateRef)).
+				Apply(ctx, r.Client)
 		}
 
 		// Validate ephemeral knights have spec OR templateRef (not both, not neither)
@@ -230,10 +220,9 @@ func (r *MissionReconciler) reconcilePending(ctx context.Context, mission *aiv1a
 			hasSpec := knight.EphemeralSpec != nil
 			hasTemplate := knight.TemplateRef != ""
 			if hasSpec == hasTemplate { // XOR check
-				mission.Status.Phase = aiv1alpha1.MissionPhaseFailed
-				mission.Status.Result = fmt.Sprintf("Ephemeral knight %s must have exactly one of ephemeralSpec or templateRef", knight.Name)
-				mission.Status.ObservedGeneration = mission.Generation
-				return ctrl.Result{}, r.Status().Update(ctx, mission)
+				return ctrl.Result{}, status.ForMission(mission).
+					Failed(fmt.Sprintf("Ephemeral knight %s must have exactly one of ephemeralSpec or templateRef", knight.Name)).
+					Apply(ctx, r.Client)
 			}
 		}
 	}
@@ -246,19 +235,18 @@ func (r *MissionReconciler) reconcilePending(ctx context.Context, mission *aiv1a
 			Namespace: mission.Namespace,
 		}, chain); err != nil {
 			if client.IgnoreNotFound(err) == nil {
-				mission.Status.Phase = aiv1alpha1.MissionPhaseFailed
-				mission.Status.Result = fmt.Sprintf("Referenced chain not found: %s", chainRef.Name)
-				mission.Status.ObservedGeneration = mission.Generation
-				return ctrl.Result{}, r.Status().Update(ctx, mission)
+				return ctrl.Result{}, status.ForMission(mission).
+					Failed(fmt.Sprintf("Referenced chain not found: %s", chainRef.Name)).
+					Apply(ctx, r.Client)
 			}
 			return ctrl.Result{}, err
 		}
 	}
 
 	log.Info("Mission spec validation passed", "mission", mission.Name)
-	mission.Status.Phase = aiv1alpha1.MissionPhaseProvisioning
-	mission.Status.ObservedGeneration = mission.Generation
-	return ctrl.Result{RequeueAfter: 1 * time.Second}, r.Status().Update(ctx, mission)
+	return ctrl.Result{RequeueAfter: 1 * time.Second}, status.ForMission(mission).
+		Phase(aiv1alpha1.MissionPhaseProvisioning).
+		Apply(ctx, r.Client)
 }
 
 // reconcileProvisioning creates the ephemeral RoundTable and NATS streams if needed.
@@ -528,19 +516,12 @@ func (r *MissionReconciler) reconcileAssembling(ctx context.Context, mission *ai
 			"timeout", assemblyTimeout,
 			"notReady", notReadyKnights)
 
-		mission.Status.Phase = aiv1alpha1.MissionPhaseFailed
-		now := metav1.Now()
-		mission.Status.CompletedAt = &now
-		mission.Status.Result = fmt.Sprintf("Assembly timeout: knights not ready: %v", notReadyKnights)
-		meta.SetStatusCondition(&mission.Status.Conditions, metav1.Condition{
-			Type:               "KnightsReady",
-			Status:             metav1.ConditionFalse,
-			Reason:             "AssemblyTimeout",
-			Message:            fmt.Sprintf("Knights not ready within %v: %v", assemblyTimeout, notReadyKnights),
-			ObservedGeneration: mission.Generation,
-		})
-		mission.Status.ObservedGeneration = mission.Generation
-		if err := r.Status().Update(ctx, mission); err != nil {
+		if err := status.ForMission(mission).
+			Failed(fmt.Sprintf("Assembly timeout: knights not ready: %v", notReadyKnights)).
+			Condition("KnightsReady", "AssemblyTimeout", 
+				fmt.Sprintf("Knights not ready within %v: %v", assemblyTimeout, notReadyKnights),
+				metav1.ConditionFalse).
+			Apply(ctx, r.Client); err != nil {
 			return ctrl.Result{}, err
 		}
 		return ctrl.Result{}, nil
@@ -624,19 +605,12 @@ func (r *MissionReconciler) reconcileActive(ctx context.Context, mission *aiv1al
 		elapsed := time.Since(mission.Status.StartedAt.Time)
 		if elapsed > time.Duration(mission.Spec.Timeout)*time.Second {
 			log.Info("Mission timed out", "mission", mission.Name, "elapsed", elapsed)
-			mission.Status.Phase = aiv1alpha1.MissionPhaseFailed
-			now := metav1.Now()
-			mission.Status.CompletedAt = &now
-			mission.Status.Result = fmt.Sprintf("Mission timed out after %ds", mission.Spec.Timeout)
-			meta.SetStatusCondition(&mission.Status.Conditions, metav1.Condition{
-				Type:               "Complete",
-				Status:             metav1.ConditionTrue,
-				Reason:             "Timeout",
-				Message:            fmt.Sprintf("Mission timed out after %ds", mission.Spec.Timeout),
-				ObservedGeneration: mission.Generation,
-			})
-			mission.Status.ObservedGeneration = mission.Generation
-			return ctrl.Result{}, r.Status().Update(ctx, mission)
+			return ctrl.Result{}, status.ForMission(mission).
+				Failed(fmt.Sprintf("Mission timed out after %ds", mission.Spec.Timeout)).
+				Condition("Complete", "Timeout", 
+					fmt.Sprintf("Mission timed out after %ds", mission.Spec.Timeout),
+					metav1.ConditionTrue).
+				Apply(ctx, r.Client)
 		}
 	}
 
@@ -659,19 +633,12 @@ func (r *MissionReconciler) reconcileActive(ctx context.Context, mission *aiv1al
 						log.Error(err, "Failed to suspend mission chains")
 					}
 					
-					mission.Status.Phase = aiv1alpha1.MissionPhaseFailed
-					now := metav1.Now()
-					mission.Status.CompletedAt = &now
-					mission.Status.Result = fmt.Sprintf("Cost budget exceeded: $%.2f > $%.2f", totalCost, budget)
-					meta.SetStatusCondition(&mission.Status.Conditions, metav1.Condition{
-						Type:               "Complete",
-						Status:             metav1.ConditionTrue,
-						Reason:             "OverBudget",
-						Message:            fmt.Sprintf("Cost $%.2f exceeded budget $%.2f", totalCost, budget),
-						ObservedGeneration: mission.Generation,
-					})
-					mission.Status.ObservedGeneration = mission.Generation
-					return ctrl.Result{}, r.Status().Update(ctx, mission)
+					return ctrl.Result{}, status.ForMission(mission).
+						Failed(fmt.Sprintf("Cost budget exceeded: $%.2f > $%.2f", totalCost, budget)).
+						Condition("Complete", "OverBudget",
+							fmt.Sprintf("Cost $%.2f exceeded budget $%.2f", totalCost, budget),
+							metav1.ConditionTrue).
+						Apply(ctx, r.Client)
 				}
 			}
 		}
