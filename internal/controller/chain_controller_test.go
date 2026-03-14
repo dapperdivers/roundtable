@@ -31,10 +31,11 @@ import (
 
 var _ = Describe("Chain Controller", func() {
 	const (
-		chainName   = "test-chain"
-		knightName  = "galahad"
-		knightName2 = "kay"
-		namespace   = "default"
+		chainName      = "test-chain"
+		knightName     = "galahad"
+		knightName2    = "kay"
+		namespace      = "default"
+		roundTableName = "test-table"
 	)
 
 	ctx := context.Background()
@@ -42,6 +43,27 @@ var _ = Describe("Chain Controller", func() {
 	chainNN := types.NamespacedName{Name: chainName, Namespace: namespace}
 	knightNN := types.NamespacedName{Name: knightName, Namespace: namespace}
 	knightNN2 := types.NamespacedName{Name: knightName2, Namespace: namespace}
+
+	ensureRoundTable := func() {
+		rt := &aiv1alpha1.RoundTable{}
+		err := k8sClient.Get(ctx, types.NamespacedName{Name: roundTableName, Namespace: namespace}, rt)
+		if err != nil && errors.IsNotFound(err) {
+			rt = &aiv1alpha1.RoundTable{
+				ObjectMeta: metav1.ObjectMeta{Name: roundTableName, Namespace: namespace},
+				Spec: aiv1alpha1.RoundTableSpec{
+					NATS: aiv1alpha1.RoundTableNATS{
+						URL:           "nats://localhost:4222",
+						SubjectPrefix: "test-table",
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, rt)).To(Succeed())
+			// Set status with stream info
+			rt.Status.TasksStream = "test_table_tasks"
+			rt.Status.ResultsStream = "test_table_results"
+			Expect(k8sClient.Status().Update(ctx, rt)).To(Succeed())
+		}
+	}
 
 	createKnight := func(name, domain string) {
 		knight := &aiv1alpha1.Knight{}
@@ -78,6 +100,7 @@ var _ = Describe("Chain Controller", func() {
 			r := newReconciler()
 			chain := &aiv1alpha1.Chain{
 				Spec: aiv1alpha1.ChainSpec{
+					RoundTableRef: roundTableName,
 					Steps: []aiv1alpha1.ChainStep{
 						{Name: "a", KnightRef: knightName, Task: "task-a", DependsOn: []string{"c"}},
 						{Name: "b", KnightRef: knightName, Task: "task-b", DependsOn: []string{"a"}},
@@ -94,6 +117,7 @@ var _ = Describe("Chain Controller", func() {
 			r := newReconciler()
 			chain := &aiv1alpha1.Chain{
 				Spec: aiv1alpha1.ChainSpec{
+					RoundTableRef: roundTableName,
 					Steps: []aiv1alpha1.ChainStep{
 						{Name: "a", KnightRef: knightName, Task: "task-a"},
 						{Name: "b", KnightRef: knightName, Task: "task-b", DependsOn: []string{"a"}},
@@ -109,6 +133,7 @@ var _ = Describe("Chain Controller", func() {
 			r := newReconciler()
 			chain := &aiv1alpha1.Chain{
 				Spec: aiv1alpha1.ChainSpec{
+					RoundTableRef: roundTableName,
 					Steps: []aiv1alpha1.ChainStep{
 						{Name: "a", KnightRef: knightName, Task: "task-a", DependsOn: []string{"nonexistent"}},
 					},
@@ -125,6 +150,7 @@ var _ = Describe("Chain Controller", func() {
 			r := newReconciler()
 			chain := &aiv1alpha1.Chain{
 				Spec: aiv1alpha1.ChainSpec{
+					RoundTableRef: roundTableName,
 					Input: "initial-data",
 					Steps: []aiv1alpha1.ChainStep{
 						{Name: "step1", KnightRef: knightName, Task: "first"},
@@ -149,6 +175,7 @@ var _ = Describe("Chain Controller", func() {
 			r := newReconciler()
 			chain := &aiv1alpha1.Chain{
 				Spec: aiv1alpha1.ChainSpec{Steps: []aiv1alpha1.ChainStep{{Name: "a"}}},
+					RoundTableRef: roundTableName,
 			}
 			result, err := r.renderTemplate(chain, "plain task with no templates")
 			Expect(err).NotTo(HaveOccurred())
@@ -158,6 +185,7 @@ var _ = Describe("Chain Controller", func() {
 
 	Context("Reconciliation", func() {
 		BeforeEach(func() {
+			ensureRoundTable()
 			createKnight(knightName, "security")
 			createKnight(knightName2, "research")
 		})
@@ -240,6 +268,7 @@ var _ = Describe("Chain Controller", func() {
 			chain := &aiv1alpha1.Chain{
 				ObjectMeta: metav1.ObjectMeta{Name: chainName, Namespace: namespace},
 				Spec: aiv1alpha1.ChainSpec{
+					RoundTableRef: roundTableName,
 					Suspended: true,
 					Steps: []aiv1alpha1.ChainStep{
 						{Name: "scan", KnightRef: knightName, Task: "scan"},
@@ -263,6 +292,7 @@ var _ = Describe("Chain Controller", func() {
 			chain := &aiv1alpha1.Chain{
 				ObjectMeta: metav1.ObjectMeta{Name: chainName, Namespace: namespace},
 				Spec: aiv1alpha1.ChainSpec{
+					RoundTableRef: roundTableName,
 					Steps: []aiv1alpha1.ChainStep{
 						{Name: "start", KnightRef: knightName, Task: "begin"},
 						{Name: "branch-a", KnightRef: knightName, Task: "a", DependsOn: []string{"start"}},
@@ -371,6 +401,7 @@ var _ = Describe("Chain Controller", func() {
 		It("should default outputKnight to gawain", func() {
 			chain := &aiv1alpha1.Chain{
 				Spec: aiv1alpha1.ChainSpec{},
+					RoundTableRef: roundTableName,
 			}
 			knightName := chain.Spec.OutputKnight
 			if knightName == "" {
@@ -382,6 +413,7 @@ var _ = Describe("Chain Controller", func() {
 		It("should use specified outputKnight", func() {
 			chain := &aiv1alpha1.Chain{
 				Spec: aiv1alpha1.ChainSpec{
+					RoundTableRef: roundTableName,
 					OutputKnight: "lancelot",
 				},
 			}
@@ -398,6 +430,7 @@ var _ = Describe("Chain Controller", func() {
 			r := newReconciler()
 			chain := &aiv1alpha1.Chain{
 				Spec: aiv1alpha1.ChainSpec{
+					RoundTableRef: roundTableName,
 					Steps: []aiv1alpha1.ChainStep{
 						{Name: "a", KnightRef: knightName, Task: "task-a"},
 						{Name: "b", KnightRef: knightName, Task: "task-b"},
