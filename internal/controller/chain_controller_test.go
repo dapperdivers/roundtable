@@ -212,6 +212,7 @@ var _ = Describe("Chain Controller", func() {
 			chain := &aiv1alpha1.Chain{
 				ObjectMeta: metav1.ObjectMeta{Name: chainName, Namespace: namespace},
 				Spec: aiv1alpha1.ChainSpec{
+					RoundTableRef: roundTableName,
 					Steps: []aiv1alpha1.ChainStep{
 						{Name: "scan", KnightRef: knightName, Task: "scan the network"},
 					},
@@ -246,6 +247,7 @@ var _ = Describe("Chain Controller", func() {
 			chain := &aiv1alpha1.Chain{
 				ObjectMeta: metav1.ObjectMeta{Name: chainName, Namespace: namespace},
 				Spec: aiv1alpha1.ChainSpec{
+					RoundTableRef: roundTableName,
 					Steps: []aiv1alpha1.ChainStep{
 						{Name: "scan", KnightRef: "nonexistent-knight", Task: "scan"},
 					},
@@ -330,6 +332,7 @@ var _ = Describe("Chain Controller", func() {
 			chain := &aiv1alpha1.Chain{
 				ObjectMeta: metav1.ObjectMeta{Name: chainName, Namespace: namespace},
 				Spec: aiv1alpha1.ChainSpec{
+					RoundTableRef: roundTableName,
 					Steps: []aiv1alpha1.ChainStep{
 						{Name: "scan", KnightRef: knightName, Task: "scan"},
 					},
