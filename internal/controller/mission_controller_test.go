@@ -31,6 +31,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	aiv1alpha1 "github.com/dapperdivers/roundtable/api/v1alpha1"
+	missionpkg "github.com/dapperdivers/roundtable/internal/mission"
 )
 
 var _ = Describe("Mission Controller", func() {
@@ -273,6 +274,7 @@ var _ = Describe("Mission Controller", func() {
 		return &MissionReconciler{
 			Client: k8sClient,
 			Scheme: k8sClient.Scheme(),
+			Assembler: &missionpkg.KnightAssembler{Client: k8sClient, Scheme: k8sClient.Scheme()},
 		}
 	}
 

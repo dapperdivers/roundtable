@@ -30,6 +30,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	aiv1alpha1 "github.com/dapperdivers/roundtable/api/v1alpha1"
+	missionpkg "github.com/dapperdivers/roundtable/internal/mission"
 )
 
 var _ = Describe("Mission Integration Tests", func() {
@@ -161,6 +162,7 @@ var _ = Describe("Mission Integration Tests", func() {
 			r := &MissionReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
+				Assembler: &missionpkg.KnightAssembler{Client: k8sClient, Scheme: k8sClient.Scheme()},
 			}
 
 			// Phase 1: Pending (validation)
@@ -310,6 +312,7 @@ var _ = Describe("Mission Integration Tests", func() {
 			r := &MissionReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
+				Assembler: &missionpkg.KnightAssembler{Client: k8sClient, Scheme: k8sClient.Scheme()},
 			}
 
 			// Progress through phases until Active
@@ -463,6 +466,7 @@ var _ = Describe("Mission Integration Tests", func() {
 			r := &MissionReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
+				Assembler: &missionpkg.KnightAssembler{Client: k8sClient, Scheme: k8sClient.Scheme()},
 			}
 
 			// Progress through phases
@@ -624,6 +628,7 @@ var _ = Describe("Mission Integration Tests", func() {
 			r := &MissionReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
+				Assembler: &missionpkg.KnightAssembler{Client: k8sClient, Scheme: k8sClient.Scheme()},
 			}
 
 			// Progress to Active phase
@@ -762,6 +767,7 @@ var _ = Describe("Mission Integration Tests", func() {
 			r := &MissionReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
+				Assembler: &missionpkg.KnightAssembler{Client: k8sClient, Scheme: k8sClient.Scheme()},
 			}
 
 			// Progress to Active phase
