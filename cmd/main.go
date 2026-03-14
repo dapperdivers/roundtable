@@ -37,6 +37,7 @@ import (
 
 	aiv1alpha1 "github.com/dapperdivers/roundtable/api/v1alpha1"
 	"github.com/dapperdivers/roundtable/internal/controller"
+	natspkg "github.com/dapperdivers/roundtable/pkg/nats"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -178,6 +179,22 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Create shared NATS provider
+	natsConfig := natspkg.DefaultConfig()
+	// Allow override via environment variable
+	if natsURL := os.Getenv("NATS_URL"); natsURL != "" {
+		natsConfig.URL = natsURL
+	}
+	natsProvider := natspkg.NewProvider(natsConfig, ctrl.Log.WithName("nats"))
+	setupLog.Info("NATS provider initialized", "url", natsConfig.URL)
+
+	// Ensure cleanup on shutdown
+	defer func() {
+		if err := natsProvider.Close(); err != nil {
+			setupLog.Error(err, "Failed to close NATS provider")
+		}
+	}()
+
 	if err := (&controller.KnightReconciler{
 		Client:       mgr.GetClient(),
 		Scheme:       mgr.GetScheme(),
@@ -189,6 +206,7 @@ func main() {
 	if err := (&controller.ChainReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
+		NATS:   natsProvider,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "Chain")
 		os.Exit(1)
@@ -196,6 +214,7 @@ func main() {
 	if err := (&controller.RoundTableReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
+		NATS:   natsProvider,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "RoundTable")
 		os.Exit(1)
@@ -203,6 +222,7 @@ func main() {
 	if err := (&controller.MissionReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
+		NATS:   natsProvider,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "Mission")
 		os.Exit(1)
