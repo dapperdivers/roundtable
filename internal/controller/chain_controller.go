@@ -46,18 +46,9 @@ const (
 
 // natsConfig holds resolved NATS configuration for a chain's target RoundTable.
 type natsConfig struct {
-	SubjectPrefix string // e.g. "fleet-a" or "chelonian"
+	SubjectPrefix string // e.g. "table-prefix" or "chelonian"
 	TasksStream   string // e.g. "fleet_a_tasks" or "chelonian_tasks"
 	ResultsStream string // e.g. "fleet_a_results" or "chelonian_results"
-}
-
-// defaultNATSConfig is the fallback when no RoundTable is specified.
-// This is only used for legacy chains without a roundTableRef or missionRef.
-// New chains should always resolve config from their parent RoundTable CR.
-var defaultNATSConfig = natsConfig{
-	SubjectPrefix: "fleet-a",
-	TasksStream:   "fleet_a_tasks",
-	ResultsStream: "fleet_a_results",
 }
 
 // ChainReconciler reconciles a Chain object.
@@ -111,6 +102,21 @@ func (r *ChainReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		if err := r.Update(ctx, chain); err != nil {
 			return ctrl.Result{}, err
 		}
+	}
+
+	// Validate roundTableRef is present
+	if chain.Spec.RoundTableRef == "" && chain.Spec.MissionRef == "" {
+		meta.SetStatusCondition(&chain.Status.Conditions, metav1.Condition{
+			Type:               "Valid",
+			Status:             metav1.ConditionFalse,
+			Reason:             "MissingRoundTableRef",
+			Message:            "Chain must have either roundTableRef or missionRef configured",
+			ObservedGeneration: chain.Generation,
+		})
+		chain.Status.Phase = aiv1alpha1.ChainPhaseFailed
+		chain.Status.ObservedGeneration = chain.Generation
+		_ = r.Status().Update(ctx, chain)
+		return ctrl.Result{}, fmt.Errorf("chain %s/%s missing roundTableRef or missionRef", chain.Namespace, chain.Name)
 	}
 
 	// Validate knight refs
@@ -679,7 +685,7 @@ func (r *ChainReconciler) renderTemplate(chain *aiv1alpha1.Chain, taskStr string
 // Falls back to defaultNATSConfig if no roundTableRef is specified.
 func (r *ChainReconciler) resolveNATSConfig(ctx context.Context, chain *aiv1alpha1.Chain) (natsConfig, error) {
 	if chain.Spec.RoundTableRef == "" {
-		return defaultNATSConfig, nil
+		return natsConfig{}, fmt.Errorf("chain %s/%s has no roundTableRef configured", chain.Namespace, chain.Name)
 	}
 
 	rt := &aiv1alpha1.RoundTable{}
