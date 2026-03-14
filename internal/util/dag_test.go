@@ -60,7 +60,7 @@ func TestValidateDAG(t *testing.T) {
 				{Name: "step2", DependsOn: []string{"step1"}},
 			},
 			wantError: true,
-			errorMsg:  "circular dependency",
+			errorMsg:  "cycle",
 		},
 		{
 			name: "invalid: self-dependency",
@@ -68,7 +68,7 @@ func TestValidateDAG(t *testing.T) {
 				{Name: "step1", DependsOn: []string{"step1"}},
 			},
 			wantError: true,
-			errorMsg:  "circular dependency",
+			errorMsg:  "cycle",
 		},
 		{
 			name: "invalid: cycle in longer chain",
@@ -81,7 +81,7 @@ func TestValidateDAG(t *testing.T) {
 				{Name: "step2", DependsOn: []string{"step1", "step5"}}, // Creates cycle
 			},
 			wantError: true,
-			errorMsg:  "circular dependency",
+			errorMsg:  "cycle",
 		},
 		{
 			name: "invalid: unknown dependency",
@@ -90,7 +90,7 @@ func TestValidateDAG(t *testing.T) {
 				{Name: "step2", DependsOn: []string{"step1", "nonexistent"}},
 			},
 			wantError: true,
-			errorMsg:  "unknown node",
+			errorMsg:  "unknown step",
 		},
 		{
 			name: "valid: multiple independent roots",

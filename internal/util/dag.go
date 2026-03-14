@@ -26,7 +26,7 @@ func ValidateDAG(nodes []DAGNode) error {
 	for _, node := range nodes {
 		for _, dep := range node.DependsOn {
 			if !nodeNames[dep] {
-				return fmt.Errorf("node %q depends on unknown node %q", node.Name, dep)
+				return fmt.Errorf("step %q depends on unknown step %q", node.Name, dep)
 			}
 		}
 	}
@@ -72,7 +72,7 @@ func ValidateDAG(nodes []DAGNode) error {
 
 	// If we didn't visit all nodes, there's a cycle
 	if visited != len(nodes) {
-		return fmt.Errorf("circular dependency detected in DAG")
+		return fmt.Errorf("DAG contains a cycle")
 	}
 
 	return nil
