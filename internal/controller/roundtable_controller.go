@@ -46,7 +46,7 @@ func (r *RoundTableReconciler) natsClient() (natspkg.Client, error) {
 	if r.NATS == nil {
 		return nil, fmt.Errorf("NATS provider not configured")
 	}
-	return r.natsClient()
+	return r.NATS.Client()
 }
 
 // +kubebuilder:rbac:groups=ai.roundtable.io,resources=roundtables,verbs=get;list;watch;create;update;patch;delete
