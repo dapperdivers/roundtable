@@ -41,6 +41,14 @@ type RoundTableReconciler struct {
 	NATS *natspkg.Provider
 }
 
+// natsClient returns the shared NATS client, or an error if the provider is not configured.
+func (r *RoundTableReconciler) natsClient() (natspkg.Client, error) {
+	if r.NATS == nil {
+		return nil, fmt.Errorf("NATS provider not configured")
+	}
+	return r.natsClient()
+}
+
 // +kubebuilder:rbac:groups=ai.roundtable.io,resources=roundtables,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=ai.roundtable.io,resources=roundtables/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=ai.roundtable.io,resources=roundtables/finalizers,verbs=update
@@ -278,7 +286,7 @@ func (r *RoundTableReconciler) countActiveMissions(ctx context.Context, rt *aiv1
 // ensureStreams creates or verifies JetStream streams for this RoundTable.
 func (r *RoundTableReconciler) ensureStreams(ctx context.Context, rt *aiv1alpha1.RoundTable) error {
 	// Get shared NATS client
-	client, err := r.NATS.Client()
+	client, err := r.natsClient()
 	if err != nil {
 		return fmt.Errorf("failed to connect to NATS: %w", err)
 	}

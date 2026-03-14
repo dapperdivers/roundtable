@@ -355,7 +355,7 @@ func (r *MissionReconciler) ensurePlannerKnight(ctx context.Context, mission *ai
 func (r *MissionReconciler) dispatchPlanningTask(ctx context.Context, mission *aiv1alpha1.Mission, plannerKnight *aiv1alpha1.Knight) (string, error) {
 	log := logf.FromContext(ctx)
 
-	client, err := r.NATS.Client()
+	client, err := r.natsClient()
 	if err != nil {
 		return "", err
 	}
@@ -567,7 +567,7 @@ func (r *MissionReconciler) buildPlanningPrompt(ctx context.Context, mission *ai
 func (r *MissionReconciler) pollPlanningResult(ctx context.Context, mission *aiv1alpha1.Mission, taskID string) (*natspkg.TaskResult, error) {
 	log := logf.FromContext(ctx)
 
-	client, err := r.NATS.Client()
+	client, err := r.natsClient()
 	if err != nil {
 		return nil, err
 	}

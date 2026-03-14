@@ -72,6 +72,14 @@ type ChainReconciler struct {
 	cronEntries map[string]cron.EntryID
 }
 
+// natsClient returns the shared NATS client, or an error if the provider is not configured.
+func (r *ChainReconciler) natsClient() (natspkg.Client, error) {
+	if r.NATS == nil {
+		return nil, fmt.Errorf("NATS provider not configured")
+	}
+	return r.natsClient()
+}
+
 // +kubebuilder:rbac:groups=ai.roundtable.io,resources=chains,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=ai.roundtable.io,resources=chains/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=ai.roundtable.io,resources=chains/finalizers,verbs=update
@@ -688,7 +696,7 @@ func (r *ChainReconciler) resolveNATSConfig(ctx context.Context, chain *aiv1alph
 
 // publishTask publishes a task to NATS JetStream.
 func (r *ChainReconciler) publishTask(ctx context.Context, nc natsConfig, domain, knightName string, payload natspkg.TaskPayload) error {
-	client, err := r.NATS.Client()
+	client, err := r.natsClient()
 	if err != nil {
 		return err
 	}
@@ -702,7 +710,7 @@ func (r *ChainReconciler) publishTask(ctx context.Context, nc natsConfig, domain
 func (r *ChainReconciler) pollResult(ctx context.Context, nc natsConfig, chainName, stepName, taskID string) (*natspkg.TaskResult, error) {
 	log := logf.FromContext(ctx)
 
-	client, err := r.NATS.Client()
+	client, err := r.natsClient()
 	if err != nil {
 		return nil, err
 	}
@@ -863,7 +871,7 @@ func (r *ChainReconciler) renderOutputPath(chain *aiv1alpha1.Chain, step *aiv1al
 
 // writeArtifact dispatches a write task to the outputKnight.
 func (r *ChainReconciler) writeArtifact(ctx context.Context, nc natsConfig, chain *aiv1alpha1.Chain, stepName, outputPath, content string) error {
-	client, err := r.NATS.Client()
+	client, err := r.natsClient()
 	if err != nil {
 		return err
 	}
@@ -900,7 +908,7 @@ func (r *ChainReconciler) writeArtifact(ctx context.Context, nc natsConfig, chai
 func (r *ChainReconciler) storeStepOutputToKV(ctx context.Context, chainName, stepName, output, errStr, knight string, startedAt, completedAt *metav1.Time) {
 	log := logf.FromContext(ctx)
 
-	client, err := r.NATS.Client()
+	client, err := r.natsClient()
 	if err != nil {
 		log.Error(err, "Failed to connect NATS for KV store", "step", stepName)
 		return
@@ -938,7 +946,7 @@ func (r *ChainReconciler) storeStepOutputToKV(ctx context.Context, chainName, st
 func (r *ChainReconciler) restoreStepOutputsFromKV(ctx context.Context, chain *aiv1alpha1.Chain) int {
 	log := logf.FromContext(ctx)
 
-	client, err := r.NATS.Client()
+	client, err := r.natsClient()
 	if err != nil {
 		log.Error(err, "Failed to connect NATS for KV restore")
 		return 0

@@ -63,6 +63,14 @@ type MissionReconciler struct {
 	mu   sync.Mutex
 }
 
+// natsClient returns the shared NATS client, or an error if the provider is not configured.
+func (r *MissionReconciler) natsClient() (natspkg.Client, error) {
+	if r.NATS == nil {
+		return nil, fmt.Errorf("NATS provider not configured")
+	}
+	return r.natsClient()
+}
+
 // +kubebuilder:rbac:groups=ai.roundtable.io,resources=missions,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=ai.roundtable.io,resources=missions/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=ai.roundtable.io,resources=missions/finalizers,verbs=update
@@ -960,7 +968,7 @@ func (r *MissionReconciler) updateKnightStatuses(ctx context.Context, mission *a
 
 // publishBriefing publishes the mission briefing to NATS.
 func (r *MissionReconciler) publishBriefing(ctx context.Context, mission *aiv1alpha1.Mission) error {
-	client, err := r.NATS.Client()
+	client, err := r.natsClient()
 	if err != nil {
 		return err
 	}
@@ -1027,7 +1035,7 @@ func (r *MissionReconciler) publishBriefing(ctx context.Context, mission *aiv1al
 func (r *MissionReconciler) storeResultsToKV(ctx context.Context, mission *aiv1alpha1.Mission) error {
 	log := logf.FromContext(ctx)
 
-	client, err := r.NATS.Client()
+	client, err := r.natsClient()
 	if err != nil || !client.IsConnected() {
 		log.Info("NATS not available, skipping KV results storage")
 		return fmt.Errorf("NATS client not available: %w", err)
@@ -1755,7 +1763,7 @@ func (r *MissionReconciler) deleteEphemeralKnights(ctx context.Context, mission 
 
 // deleteNATSConsumers deletes all NATS consumers for this mission's streams (best effort).
 func (r *MissionReconciler) deleteNATSConsumers(ctx context.Context, mission *aiv1alpha1.Mission) error {
-	client, err := r.NATS.Client()
+	client, err := r.natsClient()
 	if err != nil {
 		return nil // Gracefully skip if no NATS client
 	}
@@ -1786,7 +1794,7 @@ func (r *MissionReconciler) deleteNATSConsumers(ctx context.Context, mission *ai
 
 // deleteNATSStreams deletes the mission's task and result streams.
 func (r *MissionReconciler) deleteNATSStreams(ctx context.Context, mission *aiv1alpha1.Mission) error {
-	client, err := r.NATS.Client()
+	client, err := r.natsClient()
 	if err != nil {
 		return nil // Gracefully skip if no NATS client
 	}
