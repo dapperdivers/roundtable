@@ -334,4 +334,3 @@ func (r *RoundTableReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Named("roundtable").
 		Complete(r)
 }
-

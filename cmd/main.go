@@ -230,6 +230,10 @@ func main() {
 		Scheme:  mgr.GetScheme(),
 		NATS:    natsProvider,
 		Planner: missionPlanner,
+		Assembler: &mission.KnightAssembler{
+			Client: mgr.GetClient(),
+			Scheme: mgr.GetScheme(),
+		},
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "Mission")
 		os.Exit(1)

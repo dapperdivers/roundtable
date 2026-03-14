@@ -59,7 +59,6 @@ func nixToolsHash(tools []string) string {
 	return hex.EncodeToString(h[:8]) // 16-char hex prefix
 }
 
-
 // KnightReconciler reconciles a Knight object
 type KnightReconciler struct {
 	client.Client
@@ -569,8 +568,6 @@ func (r *KnightReconciler) updateStatus(ctx context.Context, knight *aiv1alpha1.
 
 	return r.Status().Update(ctx, knight)
 }
-
-
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *KnightReconciler) SetupWithManager(mgr ctrl.Manager) error {

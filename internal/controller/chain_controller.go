@@ -196,13 +196,13 @@ func (r *ChainReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 			"newGen", chain.Generation)
 		chain.Status.Phase = aiv1alpha1.ChainPhaseIdle
 		r.initStepStatuses(chain)
-		
+
 		// Attempt to restore completed steps from NATS KV (resume capability)
 		restored := r.restoreStepOutputsFromKV(ctx, chain)
 		if restored > 0 {
 			log.Info("Restored step outputs from NATS KV after spec change", "restored", restored)
 		}
-		
+
 		chain.Status.ObservedGeneration = chain.Generation
 		return ctrl.Result{}, r.Status().Update(ctx, chain)
 	}
@@ -310,13 +310,13 @@ func (r *ChainReconciler) reconcileRunning(ctx context.Context, chain *aiv1alpha
 	if len(chain.Status.StepStatuses) == 0 {
 		log.Info("Initializing step statuses for manually triggered chain")
 		r.initStepStatuses(chain)
-		
+
 		// Attempt to restore completed steps from NATS KV (resume capability)
 		restored := r.restoreStepOutputsFromKV(ctx, chain)
 		if restored > 0 {
 			log.Info("Restored step outputs from NATS KV", "restored", restored)
 		}
-		
+
 		now := metav1.Now()
 		chain.Status.StartedAt = &now
 		chain.Status.ObservedGeneration = chain.Generation
@@ -579,13 +579,13 @@ func (r *ChainReconciler) reconcileRunning(ctx context.Context, chain *aiv1alpha
 	if allTerminal {
 		now := metav1.Now()
 		chain.Status.CompletedAt = &now
-		
+
 		// Count hard failures, soft failures, and successes
 		hardFailures := 0
 		softFailures := 0
 		succeededSteps := 0
 		totalSteps := len(chain.Status.StepStatuses)
-		
+
 		for _, ss := range chain.Status.StepStatuses {
 			if ss.Phase == aiv1alpha1.ChainStepPhaseSucceeded {
 				succeededSteps++
@@ -598,7 +598,7 @@ func (r *ChainReconciler) reconcileRunning(ctx context.Context, chain *aiv1alpha
 				}
 			}
 		}
-		
+
 		if hardFailures > 0 {
 			// At least one hard failure — chain fails
 			chain.Status.Phase = aiv1alpha1.ChainPhaseFailed
@@ -679,8 +679,6 @@ func (r *ChainReconciler) renderTemplate(chain *aiv1alpha1.Chain, taskStr string
 	return buf.String(), nil
 }
 
-
-
 // resolveNATSConfig looks up the chain's RoundTable and returns the NATS configuration.
 // Falls back to defaultNATSConfig if no roundTableRef is specified.
 func (r *ChainReconciler) resolveNATSConfig(ctx context.Context, chain *aiv1alpha1.Chain) (natsConfig, error) {
@@ -732,7 +730,7 @@ func (r *ChainReconciler) pollResult(ctx context.Context, nc natsConfig, chainNa
 
 	// Use ephemeral consumer with explicit ack (compatible with both Limits and WorkQueue retention)
 	consumerName := natspkg.ChainConsumerName(chainName, stepName)
-	
+
 	msg, err := client.PollMessage(subject, 2*time.Second,
 		natspkg.WithDurable(consumerName),
 		natspkg.WithAckExplicit(),
@@ -740,7 +738,7 @@ func (r *ChainReconciler) pollResult(ctx context.Context, nc natsConfig, chainNa
 		natspkg.WithDeliverAll(),
 		natspkg.WithFallbackAutoDetect(),
 	)
-	
+
 	// Clean up ephemeral consumer
 	defer func() {
 		_ = client.DeleteConsumer(nc.ResultsStream, consumerName)
@@ -1015,4 +1013,3 @@ func (r *ChainReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Named("chain").
 		Complete(r)
 }
-
