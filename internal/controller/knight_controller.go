@@ -22,6 +22,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -1007,7 +1008,12 @@ func deriveResultsPrefix(subjects []string) string {
 			return parts[0] + ".results"
 		}
 	}
-	return "fleet-a.results" // ultimate fallback for legacy knights without subjects
+	// Fallback: use env-configurable prefix for legacy knights without subjects
+	prefix := os.Getenv("NATS_DEFAULT_PREFIX")
+	if prefix == "" {
+		prefix = "fleet-a"
+	}
+	return prefix + ".results"
 }
 
 func capitalizeFirst(s string) string {

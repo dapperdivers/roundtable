@@ -21,6 +21,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"text/template"
@@ -50,13 +51,28 @@ type natsConfig struct {
 	ResultsStream string // e.g. "fleet_a_results" or "chelonian_results"
 }
 
-// defaultNATSConfig is the fallback when no RoundTable is specified.
+// defaultNATSConfig returns the fallback config when no RoundTable is specified.
 // This is only used for legacy chains without a roundTableRef or missionRef.
 // New chains should always resolve config from their parent RoundTable CR.
-var defaultNATSConfig = natsConfig{
-	SubjectPrefix: "fleet-a",
-	TasksStream:   "fleet_a_tasks",
-	ResultsStream: "fleet_a_results",
+// Values are read from environment variables to avoid hardcoding a specific table prefix.
+func defaultNATSConfig() natsConfig {
+	prefix := os.Getenv("NATS_DEFAULT_PREFIX")
+	if prefix == "" {
+		prefix = "fleet-a"
+	}
+	tasksStream := os.Getenv("NATS_DEFAULT_TASKS_STREAM")
+	if tasksStream == "" {
+		tasksStream = strings.ReplaceAll(prefix, "-", "_") + "_tasks"
+	}
+	resultsStream := os.Getenv("NATS_DEFAULT_RESULTS_STREAM")
+	if resultsStream == "" {
+		resultsStream = strings.ReplaceAll(prefix, "-", "_") + "_results"
+	}
+	return natsConfig{
+		SubjectPrefix: prefix,
+		TasksStream:   tasksStream,
+		ResultsStream: resultsStream,
+	}
 }
 
 // ChainReconciler reconciles a Chain object.
@@ -733,7 +749,7 @@ func (r *ChainReconciler) ensureNATS(ctx context.Context) error {
 // Falls back to defaultNATSConfig if no roundTableRef is specified.
 func (r *ChainReconciler) resolveNATSConfig(ctx context.Context, chain *aiv1alpha1.Chain) (natsConfig, error) {
 	if chain.Spec.RoundTableRef == "" {
-		return defaultNATSConfig, nil
+		return defaultNATSConfig(), nil
 	}
 
 	rt := &aiv1alpha1.RoundTable{}

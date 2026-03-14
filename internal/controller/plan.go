@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -578,7 +579,10 @@ func (r *MissionReconciler) pollPlanningResult(ctx context.Context, mission *aiv
 	// Derive the results stream and subject prefix from the planner knight's NATS config.
 	// The planner publishes to its own table's results stream, not the mission's.
 	resultsStream := plannerKnight.Spec.NATS.ResultsStream
-	subjectPrefix := "fleet-a" // fallback
+	subjectPrefix := os.Getenv("NATS_DEFAULT_PREFIX")
+	if subjectPrefix == "" {
+		subjectPrefix = "fleet-a" // legacy fallback
+	}
 	if len(plannerKnight.Spec.NATS.Subjects) > 0 {
 		// Extract prefix from first subject: "fleet-a.tasks.domain.>" → "fleet-a"
 		parts := strings.SplitN(plannerKnight.Spec.NATS.Subjects[0], ".tasks.", 2)
