@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dapperdivers/roundtable/internal/util"
 	"github.com/google/uuid"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -193,7 +194,7 @@ func (r *MissionReconciler) reconcilePlanning(ctx context.Context, mission *aiv1
 	if taskErr := result.GetError(); taskErr != "" {
 		log.Error(fmt.Errorf("%s", taskErr), "Planner knight returned error")
 		pr.Error = fmt.Sprintf("planner error: %s", taskErr)
-		pr.RawOutput = truncate(result.GetOutput(), 10000)
+		pr.RawOutput = util.Truncate(result.GetOutput(), 10000)
 		now := metav1.Now()
 		pr.CompletedAt = &now
 		return ctrl.Result{}, r.Status().Update(ctx, mission)
@@ -205,7 +206,7 @@ func (r *MissionReconciler) reconcilePlanning(ctx context.Context, mission *aiv1
 	if err != nil {
 		log.Error(err, "Failed to parse planner output")
 		pr.Error = fmt.Sprintf("failed to parse planner output: %v", err)
-		pr.RawOutput = truncate(output, 10000)
+		pr.RawOutput = util.Truncate(output, 10000)
 		now := metav1.Now()
 		pr.CompletedAt = &now
 		return ctrl.Result{}, r.Status().Update(ctx, mission)
@@ -215,7 +216,7 @@ func (r *MissionReconciler) reconcilePlanning(ctx context.Context, mission *aiv1
 	if err := r.validatePlan(ctx, mission, plan); err != nil {
 		log.Error(err, "Plan validation failed")
 		pr.Error = fmt.Sprintf("plan validation failed: %v", err)
-		pr.RawOutput = truncate(output, 10000)
+		pr.RawOutput = util.Truncate(output, 10000)
 		now := metav1.Now()
 		pr.CompletedAt = &now
 		return ctrl.Result{}, r.Status().Update(ctx, mission)
@@ -236,7 +237,7 @@ func (r *MissionReconciler) reconcilePlanning(ctx context.Context, mission *aiv1
 	pr.ChainsGenerated = int32(len(plan.Chains))
 	pr.KnightsGenerated = int32(len(plan.Knights))
 	pr.SkillsGenerated = int32(len(plan.Skills))
-	pr.RawOutput = truncate(output, 10000)
+	pr.RawOutput = util.Truncate(output, 10000)
 
 	log.Info("Planning completed successfully",
 		"chains", pr.ChainsGenerated,
@@ -745,7 +746,7 @@ func (r *MissionReconciler) validatePlan(ctx context.Context, mission *aiv1alpha
 		}
 
 		// Validate knight name is RFC 1123 compliant
-		if !isValidK8sName(k.Name) {
+		if !util.IsValidK8sName(k.Name) {
 			return fmt.Errorf("invalid knight name %q: must be RFC 1123 DNS label", k.Name)
 		}
 	}
@@ -762,7 +763,7 @@ func (r *MissionReconciler) validatePlan(ctx context.Context, mission *aiv1alpha
 		chainNames[chain.Name] = true
 
 		// Validate chain name
-		if !isValidK8sName(chain.Name) {
+		if !util.IsValidK8sName(chain.Name) {
 			return fmt.Errorf("invalid chain name %q: must be RFC 1123 DNS label", chain.Name)
 		}
 
@@ -799,7 +800,14 @@ func (r *MissionReconciler) validatePlan(ctx context.Context, mission *aiv1alpha
 		}
 
 		// Validate DAG (no cycles in dependencies)
-		if err := validateDAG(chain.Steps); err != nil {
+		nodes := make([]util.DAGNode, len(chain.Steps))
+		for i, step := range chain.Steps {
+			nodes[i] = util.DAGNode{
+				Name:      step.Name,
+				DependsOn: step.DependsOn,
+			}
+		}
+		if err := util.ValidateDAG(nodes); err != nil {
 			return fmt.Errorf("chain %q: %w", chain.Name, err)
 		}
 	}
@@ -816,7 +824,7 @@ func (r *MissionReconciler) validatePlan(ctx context.Context, mission *aiv1alpha
 		skillNames[skill.Name] = true
 
 		// Validate skill name is safe
-		if !isValidSkillName(skill.Name) {
+		if !util.IsValidSkillName(skill.Name) {
 			return fmt.Errorf("invalid skill name %q: must be alphanumeric with hyphens", skill.Name)
 		}
 	}
@@ -849,62 +857,6 @@ func (r *MissionReconciler) validateTemplateExists(ctx context.Context, mission 
 	}
 
 	return fmt.Errorf("template %q not found in mission or RoundTable", templateName)
-}
-
-// validateDAG checks that step dependencies form a valid directed acyclic graph.
-func validateDAG(steps []aiv1alpha1.ChainStep) error {
-	// Build dependency graph
-	graph := make(map[string][]string)
-	stepSet := make(map[string]bool)
-
-	for _, step := range steps {
-		stepSet[step.Name] = true
-		for _, dep := range step.DependsOn {
-			graph[dep] = append(graph[dep], step.Name)
-		}
-	}
-
-	// Verify all dependencies exist
-	for _, step := range steps {
-		for _, dep := range step.DependsOn {
-			if !stepSet[dep] {
-				return fmt.Errorf("step %q depends on unknown step %q", step.Name, dep)
-			}
-		}
-	}
-
-	// Detect cycles using DFS
-	visited := make(map[string]bool)
-	recStack := make(map[string]bool)
-
-	var hasCycle func(string) bool
-	hasCycle = func(node string) bool {
-		visited[node] = true
-		recStack[node] = true
-
-		for _, neighbor := range graph[node] {
-			if !visited[neighbor] {
-				if hasCycle(neighbor) {
-					return true
-				}
-			} else if recStack[neighbor] {
-				return true
-			}
-		}
-
-		recStack[node] = false
-		return false
-	}
-
-	for step := range stepSet {
-		if !visited[step] {
-			if hasCycle(step) {
-				return fmt.Errorf("circular dependency detected in steps")
-			}
-		}
-	}
-
-	return nil
 }
 
 // applyPlan applies the validated plan to the mission spec.
@@ -1046,54 +998,6 @@ func (r *MissionReconciler) createSkillConfigMaps(ctx context.Context, mission *
 	}
 
 	return nil
-}
-
-// isValidK8sName validates a name against RFC 1123 DNS label rules.
-func isValidK8sName(name string) bool {
-	if len(name) == 0 || len(name) > 63 {
-		return false
-	}
-	for i, c := range name {
-		if c >= 'a' && c <= 'z' {
-			continue
-		}
-		if c >= '0' && c <= '9' {
-			continue
-		}
-		if c == '-' && i > 0 && i < len(name)-1 {
-			continue
-		}
-		return false
-	}
-	return true
-}
-
-// isValidSkillName validates a skill name (alphanumeric with hyphens).
-func isValidSkillName(name string) bool {
-	if len(name) == 0 || len(name) > 63 {
-		return false
-	}
-	for _, c := range name {
-		if c >= 'a' && c <= 'z' {
-			continue
-		}
-		if c >= '0' && c <= '9' {
-			continue
-		}
-		if c == '-' {
-			continue
-		}
-		return false
-	}
-	return true
-}
-
-// truncate truncates a string to maxLen characters.
-func truncate(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
-	}
-	return s[:maxLen] + "... (truncated)"
 }
 
 // resolveRoundTable resolves the RoundTable for this mission.
