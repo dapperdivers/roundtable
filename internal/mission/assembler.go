@@ -363,9 +363,12 @@ func (a *KnightAssembler) buildEphemeralKnight(
 		Spec: *spec,
 	}
 
-	// Add role label if specified
+	// Add role label if specified — sanitize for K8s label constraints (63 chars, alphanumeric/dash/underscore/dot)
 	if mk.Role != "" {
-		knight.Labels[aiv1alpha1.LabelRole] = mk.Role
+		sanitized := sanitizeLabelValue(mk.Role)
+		if sanitized != "" {
+			knight.Labels[aiv1alpha1.LabelRole] = sanitized
+		}
 	}
 
 	return knight, nil
@@ -615,4 +618,35 @@ func (a *KnightAssembler) BuildEphemeralRoundTable(
 	rt.Spec.Policies.MaxKnights = knightCount
 
 	return rt
+}
+
+// sanitizeLabelValue ensures a string is a valid Kubernetes label value:
+// max 63 chars, alphanumeric/dash/underscore/dot, must start and end with alphanumeric.
+func sanitizeLabelValue(s string) string {
+	// Replace spaces and invalid chars with dashes
+	result := make([]byte, 0, len(s))
+	for _, c := range []byte(s) {
+		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.' {
+			result = append(result, c)
+		} else if c == ' ' {
+			result = append(result, '-')
+		}
+	}
+	// Truncate to 63 chars
+	if len(result) > 63 {
+		result = result[:63]
+	}
+	// Trim non-alphanumeric from start and end
+	s2 := string(result)
+	for len(s2) > 0 && !isAlphanumeric(s2[0]) {
+		s2 = s2[1:]
+	}
+	for len(s2) > 0 && !isAlphanumeric(s2[len(s2)-1]) {
+		s2 = s2[:len(s2)-1]
+	}
+	return s2
+}
+
+func isAlphanumeric(c byte) bool {
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
 }
