@@ -556,10 +556,11 @@ func (p *Planner) buildPlanningPrompt(ctx context.Context, mission *aiv1alpha1.M
 	sb.WriteString("4. Design each ephemeral knight's tools.nix for its specific role — pick the right nixpkgs (e.g. go, python3, nmap, gh, nodejs_22, ripgrep, gopls, golangci-lint, kubectl, terraform)\n")
 	sb.WriteString("5. Chain phases can be: Setup, Active, or Teardown\n")
 	sb.WriteString("6. Steps can use Go template syntax like {{ .Steps.step_name.Output }} to pass data between steps\n")
-	sb.WriteString("7. Use underscores (not hyphens) in step names — hyphens break Go templates\n")
-	sb.WriteString("8. Ensure step dependencies (dependsOn) form a valid DAG (no cycles)\n")
-	sb.WriteString("9. Keep task descriptions clear and actionable\n")
-	sb.WriteString("10. Return ONLY the JSON plan, no other text or explanation\n\n")
+	sb.WriteString("7. Use underscores (not hyphens) in STEP NAMES — hyphens break Go templates\n")
+	sb.WriteString("8. Use hyphens (not underscores) in KNIGHT NAMES — they become Kubernetes resource names (RFC 1123 DNS labels)\n")
+	sb.WriteString("9. Ensure step dependencies (dependsOn) form a valid DAG (no cycles)\n")
+	sb.WriteString("10. Keep task descriptions clear and actionable\n")
+	sb.WriteString("11. Return ONLY the JSON plan, no other text or explanation\n\n")
 
 	sb.WriteString("Generate the plan now:")
 

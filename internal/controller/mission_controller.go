@@ -743,8 +743,14 @@ func (r *MissionReconciler) transitionToTerminalPhase(ctx context.Context, missi
 	if mission.Status.Phase != aiv1alpha1.MissionPhaseSucceeded &&
 		mission.Status.Phase != aiv1alpha1.MissionPhaseFailed &&
 		mission.Status.Phase != aiv1alpha1.MissionPhaseExpired {
-		// Determine terminal phase from chain results
+		// Determine terminal phase from chain results and planning outcome
 		allSucceeded := true
+
+		// Check if planning failed
+		if mission.Status.Result != "" && strings.Contains(mission.Status.Result, "failed") {
+			allSucceeded = false
+		}
+
 		for _, cs := range mission.Status.ChainStatuses {
 			if cs.Phase == aiv1alpha1.ChainPhaseFailed {
 				allSucceeded = false
