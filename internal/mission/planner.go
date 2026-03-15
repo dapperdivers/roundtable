@@ -802,6 +802,11 @@ func (p *Planner) validateTemplateExists(ctx context.Context, mission *aiv1alpha
 	return fmt.Errorf("template %q not found in mission or RoundTable", templateName)
 }
 
+// sanitizeStepName replaces hyphens with underscores to ensure Go template compatibility.
+func sanitizeStepName(name string) string {
+	return strings.ReplaceAll(name, "-", "_")
+}
+
 // applyPlan applies the validated plan to the mission spec.
 func (p *Planner) applyPlan(ctx context.Context, mission *aiv1alpha1.Mission, plan *PlannerOutput) error {
 	log := logf.FromContext(ctx)
@@ -819,10 +824,46 @@ func (p *Planner) applyPlan(ctx context.Context, mission *aiv1alpha1.Mission, pl
 	}
 
 	for _, pc := range plan.Chains {
+		// Bug #83: Sanitize step names to replace hyphens with underscores
+		// Build mapping of old names to new sanitized names
+		nameMap := make(map[string]string)
+		sanitizedSteps := make([]aiv1alpha1.ChainStep, len(pc.Steps))
+		
+		for i, step := range pc.Steps {
+			oldName := step.Name
+			newName := sanitizeStepName(oldName)
+			nameMap[oldName] = newName
+			
+			sanitizedSteps[i] = step
+			sanitizedSteps[i].Name = newName
+		}
+		
+		// Sanitize dependsOn references and task templates
+		for i := range sanitizedSteps {
+			// Sanitize dependsOn array
+			if len(sanitizedSteps[i].DependsOn) > 0 {
+				sanitizedDeps := make([]string, len(sanitizedSteps[i].DependsOn))
+				for j, dep := range sanitizedSteps[i].DependsOn {
+					sanitizedDeps[j] = sanitizeStepName(dep)
+				}
+				sanitizedSteps[i].DependsOn = sanitizedDeps
+			}
+			
+			// Replace old hyphenated names in task templates with sanitized versions
+			task := sanitizedSteps[i].Task
+			for oldName, newName := range nameMap {
+				if oldName != newName {
+					// Replace template references like {{ .Steps.old-name.Output }}
+					task = strings.ReplaceAll(task, oldName, newName)
+				}
+			}
+			sanitizedSteps[i].Task = task
+		}
+
 		gc := aiv1alpha1.GeneratedChain{
 			Name:        pc.Name,
 			Description: pc.Description,
-			Steps:       pc.Steps,
+			Steps:       sanitizedSteps,
 			Phase:       pc.Phase,
 			Input:       pc.Input,
 			Timeout:     pc.Timeout,
@@ -850,10 +891,11 @@ func (p *Planner) applyPlan(ctx context.Context, mission *aiv1alpha1.Mission, pl
 				},
 			},
 			Spec: aiv1alpha1.ChainSpec{
-				Description: pc.Description,
-				Steps:       pc.Steps,
-				Input:       pc.Input,
-				MissionRef:  mission.Name,
+				Description:   pc.Description,
+				Steps:         sanitizedSteps,
+				Input:         pc.Input,
+				MissionRef:    mission.Name,
+				RoundTableRef: mission.Spec.RoundTableRef, // Bug #84: Inherit roundTableRef from parent Mission
 			},
 		}
 
@@ -871,7 +913,7 @@ func (p *Planner) applyPlan(ctx context.Context, mission *aiv1alpha1.Mission, pl
 			}
 			log.Info("Chain already exists, skipping", "chain", chainName)
 		} else {
-			log.Info("Created chain CR", "chain", chainName, "steps", len(pc.Steps))
+			log.Info("Created chain CR", "chain", chainName, "steps", len(sanitizedSteps))
 		}
 
 		mission.Spec.Chains = append(mission.Spec.Chains, aiv1alpha1.MissionChainRef{
