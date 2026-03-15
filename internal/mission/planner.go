@@ -455,7 +455,7 @@ func (p *Planner) buildPlanningPrompt(ctx context.Context, mission *aiv1alpha1.M
 				var knightList aiv1alpha1.KnightList
 				if err := p.Client.List(ctx, &knightList,
 					client.InNamespace(mission.Namespace),
-					client.MatchingLabels{"ai.roundtable.io/roundtable": rt.Name},
+					client.MatchingLabels{"ai.roundtable.io/table": rt.Name},
 				); err == nil && len(knightList.Items) > 0 {
 					if !existingFound {
 						sb.WriteString("Existing Knights Available (use ephemeral=false to recruit these):\n")
