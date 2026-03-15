@@ -421,6 +421,15 @@ func (r *MissionReconciler) reconcileBriefing(ctx context.Context, mission *aiv1
 		})
 	}
 
+	// Bug #3 Fix: Trigger mission-generated chains to Running phase.
+	// Generated chains remain in Idle after the planner creates them.
+	// The chain controller only triggers chains via cron schedule, so mission-generated
+	// chains need to be manually started by setting their status.phase to Running.
+	if err := r.triggerGeneratedChains(ctx, mission); err != nil {
+		log.Error(err, "Failed to trigger generated chains, will retry")
+		return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
+	}
+
 	mission.Status.Phase = aiv1alpha1.MissionPhaseActive
 	mission.Status.ObservedGeneration = mission.Generation
 	return ctrl.Result{RequeueAfter: 1 * time.Second}, r.Status().Update(ctx, mission)
@@ -1128,6 +1137,42 @@ func (r *MissionReconciler) ensureMissionChain(ctx context.Context, mission *aiv
 	}
 
 	log.Info("Created mission-scoped chain", "chain", missionChainName, "sourceChain", chainRef.Name)
+	return nil
+}
+
+// triggerGeneratedChains transitions all mission-generated chains from Idle to Running.
+// This is necessary because the chain controller only triggers chains via cron schedule,
+// and mission-generated chains have no schedule.
+func (r *MissionReconciler) triggerGeneratedChains(ctx context.Context, mission *aiv1alpha1.Mission) error {
+	log := logf.FromContext(ctx)
+
+	// Iterate all chains owned by this mission
+	chainList := &aiv1alpha1.ChainList{}
+	if err := r.List(ctx, chainList,
+		client.InNamespace(mission.Namespace),
+		client.MatchingLabels{aiv1alpha1.LabelMission: mission.Name},
+	); err != nil {
+		return fmt.Errorf("failed to list mission chains: %w", err)
+	}
+
+	for _, chain := range chainList.Items {
+		// Only trigger chains that are in Idle phase
+		if chain.Status.Phase != aiv1alpha1.ChainPhaseIdle && chain.Status.Phase != "" {
+			continue
+		}
+
+		// Transition to Running
+		log.Info("Triggering generated chain", "chain", chain.Name)
+		now := metav1.Now()
+		chain.Status.Phase = aiv1alpha1.ChainPhaseRunning
+		chain.Status.StartedAt = &now
+		if err := r.Status().Update(ctx, &chain); err != nil {
+			// Log but don't fail the mission - the chain controller will eventually reconcile
+			log.Error(err, "Failed to trigger chain (will retry)", "chain", chain.Name)
+			return fmt.Errorf("failed to trigger chain %s: %w", chain.Name, err)
+		}
+	}
+
 	return nil
 }
 
