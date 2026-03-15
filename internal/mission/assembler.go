@@ -280,8 +280,14 @@ func (a *KnightAssembler) applySpecOverrides(
 	if overrides.Model != "" {
 		spec.Model = overrides.Model
 	}
+	if overrides.Domain != "" {
+		spec.Domain = overrides.Domain
+	}
 	if overrides.Skills != nil {
 		spec.Skills = overrides.Skills
+	}
+	if overrides.Tools != nil {
+		spec.Tools = overrides.Tools
 	}
 	if overrides.Env != nil {
 		spec.Env = append(spec.Env, overrides.Env...)

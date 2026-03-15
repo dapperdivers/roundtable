@@ -327,9 +327,17 @@ type KnightSpecOverrides struct {
 	// +optional
 	Model string `json:"model,omitempty"`
 
+	// domain overrides the knight's domain.
+	// +optional
+	Domain string `json:"domain,omitempty"`
+
 	// skills overrides the skill list.
 	// +optional
 	Skills []string `json:"skills,omitempty"`
+
+	// tools overrides the knight's tool configuration (nix packages, apt, mise).
+	// +optional
+	Tools *KnightTools `json:"tools,omitempty"`
 
 	// env adds additional environment variables.
 	// +optional

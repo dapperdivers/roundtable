@@ -740,6 +740,9 @@ spec:
                           description: concurrency overrides max concurrent tasks.
                           format: int32
                           type: integer
+                        domain:
+                          description: domain overrides the knight's domain.
+                          type: string
                         env:
                           description: env adds additional environment variables.
                           items:
@@ -934,6 +937,30 @@ spec:
                           items:
                             type: string
                           type: array
+                        tools:
+                          description: tools overrides the knight's tool configuration
+                            (nix packages, apt, mise).
+                          properties:
+                            apt:
+                              description: apt is a list of apt packages to install
+                                (fallback, requires root — prefer nix).
+                              items:
+                                type: string
+                              type: array
+                            mise:
+                              description: mise is a list of tools to install via
+                                mise (e.g., "shodan", "kubectl").
+                              items:
+                                type: string
+                              type: array
+                            nix:
+                              description: |-
+                                nix is a list of nixpkgs packages to install via Nix flakes (e.g., "nmap", "whois", "dnsutils").
+                                These get compiled into a flake.nix and built on first boot, cached on the Nix PVC.
+                              items:
+                                type: string
+                              type: array
+                          type: object
                       type: object
                     templateRef:
                       description: |-
@@ -1938,6 +1965,9 @@ spec:
                           description: concurrency overrides max concurrent tasks.
                           format: int32
                           type: integer
+                        domain:
+                          description: domain overrides the knight's domain.
+                          type: string
                         env:
                           description: env adds additional environment variables.
                           items:
@@ -2132,6 +2162,30 @@ spec:
                           items:
                             type: string
                           type: array
+                        tools:
+                          description: tools overrides the knight's tool configuration
+                            (nix packages, apt, mise).
+                          properties:
+                            apt:
+                              description: apt is a list of apt packages to install
+                                (fallback, requires root — prefer nix).
+                              items:
+                                type: string
+                              type: array
+                            mise:
+                              description: mise is a list of tools to install via
+                                mise (e.g., "shodan", "kubectl").
+                              items:
+                                type: string
+                              type: array
+                            nix:
+                              description: |-
+                                nix is a list of nixpkgs packages to install via Nix flakes (e.g., "nmap", "whois", "dnsutils").
+                                These get compiled into a flake.nix and built on first boot, cached on the Nix PVC.
+                              items:
+                                type: string
+                              type: array
+                          type: object
                       type: object
                     templateRef:
                       description: |-
