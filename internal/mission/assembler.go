@@ -35,7 +35,8 @@ func (a *KnightAssembler) ReconcileAssembling(ctx context.Context, mission *aiv1
 	// When roundTableRef is set, provisioning is skipped, but ephemeral knights
 	// still need a mission-scoped SA for their pods.
 	hasEphemeral := false
-	for _, mk := range mission.Spec.Knights {
+	allKnightsForSA := append(mission.Spec.Knights, mission.Spec.GeneratedKnights...)
+	for _, mk := range allKnightsForSA {
 		if mk.Ephemeral {
 			hasEphemeral = true
 			break
