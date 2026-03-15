@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"k8s.io/apimachinery/pkg/api/meta"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -153,7 +154,10 @@ func (r *MissionReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	case aiv1alpha1.MissionPhaseActive:
 		return r.reconcileActive(ctx, mission)
 	case aiv1alpha1.MissionPhaseSucceeded, aiv1alpha1.MissionPhaseFailed:
-		// Transition to cleanup
+		// Only transition to cleanup if not already cleaned up (prevents infinite loop)
+		if meta.IsStatusConditionTrue(mission.Status.Conditions, "CleanupComplete") {
+			return ctrl.Result{}, nil
+		}
 		mission.Status.Phase = aiv1alpha1.MissionPhaseCleaningUp
 		mission.Status.ObservedGeneration = mission.Generation
 		return ctrl.Result{RequeueAfter: 5 * time.Second}, r.Status().Update(ctx, mission)
@@ -600,10 +604,12 @@ func (r *MissionReconciler) reconcileMissionChains(ctx context.Context, mission 
 			chain.Status.Phase = aiv1alpha1.ChainPhaseRunning
 			chain.Status.StartedAt = &now
 			if err := r.Status().Update(ctx, chain); err != nil {
-				// Conflict is transient — requeue, don't fail the mission
-				log.Info("Conflict triggering chain, will retry", "chain", missionChainName, "error", err)
-				allComplete = false
-				continue
+				if apierrors.IsConflict(err) {
+					log.Info("Conflict triggering chain, will retry", "chain", missionChainName)
+					allComplete = false
+					continue
+				}
+				return false, false, fmt.Errorf("failed to trigger chain %s: %w", missionChainName, err)
 			}
 			log.Info("Triggered mission chain", "chain", missionChainName)
 			r.updateChainStatus(mission, chainRef.Name, missionChainName, aiv1alpha1.ChainPhaseRunning)

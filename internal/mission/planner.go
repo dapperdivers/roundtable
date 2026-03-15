@@ -95,21 +95,21 @@ func (p *Planner) ReconcilePlanning(ctx context.Context, mission *aiv1alpha1.Mis
 		return ctrl.Result{}, p.Client.Status().Update(ctx, mission)
 	}
 
-	// Check if planning already completed
+	// Check for planning error first (terminal state — must precede CompletedAt check)
+	if pr.Error != "" {
+		log.Error(fmt.Errorf("%s", pr.Error), "Planning failed, marking mission as failed")
+		mission.Status.Phase = aiv1alpha1.MissionPhaseFailed
+		mission.Status.Result = fmt.Sprintf("Planning failed: %s", pr.Error)
+		mission.Status.ObservedGeneration = mission.Generation
+		return ctrl.Result{}, p.Client.Status().Update(ctx, mission)
+	}
+
+	// Check if planning already completed successfully
 	if pr.CompletedAt != nil {
 		log.Info("Planning already complete, transitioning to Assembling",
 			"chains", pr.ChainsGenerated,
 			"knights", pr.KnightsGenerated)
 		mission.Status.Phase = aiv1alpha1.MissionPhaseAssembling
-		mission.Status.ObservedGeneration = mission.Generation
-		return ctrl.Result{}, p.Client.Status().Update(ctx, mission)
-	}
-
-	// Check for planning error (terminal state)
-	if pr.Error != "" {
-		log.Error(fmt.Errorf("%s", pr.Error), "Planning failed, marking mission as failed")
-		mission.Status.Phase = aiv1alpha1.MissionPhaseFailed
-		mission.Status.Result = fmt.Sprintf("Planning failed: %s", pr.Error)
 		mission.Status.ObservedGeneration = mission.Generation
 		return ctrl.Result{}, p.Client.Status().Update(ctx, mission)
 	}
