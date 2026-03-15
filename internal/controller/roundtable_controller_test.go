@@ -468,9 +468,9 @@ var _ = Describe("RoundTable Controller", func() {
 					Name:      "mission-test-scanner",
 					Namespace: namespace,
 					Labels: map[string]string{
-						aiv1alpha1.LabelEphemeral:   "true",
-						aiv1alpha1.LabelMission:     "test-mission",
-						aiv1alpha1.LabelRoundTable:  ephemeralRT,
+						aiv1alpha1.LabelEphemeral:  "true",
+						aiv1alpha1.LabelMission:    "test-mission",
+						aiv1alpha1.LabelRoundTable: ephemeralRT,
 					},
 				},
 				Spec: aiv1alpha1.KnightSpec{
@@ -510,9 +510,9 @@ var _ = Describe("RoundTable Controller", func() {
 					Name:      "mission-test-scanner",
 					Namespace: namespace,
 					Labels: map[string]string{
-						aiv1alpha1.LabelEphemeral:   "true",
-						aiv1alpha1.LabelMission:     "test-mission",
-						aiv1alpha1.LabelRoundTable:  ephemeralRT,
+						aiv1alpha1.LabelEphemeral:  "true",
+						aiv1alpha1.LabelMission:    "test-mission",
+						aiv1alpha1.LabelRoundTable: ephemeralRT,
 					},
 				},
 				Spec: aiv1alpha1.KnightSpec{
@@ -536,9 +536,9 @@ var _ = Describe("RoundTable Controller", func() {
 					Name:      "mission-other-scanner",
 					Namespace: namespace,
 					Labels: map[string]string{
-						aiv1alpha1.LabelEphemeral:   "true",
-						aiv1alpha1.LabelMission:     "other-mission",
-						aiv1alpha1.LabelRoundTable:  "mission-other-xyz789",
+						aiv1alpha1.LabelEphemeral:  "true",
+						aiv1alpha1.LabelMission:    "other-mission",
+						aiv1alpha1.LabelRoundTable: "mission-other-xyz789",
 					},
 				},
 				Spec: aiv1alpha1.KnightSpec{

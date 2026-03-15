@@ -30,6 +30,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	aiv1alpha1 "github.com/dapperdivers/roundtable/api/v1alpha1"
+	missionpkg "github.com/dapperdivers/roundtable/internal/mission"
 )
 
 var _ = Describe("Mission Integration Tests", func() {
@@ -116,11 +117,11 @@ var _ = Describe("Mission Integration Tests", func() {
 					Description: "Test chain for integration",
 					Steps: []aiv1alpha1.ChainStep{
 						{
-							Name:       "step1",
-							KnightRef:  knightName,
-							Task:       "Echo hello",
-							Timeout:    60,
-							OutputKey:  "step1",
+							Name:      "step1",
+							KnightRef: knightName,
+							Task:      "Echo hello",
+							Timeout:   60,
+							OutputKey: "step1",
 						},
 					},
 					Timeout: 300,
@@ -161,6 +162,7 @@ var _ = Describe("Mission Integration Tests", func() {
 			r := &MissionReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
+				Assembler: &missionpkg.KnightAssembler{Client: k8sClient, Scheme: k8sClient.Scheme()},
 			}
 
 			// Phase 1: Pending (validation)
@@ -292,8 +294,8 @@ var _ = Describe("Mission Integration Tests", func() {
 					Namespace: namespace,
 				},
 				Spec: aiv1alpha1.MissionSpec{
-					Objective:       "Test budget enforcement",
-					CostBudgetUSD:   "1.00",
+					Objective:     "Test budget enforcement",
+					CostBudgetUSD: "1.00",
 					Knights: []aiv1alpha1.MissionKnight{
 						{
 							Name:      knightName,
@@ -310,6 +312,7 @@ var _ = Describe("Mission Integration Tests", func() {
 			r := &MissionReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
+				Assembler: &missionpkg.KnightAssembler{Client: k8sClient, Scheme: k8sClient.Scheme()},
 			}
 
 			// Progress through phases until Active
@@ -344,7 +347,7 @@ var _ = Describe("Mission Integration Tests", func() {
 			finalMission := &aiv1alpha1.Mission{}
 			Expect(k8sClient.Get(ctx, missionNN, finalMission)).To(Succeed())
 			Expect(finalMission.Status.Result).To(ContainSubstring("budget exceeded"))
-			
+
 			condition := meta.FindStatusCondition(finalMission.Status.Conditions, "Complete")
 			Expect(condition).NotTo(BeNil())
 			Expect(condition.Reason).To(Equal("OverBudget"))
@@ -370,7 +373,7 @@ var _ = Describe("Mission Integration Tests", func() {
 					// Get ConfigMap name before deletion
 					cmName := mission.Status.ResultsConfigMap
 					_ = k8sClient.Delete(ctx, mission)
-					
+
 					// Clean up ConfigMap
 					if cmName != "" {
 						cm := &corev1.ConfigMap{}
@@ -397,10 +400,10 @@ var _ = Describe("Mission Integration Tests", func() {
 					Namespace: namespace,
 				},
 				Spec: aiv1alpha1.KnightSpec{
-					Domain:      "general",
-					Model:       "claude-sonnet-4",
-					Skills:      []string{"general"},
-					NATS:        aiv1alpha1.KnightNATS{
+					Domain: "general",
+					Model:  "claude-sonnet-4",
+					Skills: []string{"general"},
+					NATS: aiv1alpha1.KnightNATS{
 						URL:           "nats://nats.test:4222",
 						Subjects:      []string{"test.tasks.>"},
 						Stream:        "test_tasks",
@@ -463,6 +466,7 @@ var _ = Describe("Mission Integration Tests", func() {
 			r := &MissionReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
+				Assembler: &missionpkg.KnightAssembler{Client: k8sClient, Scheme: k8sClient.Scheme()},
 			}
 
 			// Progress through phases
@@ -559,10 +563,10 @@ var _ = Describe("Mission Integration Tests", func() {
 					Namespace: namespace,
 				},
 				Spec: aiv1alpha1.KnightSpec{
-					Domain:      "general",
-					Model:       "claude-sonnet-4",
-					Skills:      []string{"general"},
-					NATS:        aiv1alpha1.KnightNATS{
+					Domain: "general",
+					Model:  "claude-sonnet-4",
+					Skills: []string{"general"},
+					NATS: aiv1alpha1.KnightNATS{
 						URL:           "nats://nats.test:4222",
 						Subjects:      []string{"test.tasks.>"},
 						Stream:        "test_tasks",
@@ -624,6 +628,7 @@ var _ = Describe("Mission Integration Tests", func() {
 			r := &MissionReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
+				Assembler: &missionpkg.KnightAssembler{Client: k8sClient, Scheme: k8sClient.Scheme()},
 			}
 
 			// Progress to Active phase
@@ -636,7 +641,7 @@ var _ = Describe("Mission Integration Tests", func() {
 			for _, cn := range []string{chainName1, chainName2} {
 				missionChainName := fmt.Sprintf("mission-%s-%s", missionName, cn)
 				mcNN := types.NamespacedName{Name: missionChainName, Namespace: namespace}
-				
+
 				mc := &aiv1alpha1.Chain{}
 				Eventually(func() error {
 					return k8sClient.Get(ctx, mcNN, mc)
@@ -644,7 +649,7 @@ var _ = Describe("Mission Integration Tests", func() {
 
 				// Verify missionRef would be set if field exists
 				// (Note: missionRef field may not exist yet in current CRD)
-				
+
 				// Verify roundTableRef set correctly
 				Expect(mc.Spec.RoundTableRef).To(Equal("test-rt"))
 
@@ -698,10 +703,10 @@ var _ = Describe("Mission Integration Tests", func() {
 					Namespace: namespace,
 				},
 				Spec: aiv1alpha1.KnightSpec{
-					Domain:      "general",
-					Model:       "claude-sonnet-4",
-					Skills:      []string{"general"},
-					NATS:        aiv1alpha1.KnightNATS{
+					Domain: "general",
+					Model:  "claude-sonnet-4",
+					Skills: []string{"general"},
+					NATS: aiv1alpha1.KnightNATS{
 						URL:           "nats://nats.test:4222",
 						Subjects:      []string{"test.tasks.>"},
 						Stream:        "test_tasks",
@@ -762,6 +767,7 @@ var _ = Describe("Mission Integration Tests", func() {
 			r := &MissionReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
+				Assembler: &missionpkg.KnightAssembler{Client: k8sClient, Scheme: k8sClient.Scheme()},
 			}
 
 			// Progress to Active phase
@@ -810,7 +816,7 @@ var _ = Describe("Mission Integration Tests", func() {
 			finalMission := &aiv1alpha1.Mission{}
 			Expect(k8sClient.Get(ctx, missionNN, finalMission)).To(Succeed())
 			Expect(finalMission.Status.ChainStatuses).To(HaveLen(2))
-			
+
 			// Find the statuses
 			var status1, status2 *aiv1alpha1.MissionChainStatus
 			for i := range finalMission.Status.ChainStatuses {
@@ -821,10 +827,10 @@ var _ = Describe("Mission Integration Tests", func() {
 					status2 = &finalMission.Status.ChainStatuses[i]
 				}
 			}
-			
+
 			Expect(status1).NotTo(BeNil())
 			Expect(status1.Phase).To(Equal(aiv1alpha1.ChainPhaseSucceeded))
-			
+
 			Expect(status2).NotTo(BeNil())
 			Expect(status2.Phase).To(Equal(aiv1alpha1.ChainPhaseFailed))
 		})

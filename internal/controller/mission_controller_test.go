@@ -31,6 +31,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	aiv1alpha1 "github.com/dapperdivers/roundtable/api/v1alpha1"
+	missionpkg "github.com/dapperdivers/roundtable/internal/mission"
 )
 
 var _ = Describe("Mission Controller", func() {
@@ -168,7 +169,6 @@ var _ = Describe("Mission Controller", func() {
 		}
 	}
 
-
 	// driveToPhase reconciles until the mission reaches targetPhase or maxIter is exceeded.
 	// Optional beforeReconcile callback runs before each reconcile (e.g., to make knights ready).
 	driveToPhase := func(r *MissionReconciler, targetPhase aiv1alpha1.MissionPhase, maxIter int, beforeReconcile ...func(aiv1alpha1.MissionPhase)) {
@@ -274,6 +274,7 @@ var _ = Describe("Mission Controller", func() {
 		return &MissionReconciler{
 			Client: k8sClient,
 			Scheme: k8sClient.Scheme(),
+			Assembler: &missionpkg.KnightAssembler{Client: k8sClient, Scheme: k8sClient.Scheme()},
 		}
 	}
 
@@ -633,9 +634,9 @@ var _ = Describe("Mission Controller", func() {
 			createKnight()
 			createChain()
 			createMission(aiv1alpha1.MissionSpec{
-				Objective:      "Test result retention",
-				RetainResults:  true,
-				RoundTableRef:  "test-rt",
+				Objective:     "Test result retention",
+				RetainResults: true,
+				RoundTableRef: "test-rt",
 				Knights: []aiv1alpha1.MissionKnight{
 					{Name: knightName, Role: "tester"},
 				},
@@ -1018,11 +1019,11 @@ var _ = Describe("Mission Controller", func() {
 				Expect(k8sClient.Get(ctx, ephemeralKnightNN, knight)).To(Succeed())
 
 				// Verify overrides applied
-				Expect(knight.Spec.Model).To(Equal("claude-sonnet-4-20250514")) // Overridden
+				Expect(knight.Spec.Model).To(Equal("claude-sonnet-4-20250514"))      // Overridden
 				Expect(knight.Spec.Skills).To(ConsistOf("security", "custom-skill")) // Overridden
-				Expect(knight.Spec.Concurrency).To(Equal(int32(5))) // Overridden
-				Expect(knight.Spec.Domain).To(Equal("security")) // From template
-				Expect(knight.Spec.TaskTimeout).To(Equal(int32(600))) // From template
+				Expect(knight.Spec.Concurrency).To(Equal(int32(5)))                  // Overridden
+				Expect(knight.Spec.Domain).To(Equal("security"))                     // From template
+				Expect(knight.Spec.TaskTimeout).To(Equal(int32(600)))                // From template
 
 				// Verify environment variables added
 				found := false
@@ -1078,11 +1079,11 @@ var _ = Describe("Mission Controller", func() {
 				Expect(k8sClient.Get(ctx, ephemeralKnightNN, knight)).To(Succeed())
 
 				// Verify mission-level template values (not RoundTable template values)
-				Expect(knight.Spec.Domain).To(Equal("incident-response")) // From mission template
-				Expect(knight.Spec.Model).To(Equal("claude-opus-4-20250514")) // From mission template
+				Expect(knight.Spec.Domain).To(Equal("incident-response"))                  // From mission template
+				Expect(knight.Spec.Model).To(Equal("claude-opus-4-20250514"))              // From mission template
 				Expect(knight.Spec.Skills).To(ConsistOf("forensics", "incident-response")) // From mission template
-				Expect(knight.Spec.Concurrency).To(Equal(int32(10))) // From mission template
-				Expect(knight.Spec.TaskTimeout).To(Equal(int32(900))) // From mission template
+				Expect(knight.Spec.Concurrency).To(Equal(int32(10)))                       // From mission template
+				Expect(knight.Spec.TaskTimeout).To(Equal(int32(900)))                      // From mission template
 
 				// Should NOT have RoundTable template values
 				Expect(knight.Spec.Domain).NotTo(Equal("security"))

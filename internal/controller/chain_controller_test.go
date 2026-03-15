@@ -149,7 +149,7 @@ var _ = Describe("Chain Controller", func() {
 			chain := &aiv1alpha1.Chain{
 				Spec: aiv1alpha1.ChainSpec{
 					RoundTableRef: roundTableName,
-					Input: "initial-data",
+					Input:         "initial-data",
 					Steps: []aiv1alpha1.ChainStep{
 						{Name: "step1", KnightRef: knightName, Task: "first"},
 						{Name: "step2", KnightRef: knightName, Task: `Analyze: {{ .Input }} and {{ index .Steps "step1" "Output" }}`},
@@ -174,7 +174,7 @@ var _ = Describe("Chain Controller", func() {
 			chain := &aiv1alpha1.Chain{
 				Spec: aiv1alpha1.ChainSpec{
 					RoundTableRef: roundTableName,
-					Steps: []aiv1alpha1.ChainStep{{Name: "a"}},
+					Steps:         []aiv1alpha1.ChainStep{{Name: "a"}},
 				},
 			}
 			result, err := r.renderTemplate(chain, "plain task with no templates")
@@ -271,7 +271,7 @@ var _ = Describe("Chain Controller", func() {
 				ObjectMeta: metav1.ObjectMeta{Name: chainName, Namespace: namespace},
 				Spec: aiv1alpha1.ChainSpec{
 					RoundTableRef: roundTableName,
-					Suspended: true,
+					Suspended:     true,
 					Steps: []aiv1alpha1.ChainStep{
 						{Name: "scan", KnightRef: knightName, Task: "scan"},
 					},
@@ -418,7 +418,7 @@ var _ = Describe("Chain Controller", func() {
 			chain := &aiv1alpha1.Chain{
 				Spec: aiv1alpha1.ChainSpec{
 					RoundTableRef: roundTableName,
-					OutputKnight: "lancelot",
+					OutputKnight:  "lancelot",
 				},
 			}
 			knightName := chain.Spec.OutputKnight
