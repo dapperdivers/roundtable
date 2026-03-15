@@ -869,6 +869,14 @@ func (p *Planner) applyPlan(ctx context.Context, mission *aiv1alpha1.Mission, pl
 		nameMap := make(map[string]string)
 		sanitizedSteps := make([]aiv1alpha1.ChainStep, len(pc.Steps))
 		
+		// Build a set of ephemeral knight names for knightRef prefixing
+		ephemeralKnights := make(map[string]bool)
+		for _, pk := range plan.Knights {
+			if pk.Ephemeral {
+				ephemeralKnights[pk.Name] = true
+			}
+		}
+
 		for i, step := range pc.Steps {
 			oldName := step.Name
 			newName := sanitizeStepName(oldName)
@@ -876,6 +884,11 @@ func (p *Planner) applyPlan(ctx context.Context, mission *aiv1alpha1.Mission, pl
 			
 			sanitizedSteps[i] = step
 			sanitizedSteps[i].Name = newName
+
+			// Prefix knightRef for ephemeral knights (they get mission-name prefix)
+			if ephemeralKnights[step.KnightRef] {
+				sanitizedSteps[i].KnightRef = fmt.Sprintf("%s-%s", mission.Name, step.KnightRef)
+			}
 		}
 		
 		// Sanitize dependsOn references and task templates
