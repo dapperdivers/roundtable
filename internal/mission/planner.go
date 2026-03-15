@@ -10,6 +10,7 @@ import (
 	"github.com/dapperdivers/roundtable/internal/util"
 	"github.com/google/uuid"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -83,6 +84,16 @@ func (p *Planner) ReconcilePlanning(ctx context.Context, mission *aiv1alpha1.Mis
 	}
 
 	pr := mission.Status.PlanningResult
+
+	// Bug #85: Check if plan has already been applied (idempotency guard)
+	// If PlanApplied condition is True, skip plan application and transition to Assembling
+	planAppliedCondition := meta.FindStatusCondition(mission.Status.Conditions, "PlanApplied")
+	if planAppliedCondition != nil && planAppliedCondition.Status == metav1.ConditionTrue {
+		log.Info("Plan already applied, transitioning to Assembling phase")
+		mission.Status.Phase = aiv1alpha1.MissionPhaseAssembling
+		mission.Status.ObservedGeneration = mission.Generation
+		return ctrl.Result{}, p.Client.Status().Update(ctx, mission)
+	}
 
 	// Check if planning already completed
 	if pr.CompletedAt != nil {
@@ -212,6 +223,15 @@ func (p *Planner) ReconcilePlanning(ctx context.Context, mission *aiv1alpha1.Mis
 	pr.SkillsGenerated = int32(len(plan.Skills))
 	pr.RawOutput = util.Truncate(output, 10000)
 
+	// Bug #85: Set PlanApplied condition to prevent duplicate applications on retry
+	meta.SetStatusCondition(&mission.Status.Conditions, metav1.Condition{
+		Type:    "PlanApplied",
+		Status:  metav1.ConditionTrue,
+		Reason:  "PlanningComplete",
+		Message: fmt.Sprintf("Generated %d chains, %d knights, %d skills", pr.ChainsGenerated, pr.KnightsGenerated, pr.SkillsGenerated),
+		ObservedGeneration: mission.Generation,
+	})
+
 	log.Info("Planning completed successfully",
 		"chains", pr.ChainsGenerated,
 		"knights", pr.KnightsGenerated,
@@ -220,11 +240,22 @@ func (p *Planner) ReconcilePlanning(ctx context.Context, mission *aiv1alpha1.Mis
 	// Clear temporary annotation
 	delete(mission.Annotations, "ai.roundtable.io/planning-task-id")
 
-	// Update spec and status together
+	// Bug #85: Update spec first, then combine phase transition with PlanApplied condition
+	// in a single status update to reduce conflict window
 	if err := p.Client.Update(ctx, mission); err != nil {
 		return ctrl.Result{}, err
 	}
-	return ctrl.Result{}, p.Client.Status().Update(ctx, mission)
+	
+	// Transition to Assembling phase with the PlanApplied condition in one update
+	mission.Status.Phase = aiv1alpha1.MissionPhaseAssembling
+	mission.Status.ObservedGeneration = mission.Generation
+	
+	if err := p.Client.Status().Update(ctx, mission); err != nil {
+		// If status update fails, return error for requeue with fresh object
+		return ctrl.Result{}, fmt.Errorf("failed to update mission status after plan application: %w", err)
+	}
+	
+	return ctrl.Result{}, nil
 }
 
 // ensurePlannerKnight creates or retrieves the planner knight.
