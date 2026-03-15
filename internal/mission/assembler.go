@@ -79,8 +79,13 @@ func (a *KnightAssembler) ReconcileAssembling(ctx context.Context, mission *aiv1
 	allReady := true
 	var notReadyKnights []string
 
-	// Process each knight in spec
-	for _, mk := range mission.Spec.Knights {
+	// Bug #1 Fix: Merge GeneratedKnights into the knight list being iterated.
+	// The planner writes recruited knights to mission.Spec.GeneratedKnights,
+	// but the assembler was only iterating mission.Spec.Knights.
+	allKnights := append(mission.Spec.Knights, mission.Spec.GeneratedKnights...)
+
+	// Process each knight in spec (including generated knights)
+	for _, mk := range allKnights {
 		if !mk.Ephemeral {
 			// Recruited knight - verify it exists and is Ready
 			existingKnight := &aiv1alpha1.Knight{}
@@ -193,16 +198,17 @@ func (a *KnightAssembler) ReconcileAssembling(ctx context.Context, mission *aiv1
 	}
 
 	// If all knights ready, transition to Briefing
-	if allReady && len(mission.Spec.Knights) > 0 {
+	totalKnights := len(allKnights)
+	if allReady && totalKnights > 0 {
 		log.Info("All knights assembled, transitioning to Briefing",
 			"mission", mission.Name,
-			"knightCount", len(mission.Spec.Knights))
+			"knightCount", totalKnights)
 
 		meta.SetStatusCondition(&mission.Status.Conditions, metav1.Condition{
 			Type:               "KnightsReady",
 			Status:             metav1.ConditionTrue,
 			Reason:             "AllKnightsReady",
-			Message:            fmt.Sprintf("All %d knights are ready", len(mission.Spec.Knights)),
+			Message:            fmt.Sprintf("All %d knights are ready", totalKnights),
 			ObservedGeneration: mission.Generation,
 		})
 		mission.Status.Phase = aiv1alpha1.MissionPhaseBriefing
@@ -213,7 +219,7 @@ func (a *KnightAssembler) ReconcileAssembling(ctx context.Context, mission *aiv1
 
 	// Not all ready yet, requeue to check again
 	log.Info("Waiting for knights to become ready",
-		"total", len(mission.Spec.Knights),
+		"total", totalKnights,
 		"notReady", len(notReadyKnights))
 
 	return ctrl.Result{RequeueAfter: 3 * time.Second}, nil

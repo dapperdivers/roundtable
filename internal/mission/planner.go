@@ -197,13 +197,14 @@ func (p *Planner) ReconcilePlanning(ctx context.Context, mission *aiv1alpha1.Mis
 	}
 
 	// Validate plan
+	// Bug #2 Fix: Do NOT set CompletedAt on validation failure.
+	// This allows the planner to retry instead of skipping to Assembling with 0 chains/knights.
 	if err := p.validatePlan(ctx, mission, plan); err != nil {
 		log.Error(err, "Plan validation failed")
 		pr.Error = fmt.Sprintf("plan validation failed: %v", err)
 		pr.RawOutput = util.Truncate(output, 10000)
-		now := metav1.Now()
-		pr.CompletedAt = &now
-		return ctrl.Result{}, p.Client.Status().Update(ctx, mission)
+		// Do NOT set pr.CompletedAt here - allow retry
+		return ctrl.Result{RequeueAfter: 10 * time.Second}, p.Client.Status().Update(ctx, mission)
 	}
 
 	// Apply plan to mission spec
