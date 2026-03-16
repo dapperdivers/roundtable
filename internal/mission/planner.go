@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/dapperdivers/roundtable/internal/util"
-	"github.com/google/uuid"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -146,7 +145,10 @@ func (p *Planner) ReconcilePlanning(ctx context.Context, mission *aiv1alpha1.Mis
 		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 	}
 
-	// Dispatch planning task if not already dispatched
+	// Dispatch planning task if not already dispatched.
+	// The deterministic taskID (mission name + generation) ensures that even
+	// if this block re-executes due to a status update conflict, the same
+	// taskID is published — preventing stream flooding.
 	if mission.Status.PlanningTaskID == "" {
 		taskID, err := p.dispatchPlanningTask(ctx, mission, plannerKnight)
 		if err != nil {
@@ -156,7 +158,14 @@ func (p *Planner) ReconcilePlanning(ctx context.Context, mission *aiv1alpha1.Mis
 		}
 		log.Info("Dispatched planning task", "taskID", taskID, "knight", plannerKnight.Name)
 		mission.Status.PlanningTaskID = taskID
-		return ctrl.Result{RequeueAfter: 5 * time.Second}, p.Client.Status().Update(ctx, mission)
+		if err := p.Client.Status().Update(ctx, mission); err != nil {
+			// Status update failed (likely conflict). Log but don't requeue
+			// aggressively — the deterministic taskID prevents duplicate work.
+			log.V(1).Info("Status update after dispatch failed, will retry on next reconcile",
+				"taskID", taskID, "error", err)
+			return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+		}
+		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 	}
 
 	// Poll for planning result
@@ -365,8 +374,12 @@ func (p *Planner) dispatchPlanningTask(ctx context.Context, mission *aiv1alpha1.
 		return "", err
 	}
 
-	// Generate unique task ID
-	taskID := fmt.Sprintf("planning-%s-%s", mission.Name, uuid.New().String()[:8])
+	// Generate deterministic task ID based on mission name + generation.
+	// This ensures idempotency: if the status update after dispatch fails and
+	// we re-enter this function, we publish the same taskID. Combined with
+	// NATS dedup window, this prevents flooding the stream on reconciliation
+	// loops (previously caused 5000+ duplicate messages).
+	taskID := fmt.Sprintf("planning-%s-gen%d", mission.Name, mission.Generation)
 
 	// Build planning prompt
 	prompt := p.buildPlanningPrompt(ctx, mission)
