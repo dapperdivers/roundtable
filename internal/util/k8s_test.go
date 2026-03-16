@@ -206,3 +206,30 @@ func TestIntstrPort(t *testing.T) {
 		})
 	}
 }
+
+func TestSanitizeK8sName(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"security_scanner", "security-scanner"},
+		{"report_writer", "report-writer"},
+		{"already-valid", "already-valid"},
+		{"MixedCase_Name", "mixedcase-name"},
+		{"__leading__", "leading"},
+		{"has spaces!", "hasspaces"},
+		{"", ""},
+		{"a", "a"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			got := SanitizeK8sName(tt.input)
+			if got != tt.expected {
+				t.Errorf("SanitizeK8sName(%q) = %q, want %q", tt.input, got, tt.expected)
+			}
+			if got != "" && !IsValidK8sName(got) {
+				t.Errorf("SanitizeK8sName(%q) = %q is not a valid K8s name", tt.input, got)
+			}
+		})
+	}
+}

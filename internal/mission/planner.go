@@ -722,7 +722,7 @@ func (p *Planner) validatePlan(ctx context.Context, mission *aiv1alpha1.Mission,
 	}
 
 	knightNames := make(map[string]bool)
-	for _, k := range plan.Knights {
+	for ki, k := range plan.Knights {
 		if k.Name == "" {
 			return fmt.Errorf("knight name is required")
 		}
@@ -753,7 +753,20 @@ func (p *Planner) validatePlan(ctx context.Context, mission *aiv1alpha1.Mission,
 		}
 
 		if !util.IsValidK8sName(k.Name) {
-			return fmt.Errorf("invalid knight name %q: must be RFC 1123 DNS label", k.Name)
+			sanitized := util.SanitizeK8sName(k.Name)
+			if sanitized == "" {
+				return fmt.Errorf("invalid knight name %q: cannot be sanitized to valid DNS label", k.Name)
+			}
+			log.Info("Auto-sanitized knight name", "original", k.Name, "sanitized", sanitized)
+			// Update all references to this knight in chain steps
+			for ci := range plan.Chains {
+				for si := range plan.Chains[ci].Steps {
+					if plan.Chains[ci].Steps[si].KnightRef == k.Name {
+						plan.Chains[ci].Steps[si].KnightRef = sanitized
+					}
+				}
+			}
+			plan.Knights[ki].Name = sanitized
 		}
 	}
 
@@ -768,7 +781,12 @@ func (p *Planner) validatePlan(ctx context.Context, mission *aiv1alpha1.Mission,
 		chainNames[chain.Name] = true
 
 		if !util.IsValidK8sName(chain.Name) {
-			return fmt.Errorf("invalid chain name %q: must be RFC 1123 DNS label", chain.Name)
+			sanitized := util.SanitizeK8sName(chain.Name)
+			if sanitized == "" {
+				return fmt.Errorf("invalid chain name %q: cannot be sanitized to valid DNS label", chain.Name)
+			}
+			log.Info("Auto-sanitized chain name", "original", chain.Name, "sanitized", sanitized)
+			plan.Chains[i].Name = sanitized
 		}
 
 		if chain.Phase != "" && chain.Phase != "Setup" && chain.Phase != "Active" && chain.Phase != "Teardown" {

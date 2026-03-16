@@ -1,9 +1,31 @@
 package util
 
 import (
+	"strings"
+
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 )
+
+// SanitizeK8sName converts a string to a valid RFC 1123 DNS label.
+// Replaces underscores with hyphens, lowercases, strips invalid chars,
+// and trims leading/trailing hyphens.
+func SanitizeK8sName(name string) string {
+	name = strings.ToLower(name)
+	name = strings.ReplaceAll(name, "_", "-")
+	var b strings.Builder
+	for _, c := range name {
+		if (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' {
+			b.WriteRune(c)
+		}
+	}
+	name = strings.Trim(b.String(), "-")
+	if len(name) > 63 {
+		name = name[:63]
+		name = strings.TrimRight(name, "-")
+	}
+	return name
+}
 
 // IsValidK8sName validates a name against RFC 1123 DNS label rules.
 // Names must be lowercase alphanumeric or '-', start and end with alphanumeric,
