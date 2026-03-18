@@ -519,7 +519,7 @@ func (r *KnightReconciler) buildPodSpec(ctx context.Context, k *aiv1alpha1.Knigh
 		WithGitSync()
 
 	// Optional capabilities
-	if k.Spec.Capabilities != nil && knight.Spec.Capabilities.Browser {
+	if k.Spec.Capabilities != nil && k.Spec.Capabilities.Browser {
 		builder.WithBrowser()
 	}
 
