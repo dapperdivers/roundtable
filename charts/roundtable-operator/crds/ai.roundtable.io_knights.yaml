@@ -82,6 +82,16 @@ spec:
                     description: repo is the git repository URL containing skills.
                     type: string
                 type: object
+              capabilities:
+                description: capabilities defines optional runtime capabilities
+                  for the knight pod.
+                properties:
+                  browser:
+                    description: browser enables a headless Chrome sidecar with
+                      CDP for web automation. When true, the operator injects a
+                      browser sidecar and sets BROWSER_ENABLED=true.
+                    type: boolean
+                type: object
               concurrency:
                 default: 2
                 description: concurrency is the maximum number of concurrent tasks
