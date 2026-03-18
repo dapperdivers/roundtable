@@ -370,7 +370,7 @@ func (b *PodBuilder) WithGitSync() *PodBuilder {
 func (b *PodBuilder) WithBrowser() *PodBuilder {
 	browserContainer := corev1.Container{
 		Name:  "browser",
-		Image: "ghcr.io/dapperdivers/knight-browser:latest",
+		Image: "docker.io/chromedp/headless-shell:latest",
 		Ports: []corev1.ContainerPort{
 			{ContainerPort: 9222, Name: "cdp", Protocol: corev1.ProtocolTCP},
 		},
@@ -393,7 +393,6 @@ func (b *PodBuilder) WithBrowser() *PodBuilder {
 			PeriodSeconds:       10,
 		},
 		SecurityContext: &corev1.SecurityContext{
-			RunAsNonRoot:             util.BoolPtr(true),
 			ReadOnlyRootFilesystem:   util.BoolPtr(false),
 			AllowPrivilegeEscalation: util.BoolPtr(false),
 		},
