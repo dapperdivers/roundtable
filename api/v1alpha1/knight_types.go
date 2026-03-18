@@ -81,6 +81,10 @@ type KnightSpec struct {
 	// +optional
 	Prompt *KnightPrompt `json:"prompt,omitempty"`
 
+	// capabilities configures optional runtime capabilities for the knight pod.
+	// +optional
+	Capabilities *KnightCapabilities `json:"capabilities,omitempty"`
+
 	// resources defines compute resource requirements for the knight container.
 	// +optional
 	Resources *KnightResources `json:"resources,omitempty"`
@@ -165,6 +169,14 @@ type KnightWorkspace struct {
 	// +kubebuilder:default="1Gi"
 	// +optional
 	Size string `json:"size,omitempty"`
+}
+
+// KnightCapabilities defines optional runtime capabilities for the knight pod.
+type KnightCapabilities struct {
+	// browser enables a headless Chrome sidecar with agent-browser CLI for web automation.
+	// When true, the operator injects a browser sidecar and sets BROWSER_ENABLED=true.
+	// +optional
+	Browser bool `json:"browser,omitempty"`
 }
 
 // KnightTools defines system-level tools the knight needs installed.

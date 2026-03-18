@@ -24,6 +24,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	aiv1alpha1 "github.com/dapperdivers/roundtable/api/v1alpha1"
@@ -365,6 +366,43 @@ func (b *PodBuilder) WithGitSync() *PodBuilder {
 	return b
 }
 
+// WithBrowser adds a headless Chrome sidecar with agent-browser for web automation.
+func (b *PodBuilder) WithBrowser() *PodBuilder {
+	browserContainer := corev1.Container{
+		Name:  "browser",
+		Image: "ghcr.io/dapperdivers/knight-browser:latest",
+		Ports: []corev1.ContainerPort{
+			{ContainerPort: 9222, Name: "cdp", Protocol: corev1.ProtocolTCP},
+		},
+		Resources: corev1.ResourceRequirements{
+			Requests: corev1.ResourceList{
+				corev1.ResourceCPU:    resource.MustParse("50m"),
+				corev1.ResourceMemory: resource.MustParse("128Mi"),
+			},
+			Limits: corev1.ResourceList{
+				corev1.ResourceMemory: resource.MustParse("512Mi"),
+			},
+		},
+		ReadinessProbe: &corev1.Probe{
+			ProbeHandler: corev1.ProbeHandler{
+				TCPSocket: &corev1.TCPSocketAction{
+					Port: intstr.FromInt32(9222),
+				},
+			},
+			InitialDelaySeconds: 5,
+			PeriodSeconds:       10,
+		},
+		SecurityContext: &corev1.SecurityContext{
+			RunAsNonRoot:             util.BoolPtr(true),
+			ReadOnlyRootFilesystem:   util.BoolPtr(false),
+			AllowPrivilegeEscalation: util.BoolPtr(false),
+		},
+	}
+
+	b.sidecars = append(b.sidecars, browserContainer)
+	return b
+}
+
 // Build assembles the complete PodSpec with all configured components.
 func (b *PodBuilder) Build(ctx context.Context) corev1.PodSpec {
 	// Determine image
@@ -391,6 +429,12 @@ func (b *PodBuilder) Build(ctx context.Context) corev1.PodSpec {
 		{Name: "METRICS_PORT", Value: "3000"},
 		{Name: "LOG_LEVEL", Value: "info"},
 		{Name: "TZ", Value: "America/Chicago"},
+	}
+
+	// Browser capability
+	if b.knight.Spec.Capabilities != nil && b.knight.Spec.Capabilities.Browser {
+		env = append(env, corev1.EnvVar{Name: "BROWSER_ENABLED", Value: "true"})
+		env = append(env, corev1.EnvVar{Name: "BROWSER_CDP_URL", Value: "http://localhost:9222"})
 	}
 
 	// Append user-defined env vars
