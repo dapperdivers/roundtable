@@ -423,9 +423,11 @@ func (r *ChainReconciler) reconcileRunning(ctx context.Context, chain *aiv1alpha
 						r.storeStepOutputToKV(ctx, chain.Name, ss.Name, resultOutput, resultErr, spec.KnightRef, ss.StartedAt, &now)
 					}
 
-					// Truncate CRD status output to avoid etcd bloat
-					if len(ss.Output) > 1000 {
-						ss.Output = ss.Output[:1000] + "\n\n... [truncated — full output in NATS KV bucket 'chain-outputs', key '" + chain.Name + "." + ss.Name + "']"
+					// Truncate CRD status output to avoid etcd bloat (4000 chars allows
+				// meaningful summaries for template resolution while staying well
+				// under etcd's 1.5MB object limit — 10 steps × 4KB = 40KB max)
+					if len(ss.Output) > 4000 {
+						ss.Output = ss.Output[:4000] + "\n\n... [truncated — full output in NATS KV bucket 'chain-outputs', key '" + chain.Name + "." + ss.Name + "']"
 					}
 
 					// Best-effort artifact write if outputPath is set
@@ -986,8 +988,8 @@ func (r *ChainReconciler) restoreStepOutputsFromKV(ctx context.Context, chain *a
 		} else {
 			ss.Phase = aiv1alpha1.ChainStepPhaseSucceeded
 			ss.Output = output
-			if len(ss.Output) > 1000 {
-				ss.Output = ss.Output[:1000] + "\n\n... [truncated — full output in NATS KV bucket 'chain-outputs', key '" + chain.Name + "." + ss.Name + "']"
+			if len(ss.Output) > 4000 {
+				ss.Output = ss.Output[:4000] + "\n\n... [truncated — full output in NATS KV bucket 'chain-outputs', key '" + chain.Name + "." + ss.Name + "']"
 			}
 			log.Info("Restored successful step from KV", "step", ss.Name, "outputLen", len(output))
 		}
