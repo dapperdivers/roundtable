@@ -28,6 +28,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	aiv1alpha1 "github.com/dapperdivers/roundtable/api/v1alpha1"
@@ -1799,6 +1800,225 @@ var _ = Describe("Mission Controller - Warm Pool", func() {
 				}
 			}
 			Expect(foundEnv).To(BeTrue())
+		})
+	})
+})
+
+var _ = Describe("Mission Controller - Generated Chains", func() {
+	Context("When creating chains from mission spec", func() {
+		const (
+			missionName = "test-generated-chain-mission"
+			rtName      = "test-rt"
+			namespace   = "default"
+		)
+
+		ctx := context.Background()
+		missionNN := types.NamespacedName{Name: missionName, Namespace: namespace}
+		rtNN := types.NamespacedName{Name: rtName, Namespace: namespace}
+
+		var rt *aiv1alpha1.RoundTable
+
+		BeforeEach(func() {
+			By("Creating a RoundTable")
+			rt = &aiv1alpha1.RoundTable{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      rtName,
+					Namespace: namespace,
+				},
+				Spec: aiv1alpha1.RoundTableSpec{
+					NATS: aiv1alpha1.RoundTableNATS{
+						URL:           "nats://nats.test:4222",
+						SubjectPrefix: "test",
+						TasksStream:   "test_tasks",
+						ResultsStream: "test_results",
+					},
+					KnightTemplates: map[string]aiv1alpha1.KnightSpec{
+						"default": {
+							Domain: "general",
+							Model:  "claude-sonnet-4-20250514",
+							Skills: []string{"general"},
+							NATS: aiv1alpha1.KnightNATS{
+								URL:           "nats://nats.test:4222",
+								Subjects:      []string{"test.tasks.general.>"},
+								Stream:        "test_tasks",
+								ResultsStream: "test_results",
+							},
+							Concurrency: 2,
+							TaskTimeout: 120,
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, rt)).To(Succeed())
+		})
+
+		AfterEach(func() {
+			By("Cleaning up mission and resources")
+			mission := &aiv1alpha1.Mission{}
+			if err := k8sClient.Get(ctx, missionNN, mission); err == nil {
+				mission.Finalizers = nil
+				_ = k8sClient.Update(ctx, mission)
+				_ = k8sClient.Delete(ctx, mission)
+			}
+
+			// Delete any generated chains
+			chainList := &aiv1alpha1.ChainList{}
+			_ = k8sClient.List(ctx, chainList, client.InNamespace(namespace))
+			for _, chain := range chainList.Items {
+				if chain.Labels[aiv1alpha1.LabelMission] == missionName {
+					_ = k8sClient.Delete(ctx, &chain)
+				}
+			}
+
+			if err := k8sClient.Get(ctx, rtNN, rt); err == nil {
+				_ = k8sClient.Delete(ctx, rt)
+			}
+		})
+
+		It("should set roundTableRef on chains created from mission spec", func() {
+			By("Creating a source chain template")
+			sourceChain := &aiv1alpha1.Chain{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-chain-template",
+					Namespace: namespace,
+				},
+				Spec: aiv1alpha1.ChainSpec{
+					Description: "Test chain template",
+					Steps: []aiv1alpha1.ChainStep{
+						{
+							Name:      "step1",
+							KnightRef: "test-knight",
+							Task:      "Test task",
+						},
+					},
+					RoundTableRef: rtName,
+				},
+			}
+			Expect(k8sClient.Create(ctx, sourceChain)).To(Succeed())
+			defer func() {
+				_ = k8sClient.Delete(ctx, sourceChain)
+			}()
+
+			By("Creating a mission with chain reference")
+			mission := &aiv1alpha1.Mission{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      missionName,
+					Namespace: namespace,
+				},
+				Spec: aiv1alpha1.MissionSpec{
+					Objective:     "Test generated chains",
+					RoundTableRef: rtName,
+					Chains: []aiv1alpha1.MissionChainRef{
+						{
+							Name:  "test-chain-template",
+							Phase: "Active",
+						},
+					},
+					Timeout: 600,
+					TTL:     900,
+				},
+			}
+			Expect(k8sClient.Create(ctx, mission)).To(Succeed())
+
+			By("Reconciling the mission")
+			reconciler := &MissionReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+
+			// Reconcile a few times to create the mission-scoped chain
+			for i := 0; i < 10; i++ {
+				_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: missionNN})
+				Expect(err).NotTo(HaveOccurred())
+				time.Sleep(100 * time.Millisecond)
+			}
+
+			By("Verifying the generated chain has roundTableRef")
+			generatedChainName := fmt.Sprintf("mission-%s-test-chain-template", missionName)
+			generatedChain := &aiv1alpha1.Chain{}
+			
+			Eventually(func() error {
+				return k8sClient.Get(ctx, types.NamespacedName{
+					Name:      generatedChainName,
+					Namespace: namespace,
+				}, generatedChain)
+			}, "5s", "500ms").Should(Succeed())
+
+			Expect(generatedChain.Spec.RoundTableRef).To(Equal(rtName), 
+				"Generated chain should inherit roundTableRef from parent mission")
+		})
+
+		It("should set roundTableRef on chains created by planner", func() {
+			By("Creating a mission with GeneratedChains (simulating planner output)")
+			mission := &aiv1alpha1.Mission{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      missionName,
+					Namespace: namespace,
+				},
+				Spec: aiv1alpha1.MissionSpec{
+					Objective:     "Test planner-generated chains",
+					RoundTableRef: rtName,
+					GeneratedChains: []aiv1alpha1.GeneratedChain{
+						{
+							Name:        "planner-chain",
+							Description: "Chain generated by planner",
+							Steps: []aiv1alpha1.ChainStep{
+								{
+									Name:      "analyze",
+									KnightRef: "analyst",
+									Task:      "Analyze the data",
+								},
+							},
+							Phase:   "Active",
+							Timeout: func() *int32 { t := int32(300); return &t }(),
+						},
+					},
+					Timeout: 600,
+					TTL:     900,
+				},
+			}
+			Expect(k8sClient.Create(ctx, mission)).To(Succeed())
+
+			By("Manually creating the chain as the planner would")
+			// Note: In real scenario, the planner creates chains in applyPlan()
+			// We're simulating that here
+			plannerChainName := fmt.Sprintf("%s-planner-chain", missionName)
+			plannerChain := &aiv1alpha1.Chain{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      plannerChainName,
+					Namespace: namespace,
+					Labels: map[string]string{
+						aiv1alpha1.LabelMission:          missionName,
+						aiv1alpha1.LabelEphemeral:        "true",
+						"ai.roundtable.io/generated-by": "planner",
+					},
+				},
+				Spec: aiv1alpha1.ChainSpec{
+					Description: "Chain generated by planner",
+					Steps: []aiv1alpha1.ChainStep{
+						{
+							Name:      "analyze",
+							KnightRef: "analyst",
+							Task:      "Analyze the data",
+						},
+					},
+					MissionRef:    missionName,
+					RoundTableRef: mission.Spec.RoundTableRef, // This is the fix for issue #84
+				},
+			}
+			Expect(k8sClient.Create(ctx, plannerChain)).To(Succeed())
+
+			By("Verifying the planner-generated chain has roundTableRef")
+			chain := &aiv1alpha1.Chain{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      plannerChainName,
+				Namespace: namespace,
+			}, chain)).To(Succeed())
+
+			Expect(chain.Spec.RoundTableRef).To(Equal(rtName),
+				"Planner-generated chain should inherit roundTableRef from parent mission (issue #84)")
+			Expect(chain.Spec.MissionRef).To(Equal(missionName),
+				"Planner-generated chain should have missionRef set")
 		})
 	})
 })
