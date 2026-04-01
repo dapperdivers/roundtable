@@ -38,6 +38,7 @@ import (
 	aiv1alpha1 "github.com/dapperdivers/roundtable/api/v1alpha1"
 	knightpkg "github.com/dapperdivers/roundtable/internal/knight"
 	rtruntime "github.com/dapperdivers/roundtable/pkg/runtime"
+	sandboxv1alpha1 "sigs.k8s.io/agent-sandbox/api/v1alpha1"
 )
 
 const (
@@ -58,6 +59,11 @@ type KnightReconciler struct {
 	// suspend/resume to this backend. When nil, falls back to the
 	// inline reconcileDeployment / reconcileSuspended methods.
 	RuntimeBackend rtruntime.RuntimeBackend
+
+	// RuntimeBackends maps runtime type names to their backend implementations.
+	// The controller selects the backend based on knight.Spec.Runtime.
+	// If nil or the key is missing, falls back to RuntimeBackend.
+	RuntimeBackends map[string]rtruntime.RuntimeBackend
 }
 
 // +kubebuilder:rbac:groups=ai.roundtable.io,resources=knights,verbs=get;list;watch;create;update;patch;delete
@@ -110,10 +116,13 @@ func (r *KnightReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		}
 	}
 
+	// Resolve the runtime backend for this knight
+	backend := r.runtimeBackendFor(knight)
+
 	// Handle suspended state
 	if knight.Spec.Suspended {
-		if r.RuntimeBackend != nil {
-			if err := r.RuntimeBackend.Suspend(ctx, knight); err != nil {
+		if backend != nil {
+			if err := backend.Suspend(ctx, knight); err != nil {
 				return ctrl.Result{}, err
 			}
 			return r.finishSuspended(ctx, knight)
@@ -136,11 +145,11 @@ func (r *KnightReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		log.Error(err, "Failed to reconcile PVC")
 	}
 
-	// 3. Deployment (pi-knight + skill-filter sidecar)
-	if r.RuntimeBackend != nil {
-		if err := r.RuntimeBackend.Reconcile(ctx, knight); err != nil {
+	// 3. Runtime (Deployment or Sandbox, depending on knight.Spec.Runtime)
+	if backend != nil {
+		if err := backend.Reconcile(ctx, knight); err != nil {
 			reconcileErr = err
-			log.Error(err, "Failed to reconcile Deployment via RuntimeBackend")
+			log.Error(err, "Failed to reconcile runtime", "backend", knight.Spec.Runtime)
 		}
 	} else {
 		if err := r.reconcileDeployment(ctx, knight); err != nil {
@@ -465,7 +474,7 @@ func (r *KnightReconciler) reconcileDeployment(ctx context.Context, knight *aiv1
 		podAnnotations[nixToolsHashAnnotation] = knightpkg.NixToolsHash(knight.Spec.Tools.Nix)
 	}
 	desired.Spec.Template.ObjectMeta.Annotations = podAnnotations
-	desired.Spec.Template.Spec = r.buildPodSpec(ctx, knight)
+	desired.Spec.Template.Spec = r.BuildPodSpec(ctx, knight)
 
 	// Compute hash of desired state
 	desiredHash := knightpkg.DeploymentSpecHash(desired)
@@ -509,7 +518,7 @@ func (r *KnightReconciler) reconcileDeployment(ctx context.Context, knight *aiv1
 		podAnnotations[specHashAnnotation] = desiredHash
 		deploy.Spec.Template.ObjectMeta.Annotations = podAnnotations
 
-		deploy.Spec.Template.Spec = r.buildPodSpec(ctx, knight)
+		deploy.Spec.Template.Spec = r.BuildPodSpec(ctx, knight)
 
 		return nil
 	})
@@ -547,13 +556,14 @@ func (r *KnightReconciler) BuildDeploymentSpec(ctx context.Context, knight *aiv1
 			ObjectMeta: metav1.ObjectMeta{
 				Labels: labels,
 			},
-			Spec: r.buildPodSpec(ctx, knight),
+			Spec: r.BuildPodSpec(ctx, knight),
 		},
 	}
 }
 
-// buildPodSpec constructs the complete pod spec for a knight using the composable builder.
-func (r *KnightReconciler) buildPodSpec(ctx context.Context, k *aiv1alpha1.Knight) corev1.PodSpec {
+// BuildPodSpec constructs the complete pod spec for a knight using the composable builder.
+// Exported so it can be passed to RuntimeBackend implementations (e.g., SandboxBackend).
+func (r *KnightReconciler) BuildPodSpec(ctx context.Context, k *aiv1alpha1.Knight) corev1.PodSpec {
 	configMapName := fmt.Sprintf("knight-%s-config", k.Name)
 
 	builder := knightpkg.NewPodBuilder(k, r.DefaultImage).
@@ -577,9 +587,10 @@ func (r *KnightReconciler) buildPodSpec(ctx context.Context, k *aiv1alpha1.Knigh
 
 func (r *KnightReconciler) updateStatus(ctx context.Context, knight *aiv1alpha1.Knight, reconcileErr error) error {
 	// Check deployment readiness — prefer RuntimeBackend if available
+	backend := r.runtimeBackendFor(knight)
 	var isReady bool
-	if r.RuntimeBackend != nil {
-		ready, err := r.RuntimeBackend.IsReady(ctx, knight)
+	if backend != nil {
+		ready, err := backend.IsReady(ctx, knight)
 		if err == nil {
 			isReady = ready
 		}
@@ -633,6 +644,18 @@ func (r *KnightReconciler) updateStatus(ctx context.Context, knight *aiv1alpha1.
 	return r.Status().Update(ctx, knight)
 }
 
+// runtimeBackendFor returns the appropriate RuntimeBackend for a Knight.
+// It checks knight.Spec.Runtime against the RuntimeBackends map, falling back
+// to the default RuntimeBackend, and finally to nil (inline reconciliation).
+func (r *KnightReconciler) runtimeBackendFor(knight *aiv1alpha1.Knight) rtruntime.RuntimeBackend {
+	if r.RuntimeBackends != nil && knight.Spec.Runtime != "" {
+		if backend, ok := r.RuntimeBackends[knight.Spec.Runtime]; ok {
+			return backend
+		}
+	}
+	return r.RuntimeBackend
+}
+
 // SetupWithManager sets up the controller with the Manager.
 func (r *KnightReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
@@ -640,6 +663,7 @@ func (r *KnightReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&appsv1.Deployment{}).
 		Owns(&corev1.PersistentVolumeClaim{}).
 		Owns(&corev1.ConfigMap{}).
+		Owns(&sandboxv1alpha1.Sandbox{}).
 		Named("knight").
 		Complete(r)
 }
