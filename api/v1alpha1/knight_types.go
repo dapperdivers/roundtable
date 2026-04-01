@@ -35,6 +35,15 @@ const (
 
 	// LabelRole specifies a knight's role within a mission
 	LabelRole = "ai.roundtable.io/role"
+
+	// LabelWarmPool marks a knight as belonging to the warm pool
+	LabelWarmPool = "ai.roundtable.io/warm-pool"
+
+	// LabelWarmPoolClaimed marks a warm pool knight as claimed by a mission
+	LabelWarmPoolClaimed = "ai.roundtable.io/warm-pool-claimed"
+
+	// AnnotationWarmPoolCreatedAt tracks when a warm pool knight was created (for idle recycling)
+	AnnotationWarmPoolCreatedAt = "ai.roundtable.io/warm-pool-created-at"
 )
 
 // KnightSpec defines the desired state of a Knight — an AI agent in the Round Table.

@@ -18,6 +18,8 @@ package controller
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"strconv"
 	"time"
@@ -27,6 +29,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	aiv1alpha1 "github.com/dapperdivers/roundtable/api/v1alpha1"
@@ -52,7 +55,7 @@ func (r *RoundTableReconciler) natsClient() (natspkg.Client, error) {
 // +kubebuilder:rbac:groups=ai.roundtable.io,resources=roundtables,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=ai.roundtable.io,resources=roundtables/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=ai.roundtable.io,resources=roundtables/finalizers,verbs=update
-// +kubebuilder:rbac:groups=ai.roundtable.io,resources=knights,verbs=get;list;watch
+// +kubebuilder:rbac:groups=ai.roundtable.io,resources=knights,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=ai.roundtable.io,resources=missions,verbs=get;list;watch
 
 func (r *RoundTableReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -143,11 +146,18 @@ func (r *RoundTableReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		}
 	}
 
-	// 4. Cost Budget Check
+	// 4. Warm Pool Reconciliation
+	if rt.Spec.WarmPool != nil && rt.Spec.WarmPool.Size > 0 {
+		if err := r.reconcileWarmPool(ctx, rt); err != nil {
+			log.Error(err, "Failed to reconcile warm pool")
+		}
+	}
+
+	// 5. Cost Budget Check
 	phase := r.computePhase(rt, readyCount, total, totalCost)
 	rt.Status.Phase = phase
 
-	// 5. Active Missions count
+	// 6. Active Missions count
 	activeMissions, err := r.countActiveMissions(ctx, rt)
 	if err != nil {
 		log.Error(err, "Failed to count active missions")
@@ -325,6 +335,181 @@ func (r *RoundTableReconciler) ensureStreams(ctx context.Context, rt *aiv1alpha1
 	}
 
 	return nil
+}
+
+// reconcileWarmPool ensures the warm pool has the desired number of pre-warmed knights.
+// It creates new warm knights when the pool is below capacity and recycles idle ones.
+func (r *RoundTableReconciler) reconcileWarmPool(ctx context.Context, rt *aiv1alpha1.RoundTable) error {
+	log := logf.FromContext(ctx)
+	wp := rt.Spec.WarmPool
+
+	// List all unclaimed warm pool knights for this RoundTable
+	unclaimedKnights, err := r.listWarmPoolKnights(ctx, rt, false)
+	if err != nil {
+		return fmt.Errorf("failed to list warm pool knights: %w", err)
+	}
+
+	// Count available (Ready) and provisioning (non-Ready)
+	var available, provisioning int32
+	for _, k := range unclaimedKnights {
+		if k.Status.Phase == aiv1alpha1.KnightPhaseReady && k.Status.Ready {
+			available++
+		} else {
+			provisioning++
+		}
+	}
+
+	// Idle recycling: delete warm knights that have been idle too long
+	if wp.MaxIdleTime != "" {
+		maxIdle, err := time.ParseDuration(wp.MaxIdleTime)
+		if err == nil {
+			for i := range unclaimedKnights {
+				k := &unclaimedKnights[i]
+				createdAtStr, ok := k.Annotations[aiv1alpha1.AnnotationWarmPoolCreatedAt]
+				if !ok {
+					continue
+				}
+				createdAt, err := time.Parse(time.RFC3339, createdAtStr)
+				if err != nil {
+					continue
+				}
+				if time.Since(createdAt) > maxIdle {
+					log.Info("Recycling idle warm pool knight", "knight", k.Name,
+						"age", time.Since(createdAt).String())
+					if err := r.Delete(ctx, k); err != nil {
+						log.Error(err, "Failed to delete idle warm knight", "knight", k.Name)
+					} else {
+						// Adjust counts — the deleted knight is no longer available
+						if k.Status.Phase == aiv1alpha1.KnightPhaseReady && k.Status.Ready {
+							available--
+						} else {
+							provisioning--
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// Create new warm knights if pool is under capacity
+	deficit := wp.Size - (available + provisioning)
+	for i := int32(0); i < deficit; i++ {
+		if err := r.createWarmKnight(ctx, rt); err != nil {
+			log.Error(err, "Failed to create warm pool knight")
+			return err
+		}
+		provisioning++
+	}
+
+	// Count claimed knights for status
+	claimedKnights, err := r.listWarmPoolKnights(ctx, rt, true)
+	if err != nil {
+		log.Error(err, "Failed to count claimed warm pool knights")
+	}
+
+	// Update warm pool status
+	rt.Status.WarmPool = &aiv1alpha1.WarmPoolStatus{
+		Available:    available,
+		Provisioning: provisioning,
+		Claimed:      int32(len(claimedKnights)),
+	}
+
+	log.Info("Warm pool reconciled",
+		"desired", wp.Size,
+		"available", available,
+		"provisioning", provisioning,
+		"claimed", len(claimedKnights))
+
+	return nil
+}
+
+// listWarmPoolKnights lists warm pool knights for this RoundTable.
+// If claimed is true, returns claimed knights; if false, returns unclaimed.
+func (r *RoundTableReconciler) listWarmPoolKnights(ctx context.Context, rt *aiv1alpha1.RoundTable, claimed bool) ([]aiv1alpha1.Knight, error) {
+	knightList := &aiv1alpha1.KnightList{}
+	claimedVal := "false"
+	if claimed {
+		claimedVal = "true"
+	}
+	if err := r.List(ctx, knightList,
+		client.InNamespace(rt.Namespace),
+		client.MatchingLabels{
+			aiv1alpha1.LabelWarmPool:        "true",
+			aiv1alpha1.LabelWarmPoolClaimed:  claimedVal,
+			aiv1alpha1.LabelRoundTable:       rt.Name,
+		},
+	); err != nil {
+		return nil, err
+	}
+	return knightList.Items, nil
+}
+
+// createWarmKnight creates a single warm pool Knight from the RoundTable's warm pool template.
+func (r *RoundTableReconciler) createWarmKnight(ctx context.Context, rt *aiv1alpha1.RoundTable) error {
+	log := logf.FromContext(ctx)
+	wp := rt.Spec.WarmPool
+
+	// Generate random suffix
+	randBytes := make([]byte, 3)
+	if _, err := rand.Read(randBytes); err != nil {
+		return fmt.Errorf("failed to generate random suffix: %w", err)
+	}
+	name := fmt.Sprintf("%s-warm-%s", rt.Name, hex.EncodeToString(randBytes))
+
+	// Build the knight spec from the template
+	spec := wp.Template.DeepCopy()
+
+	// Set runtime from warm pool config
+	if wp.Runtime != "" {
+		spec.Runtime = wp.Runtime
+	}
+
+	// Set domain to warm-pool if not specified in template
+	if spec.Domain == "" {
+		spec.Domain = "warm-pool"
+	}
+
+	// Ensure NATS config uses the RoundTable's infrastructure
+	if spec.NATS.URL == "" {
+		spec.NATS.URL = rt.Spec.NATS.URL
+	}
+	if spec.NATS.Stream == "" {
+		spec.NATS.Stream = rt.Spec.NATS.TasksStream
+	}
+	if spec.NATS.ResultsStream == "" {
+		spec.NATS.ResultsStream = rt.Spec.NATS.ResultsStream
+	}
+	// Give warm pool knights a generic subject — missions will patch this on claim
+	if len(spec.NATS.Subjects) == 0 {
+		spec.NATS.Subjects = []string{fmt.Sprintf("%s.tasks.warm-pool.>", rt.Spec.NATS.SubjectPrefix)}
+	}
+
+	// Ensure not suspended
+	spec.Suspended = false
+
+	knight := &aiv1alpha1.Knight{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: rt.Namespace,
+			Labels: map[string]string{
+				aiv1alpha1.LabelWarmPool:       "true",
+				aiv1alpha1.LabelWarmPoolClaimed: "false",
+				aiv1alpha1.LabelRoundTable:      rt.Name,
+			},
+			Annotations: map[string]string{
+				aiv1alpha1.AnnotationWarmPoolCreatedAt: time.Now().UTC().Format(time.RFC3339),
+			},
+		},
+		Spec: *spec,
+	}
+
+	// Set owner reference so warm knights get GC'd with the RoundTable
+	if err := controllerutil.SetControllerReference(rt, knight, r.Scheme); err != nil {
+		return fmt.Errorf("failed to set owner reference: %w", err)
+	}
+
+	log.Info("Creating warm pool knight", "knight", name, "roundTable", rt.Name)
+	return r.Create(ctx, knight)
 }
 
 // SetupWithManager sets up the controller with the Manager.

@@ -65,6 +65,11 @@ type RoundTableSpec struct {
 	// +optional
 	KnightTemplates map[string]KnightSpec `json:"knightTemplates,omitempty"`
 
+	// warmPool configures a pool of pre-warmed Knight pods ready for instant mission assignment.
+	// When missions need ephemeral knights, they claim warm pods from this pool instead of cold-starting.
+	// +optional
+	WarmPool *WarmPoolConfig `json:"warmPool,omitempty"`
+
 	// suspended, if true, suspends all knights in this table.
 	// +kubebuilder:default=false
 	// +optional
@@ -244,6 +249,10 @@ type RoundTableStatus struct {
 	// +optional
 	ActiveMissions int32 `json:"activeMissions,omitempty"`
 
+	// warmPool reports the current state of the warm pool.
+	// +optional
+	WarmPool *WarmPoolStatus `json:"warmPool,omitempty"`
+
 	// observedGeneration is the most recent generation observed by the controller.
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
@@ -253,6 +262,57 @@ type RoundTableStatus struct {
 	// +listMapKey=type
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+}
+
+// WarmPoolConfig configures the operator-wide warm pool of pre-provisioned knight pods.
+// The RoundTable controller maintains a pool of idle, pre-warmed knights that missions
+// can claim instantly instead of cold-starting ephemeral knights.
+type WarmPoolConfig struct {
+	// size is the desired number of warm knights to maintain in the pool.
+	// The controller ensures this many unclaimed knights exist at all times.
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=20
+	// +kubebuilder:default=0
+	// +optional
+	Size int32 `json:"size,omitempty"`
+
+	// runtime selects the backend for warm pool pods.
+	// +kubebuilder:validation:Enum=deployment;sandbox
+	// +kubebuilder:default="deployment"
+	// +optional
+	Runtime string `json:"runtime,omitempty"`
+
+	// template defines the base KnightSpec for warm pool pods.
+	// When a mission claims a warm knight, it patches this spec with mission-specific config.
+	// +kubebuilder:validation:Required
+	Template KnightSpec `json:"template"`
+
+	// maxIdleTime is how long a warm pod can sit idle before being recycled.
+	// Prevents stale state. Format: Go duration (e.g., "30m", "1h").
+	// +kubebuilder:default="1h"
+	// +optional
+	MaxIdleTime string `json:"maxIdleTime,omitempty"`
+
+	// replaceOnClaim controls whether claimed knights are immediately replaced.
+	// When true (default), the pool is replenished as soon as a knight is claimed.
+	// +kubebuilder:default=true
+	// +optional
+	ReplaceOnClaim bool `json:"replaceOnClaim,omitempty"`
+}
+
+// WarmPoolStatus reports the observed state of the warm pool.
+type WarmPoolStatus struct {
+	// available is the number of warm knights ready to be claimed.
+	// +optional
+	Available int32 `json:"available,omitempty"`
+
+	// provisioning is the number of warm knights still starting up.
+	// +optional
+	Provisioning int32 `json:"provisioning,omitempty"`
+
+	// claimed is the total number of warm knights claimed by missions since last reset.
+	// +optional
+	Claimed int32 `json:"claimed,omitempty"`
 }
 
 // +kubebuilder:object:root=true
