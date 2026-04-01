@@ -40,6 +40,7 @@ import (
 	"github.com/dapperdivers/roundtable/internal/mission"
 	natspkg "github.com/dapperdivers/roundtable/pkg/nats"
 	rtruntime "github.com/dapperdivers/roundtable/pkg/runtime"
+	sandboxv1alpha1 "sigs.k8s.io/agent-sandbox/api/v1alpha1"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -52,6 +53,7 @@ func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 
 	utilruntime.Must(aiv1alpha1.AddToScheme(scheme))
+	utilruntime.Must(sandboxv1alpha1.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
 }
 
@@ -203,13 +205,28 @@ func main() {
 		Scheme:       mgr.GetScheme(),
 		DefaultImage: defaultImage,
 	}
-	// Wire up the RuntimeBackend with a PodSpecBuilder that delegates to the reconciler's buildDeploymentSpec
-	knightReconciler.RuntimeBackend = rtruntime.NewDeploymentBackend(
+
+	// Create runtime backends
+	deploymentBackend := rtruntime.NewDeploymentBackend(
 		mgr.GetClient(),
 		mgr.GetScheme(),
 		defaultImage,
 		knightReconciler.BuildDeploymentSpec,
 	)
+	sandboxBackend := rtruntime.NewSandboxBackend(
+		mgr.GetClient(),
+		mgr.GetScheme(),
+		defaultImage,
+		knightReconciler.BuildPodSpec,
+	)
+
+	// Register backends by runtime type name
+	knightReconciler.RuntimeBackend = deploymentBackend // default
+	knightReconciler.RuntimeBackends = map[string]rtruntime.RuntimeBackend{
+		"deployment": deploymentBackend,
+		"sandbox":    sandboxBackend,
+	}
+
 	if err := knightReconciler.SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "Knight")
 		os.Exit(1)

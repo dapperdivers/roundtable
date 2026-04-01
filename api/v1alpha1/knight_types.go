@@ -39,6 +39,14 @@ const (
 
 // KnightSpec defines the desired state of a Knight — an AI agent in the Round Table.
 type KnightSpec struct {
+	// runtime selects the backend for managing this knight's pod.
+	// "deployment" uses a standard Kubernetes Deployment (default).
+	// "sandbox" uses Agent Sandbox (agents.x-k8s.io) for lifecycle management.
+	// +kubebuilder:validation:Enum=deployment;sandbox
+	// +kubebuilder:default="deployment"
+	// +optional
+	Runtime string `json:"runtime,omitempty"`
+
 	// domain is the knight's area of expertise (e.g., "security", "infrastructure", "finance").
 	// Used for NATS subject routing and skill filtering.
 	// +kubebuilder:validation:Required
