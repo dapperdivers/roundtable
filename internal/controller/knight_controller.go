@@ -38,6 +38,7 @@ import (
 
 	aiv1alpha1 "github.com/dapperdivers/roundtable/api/v1alpha1"
 	knightpkg "github.com/dapperdivers/roundtable/internal/knight"
+	rtmetrics "github.com/dapperdivers/roundtable/pkg/metrics"
 	rtruntime "github.com/dapperdivers/roundtable/pkg/runtime"
 	sandboxv1alpha1 "sigs.k8s.io/agent-sandbox/api/v1alpha1"
 )
@@ -691,6 +692,16 @@ func (r *KnightReconciler) updateStatus(ctx context.Context, knight *aiv1alpha1.
 	}
 	knight.Status.NATSConsumer = consumerName
 	knight.Status.ObservedGeneration = knight.Generation
+
+	// Update Prometheus metrics
+	tableName := knight.Labels[aiv1alpha1.LabelRoundTable]
+	if tableName == "" {
+		tableName = "none"
+	}
+	// Note: KnightsTotal is a gauge. In a real aggregation, we'd track all knights,
+	// but for now we set 1 for this knight's current phase. A separate aggregator
+	// or the RoundTable controller should reset/recompute totals.
+	rtmetrics.KnightsTotal.WithLabelValues(string(knight.Status.Phase), tableName).Set(1)
 
 	return r.Status().Update(ctx, knight)
 }
