@@ -35,6 +35,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	aiv1alpha1 "github.com/dapperdivers/roundtable/api/v1alpha1"
+	rtmetrics "github.com/dapperdivers/roundtable/pkg/metrics"
 	natspkg "github.com/dapperdivers/roundtable/pkg/nats"
 )
 
@@ -205,6 +206,20 @@ func (r *RoundTableReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	}
 
 	rt.Status.ObservedGeneration = rt.Generation
+
+	// Update Prometheus metrics
+	// Update cost metric
+	if totalCost > 0 {
+		rtmetrics.CostTotalUSD.WithLabelValues(rt.Name).Set(totalCost)
+	}
+
+	// Update warm pool metrics if configured
+	if rt.Status.WarmPool != nil {
+		rtmetrics.WarmPoolSize.WithLabelValues("available", rt.Name).Set(float64(rt.Status.WarmPool.Available))
+		rtmetrics.WarmPoolSize.WithLabelValues("provisioning", rt.Name).Set(float64(rt.Status.WarmPool.Provisioning))
+		rtmetrics.WarmPoolSize.WithLabelValues("claimed", rt.Name).Set(float64(rt.Status.WarmPool.Claimed))
+	}
+
 	if err := r.Status().Update(ctx, rt); err != nil {
 		return ctrl.Result{}, err
 	}
