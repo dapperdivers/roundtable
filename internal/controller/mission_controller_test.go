@@ -1381,8 +1381,20 @@ var _ = Describe("Mission Controller - Warm Pool", func() {
 						},
 					},
 					WarmPool: &aiv1alpha1.WarmPoolConfig{
-						Size:        2,
-						Template:    templateName,
+						Size: 2,
+						Template: aiv1alpha1.KnightSpec{
+							Domain: "general",
+							Model:  "claude-sonnet-4-20250514",
+							Skills: []string{"general"},
+							NATS: aiv1alpha1.KnightNATS{
+								URL:           "nats://nats.test:4222",
+								Subjects:      []string{"warmpool.tasks.general.>"},
+								Stream:        "warmpool_tasks",
+								ResultsStream: "warmpool_results",
+							},
+							Concurrency: 2,
+							TaskTimeout: 120,
+						},
 						MaxIdleTime: "1h",
 					},
 					Ephemeral: true,
