@@ -1,0 +1,31 @@
+apiVersion: ai.roundtable.io/v1alpha1
+kind: Mission
+metadata:
+  name: research-and-report
+  namespace: roundtable
+spec:
+  objective: |
+    Research the current state of Kubernetes AI agent orchestration tools,
+    compare their approaches, and produce a detailed analysis report.
+  successCriteria: "Comprehensive comparison with pros/cons and recommendation"
+  roundTableRef: fleet-a
+  ttl: 7200
+  timeout: 3600
+  costBudgetUSD: "15"
+
+  # Meta-mission: the planner knight auto-generates chains and ephemeral knights
+  metaMission: true
+  recruitExisting: true
+
+  planner:
+    knightRef: kay
+    timeout: 300
+    maxChains: 3
+    maxKnights: 5
+    allowSkillGeneration: true
+    context: |
+      Available tools: web search, file I/O, NATS messaging.
+      Prefer creating 2-3 focused chains over one monolithic chain.
+      Each chain step should have a clear, bounded objective.
+
+  retainResults: true

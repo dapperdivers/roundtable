@@ -1,0 +1,26 @@
+apiVersion: ai.roundtable.io/v1alpha1
+kind: Mission
+metadata:
+  name: audit-cluster-security
+  namespace: roundtable
+spec:
+  objective: "Perform a comprehensive security audit of the Kubernetes cluster"
+  successCriteria: "Report with findings, risk ratings, and remediation steps"
+  roundTableRef: fleet-a
+  ttl: 7200       # Auto-cleanup after 2 hours
+  timeout: 3600   # Fail if not complete in 1 hour
+
+  # Use existing fleet knights
+  recruitExisting: true
+  knights:
+    - name: galahad
+      role: security-lead
+    - name: tristan
+      role: infrastructure-analyst
+
+  chains:
+    - name: security-report
+      phase: Active
+
+  retainResults: true
+  costBudgetUSD: "10"
