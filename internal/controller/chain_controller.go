@@ -28,6 +28,7 @@ import (
 
 	"github.com/dapperdivers/roundtable/internal/util"
 	"github.com/robfig/cron/v3"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -328,6 +329,7 @@ func (r *ChainReconciler) reconcileRunning(ctx context.Context, chain *aiv1alpha
 	if chain.Status.StartedAt == nil {
 		now := metav1.Now()
 		chain.Status.StartedAt = &now
+		r.Recorder.Event(chain, corev1.EventTypeNormal, "Started", "Chain execution started")
 	}
 
 	// Check overall timeout
@@ -346,6 +348,7 @@ func (r *ChainReconciler) reconcileRunning(ctx context.Context, chain *aiv1alpha
 				Message:            fmt.Sprintf("Chain timed out after %ds", chain.Spec.Timeout),
 				ObservedGeneration: chain.Generation,
 			})
+			r.Recorder.Eventf(chain, corev1.EventTypeWarning, "Failed", "Chain timed out after %ds", chain.Spec.Timeout)
 			chain.Status.ObservedGeneration = chain.Generation
 			return ctrl.Result{}, r.Status().Update(ctx, chain)
 		}
@@ -420,6 +423,8 @@ func (r *ChainReconciler) reconcileRunning(ctx context.Context, chain *aiv1alpha
 				} else {
 					ss.Phase = aiv1alpha1.ChainStepPhaseSucceeded
 					ss.Output = resultOutput
+
+					r.Recorder.Eventf(chain, corev1.EventTypeNormal, "StepCompleted", "Step %s completed", ss.Name)
 
 					// Store full output to NATS KV (best-effort)
 					if spec := specMap[ss.Name]; spec != nil {
@@ -615,6 +620,7 @@ func (r *ChainReconciler) reconcileRunning(ctx context.Context, chain *aiv1alpha
 				Message:            fmt.Sprintf("%d step(s) failed without continueOnFailure", hardFailures),
 				ObservedGeneration: chain.Generation,
 			})
+			r.Recorder.Eventf(chain, corev1.EventTypeWarning, "Failed", "Chain failed: %d step(s) failed without continueOnFailure", hardFailures)
 		} else if softFailures > 0 {
 			// No hard failures, but some soft failures
 			chain.Status.Phase = aiv1alpha1.ChainPhasePartiallySucceeded
@@ -626,6 +632,7 @@ func (r *ChainReconciler) reconcileRunning(ctx context.Context, chain *aiv1alpha
 				Message:            fmt.Sprintf("%d/%d steps succeeded (%d failed with continueOnFailure)", succeededSteps, totalSteps, softFailures),
 				ObservedGeneration: chain.Generation,
 			})
+			r.Recorder.Eventf(chain, corev1.EventTypeNormal, "Succeeded", "Chain partially succeeded: %d/%d steps succeeded", succeededSteps, totalSteps)
 		} else {
 			// All steps succeeded
 			chain.Status.Phase = aiv1alpha1.ChainPhaseSucceeded
@@ -637,6 +644,7 @@ func (r *ChainReconciler) reconcileRunning(ctx context.Context, chain *aiv1alpha
 				Message:            fmt.Sprintf("All %d steps completed successfully", totalSteps),
 				ObservedGeneration: chain.Generation,
 			})
+			r.Recorder.Event(chain, corev1.EventTypeNormal, "Succeeded", "Chain completed successfully")
 		}
 		chain.Status.ObservedGeneration = chain.Generation
 		return ctrl.Result{}, r.Status().Update(ctx, chain)
@@ -834,6 +842,8 @@ func (r *ChainReconciler) triggerChain(nn types.NamespacedName) {
 	chain.Status.StartedAt = &now
 	chain.Status.CompletedAt = nil
 	chain.Status.LastScheduledAt = &now
+
+	r.Recorder.Event(chain, corev1.EventTypeNormal, "CronTriggered", "Chain triggered by cron schedule")
 
 	if err := r.Status().Update(ctx, chain); err != nil {
 		log.Error(err, "Failed to update chain status for cron trigger")
