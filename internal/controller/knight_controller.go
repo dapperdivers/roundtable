@@ -368,10 +368,11 @@ func (r *KnightReconciler) reconcilePVC(ctx context.Context, knight *aiv1alpha1.
 		}
 	}
 
-	// Create Nix PVC if tools.nix is configured, recycle if tools changed
-	if knight.Spec.Tools != nil && len(knight.Spec.Tools.Nix) > 0 {
+	// Create Nix PVC if nix tools are configured, recycle if tools changed
+	hasNixTools := (knight.Spec.Tools != nil && len(knight.Spec.Tools.Nix) > 0) || len(knight.Spec.NixPackages) > 0
+	if hasNixTools {
 		nixPVCName := fmt.Sprintf("knight-%s-nix", knight.Name)
-		currentHash := knightpkg.NixToolsHash(knight.Spec.Tools.Nix)
+		currentHash := knightpkg.NixToolsHash(knight)
 		nixPVC := &corev1.PersistentVolumeClaim{}
 		err := r.Get(ctx, types.NamespacedName{Name: nixPVCName, Namespace: knight.Namespace}, nixPVC)
 
@@ -509,8 +510,9 @@ func (r *KnightReconciler) reconcileDeployment(ctx context.Context, knight *aiv1
 		"roundtable.io/skills": strings.Join(knight.Spec.Skills, ","),
 		"roundtable.io/domain": knight.Spec.Domain,
 	}
-	if knight.Spec.Tools != nil && len(knight.Spec.Tools.Nix) > 0 {
-		podAnnotations[nixToolsHashAnnotation] = knightpkg.NixToolsHash(knight.Spec.Tools.Nix)
+	hasNixTools := (knight.Spec.Tools != nil && len(knight.Spec.Tools.Nix) > 0) || len(knight.Spec.NixPackages) > 0
+	if hasNixTools {
+		podAnnotations[nixToolsHashAnnotation] = knightpkg.NixToolsHash(knight)
 	}
 	desired.Spec.Template.ObjectMeta.Annotations = podAnnotations
 	desired.Spec.Template.Spec = r.BuildPodSpec(ctx, knight)

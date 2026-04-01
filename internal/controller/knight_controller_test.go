@@ -329,4 +329,222 @@ var _ = Describe("Knight Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 		})
 	})
+
+	Describe("Nix PVC Cleanup", func() {
+		var (
+			ctx                context.Context
+			reconciler         *KnightReconciler
+			knightName         string
+			knightNamespace    string
+			typeNamespacedName types.NamespacedName
+		)
+
+		BeforeEach(func() {
+			ctx = context.Background()
+			reconciler = &KnightReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+			knightName = "test-nix-cleanup"
+			knightNamespace = "default"
+			typeNamespacedName = types.NamespacedName{
+				Name:      knightName,
+				Namespace: knightNamespace,
+			}
+		})
+
+		AfterEach(func() {
+			// Clean up knight if it exists
+			knight := &aiv1alpha1.Knight{}
+			if err := k8sClient.Get(ctx, typeNamespacedName, knight); err == nil {
+				_ = k8sClient.Delete(ctx, knight)
+			}
+			// Clean up Nix PVC if it exists
+			nixPVCName := "knight-" + knightName + "-nix"
+			pvc := &corev1.PersistentVolumeClaim{}
+			if err := k8sClient.Get(ctx, types.NamespacedName{
+				Name:      nixPVCName,
+				Namespace: knightNamespace,
+			}, pvc); err == nil {
+				_ = k8sClient.Delete(ctx, pvc)
+			}
+		})
+
+		It("should delete Nix PVC when knight nix tools change", func() {
+			By("Creating a knight with initial Nix tools")
+			knight := &aiv1alpha1.Knight{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      knightName,
+					Namespace: knightNamespace,
+				},
+				Spec: aiv1alpha1.KnightSpec{
+					Domain: "devops",
+					Model:  "claude-sonnet-4-20250514",
+					Skills: []string{"shared"},
+					NATS: aiv1alpha1.KnightNATS{
+						URL:           "nats://nats.test:4222",
+						Subjects:      []string{"test.tasks.devops.>"},
+						Stream:        "test_tasks",
+						ResultsStream: "test_results",
+					},
+					Tools: &aiv1alpha1.KnightTools{
+						Nix: []string{"nmap", "curl"},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, knight)).To(Succeed())
+
+			By("Reconciling to create initial Nix PVC")
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying Nix PVC was created with initial hash")
+			nixPVCName := "knight-" + knightName + "-nix"
+			pvc := &corev1.PersistentVolumeClaim{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      nixPVCName,
+				Namespace: knightNamespace,
+			}, pvc)).To(Succeed())
+
+			initialHash := pvc.Annotations["roundtable.io/nix-tools-hash"]
+			Expect(initialHash).NotTo(BeEmpty())
+			initialUID := pvc.UID
+
+			By("Changing the knight's Nix tools")
+			Expect(k8sClient.Get(ctx, typeNamespacedName, knight)).To(Succeed())
+			knight.Spec.Tools.Nix = []string{"nmap", "curl", "wget"}
+			Expect(k8sClient.Update(ctx, knight)).To(Succeed())
+
+			By("Reconciling after tool change")
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying old PVC was deleted")
+			// The old PVC should be gone (deleted during reconcile)
+			Eventually(func() bool {
+				oldPVC := &corev1.PersistentVolumeClaim{}
+				err := k8sClient.Get(ctx, types.NamespacedName{
+					Name:      nixPVCName,
+					Namespace: knightNamespace,
+				}, oldPVC)
+				// Either not found, or if found, it should be a different PVC (different UID)
+				return errors.IsNotFound(err) || oldPVC.UID != initialUID
+			}, "10s", "1s").Should(BeTrue())
+		})
+
+		It("should delete Nix PVC when knight nixPackages change", func() {
+			By("Creating a knight with initial nixPackages")
+			knight := &aiv1alpha1.Knight{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      knightName,
+					Namespace: knightNamespace,
+				},
+				Spec: aiv1alpha1.KnightSpec{
+					Domain:      "devops",
+					Model:       "claude-sonnet-4-20250514",
+					Skills:      []string{"shared"},
+					NixPackages: []string{"git", "jq"},
+					NATS: aiv1alpha1.KnightNATS{
+						URL:           "nats://nats.test:4222",
+						Subjects:      []string{"test.tasks.devops.>"},
+						Stream:        "test_tasks",
+						ResultsStream: "test_results",
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, knight)).To(Succeed())
+
+			By("Reconciling to create initial Nix PVC")
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying Nix PVC was created")
+			nixPVCName := "knight-" + knightName + "-nix"
+			pvc := &corev1.PersistentVolumeClaim{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      nixPVCName,
+				Namespace: knightNamespace,
+			}, pvc)).To(Succeed())
+
+			initialUID := pvc.UID
+
+			By("Changing the knight's nixPackages")
+			Expect(k8sClient.Get(ctx, typeNamespacedName, knight)).To(Succeed())
+			knight.Spec.NixPackages = []string{"git", "jq", "kubectl"}
+			Expect(k8sClient.Update(ctx, knight)).To(Succeed())
+
+			By("Reconciling after nixPackages change")
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying old PVC was deleted")
+			Eventually(func() bool {
+				oldPVC := &corev1.PersistentVolumeClaim{}
+				err := k8sClient.Get(ctx, types.NamespacedName{
+					Name:      nixPVCName,
+					Namespace: knightNamespace,
+				}, oldPVC)
+				return errors.IsNotFound(err) || oldPVC.UID != initialUID
+			}, "10s", "1s").Should(BeTrue())
+		})
+
+		It("should handle both Tools.Nix and NixPackages in hash", func() {
+			By("Creating a knight with both Tools.Nix and NixPackages")
+			knight := &aiv1alpha1.Knight{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      knightName,
+					Namespace: knightNamespace,
+				},
+				Spec: aiv1alpha1.KnightSpec{
+					Domain:      "devops",
+					Model:       "claude-sonnet-4-20250514",
+					Skills:      []string{"shared"},
+					NixPackages: []string{"git"},
+					Tools: &aiv1alpha1.KnightTools{
+						Nix: []string{"curl"},
+					},
+					NATS: aiv1alpha1.KnightNATS{
+						URL:           "nats://nats.test:4222",
+						Subjects:      []string{"test.tasks.devops.>"},
+						Stream:        "test_tasks",
+						ResultsStream: "test_results",
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, knight)).To(Succeed())
+
+			By("Reconciling to create Nix PVC")
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying Nix PVC was created")
+			nixPVCName := "knight-" + knightName + "-nix"
+			pvc := &corev1.PersistentVolumeClaim{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      nixPVCName,
+				Namespace: knightNamespace,
+			}, pvc)).To(Succeed())
+
+			initialUID := pvc.UID
+
+			By("Changing only nixPackages while keeping Tools.Nix same")
+			Expect(k8sClient.Get(ctx, typeNamespacedName, knight)).To(Succeed())
+			knight.Spec.NixPackages = []string{"git", "jq"}
+			Expect(k8sClient.Update(ctx, knight)).To(Succeed())
+
+			By("Reconciling after change")
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying PVC was deleted due to combined hash change")
+			Eventually(func() bool {
+				oldPVC := &corev1.PersistentVolumeClaim{}
+				err := k8sClient.Get(ctx, types.NamespacedName{
+					Name:      nixPVCName,
+					Namespace: knightNamespace,
+				}, oldPVC)
+				return errors.IsNotFound(err) || oldPVC.UID != initialUID
+			}, "10s", "1s").Should(BeTrue())
+		})
+	})
 })

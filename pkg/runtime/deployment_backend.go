@@ -95,8 +95,9 @@ func (b *DeploymentBackend) Reconcile(ctx context.Context, knight *aiv1alpha1.Kn
 		"roundtable.io/skills": strings.Join(knight.Spec.Skills, ","),
 		"roundtable.io/domain": knight.Spec.Domain,
 	}
-	if knight.Spec.Tools != nil && len(knight.Spec.Tools.Nix) > 0 {
-		podAnnotations[nixToolsHashAnnotation] = knightpkg.NixToolsHash(knight.Spec.Tools.Nix)
+	hasNixTools := (knight.Spec.Tools != nil && len(knight.Spec.Tools.Nix) > 0) || len(knight.Spec.NixPackages) > 0
+	if hasNixTools {
+		podAnnotations[nixToolsHashAnnotation] = knightpkg.NixToolsHash(knight)
 	}
 	desired.Spec.Template.ObjectMeta.Annotations = podAnnotations
 
