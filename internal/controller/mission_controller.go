@@ -139,7 +139,7 @@ func (r *MissionReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 			// overwrote to CleaningUp — the second update stomped the first).
 			err := status.ForMission(mission).
 				Complete("Mission expired (TTL exceeded)", aiv1alpha1.MissionPhaseCleaningUp).
-				Condition("Complete", "Expired", "Mission TTL expired", metav1.ConditionTrue).
+				Condition(aiv1alpha1.ConditionMissionComplete, aiv1alpha1.ReasonMissionExpired, "Mission TTL expired", metav1.ConditionTrue).
 				Apply(ctx, r.Client)
 			if apierrors.IsConflict(err) {
 				return ctrl.Result{Requeue: true}, nil
@@ -163,7 +163,7 @@ func (r *MissionReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return r.reconcileActive(ctx, mission)
 	case aiv1alpha1.MissionPhaseSucceeded, aiv1alpha1.MissionPhaseFailed:
 		// Only transition to cleanup if not already cleaned up (prevents infinite loop)
-		if meta.IsStatusConditionTrue(mission.Status.Conditions, "CleanupComplete") {
+		if meta.IsStatusConditionTrue(mission.Status.Conditions, aiv1alpha1.ConditionCleanupComplete) {
 			return ctrl.Result{}, nil
 		}
 		mission.Status.Phase = aiv1alpha1.MissionPhaseCleaningUp
@@ -419,9 +419,9 @@ func (r *MissionReconciler) reconcileBriefing(ctx context.Context, mission *aiv1
 		if err := r.publishBriefing(ctx, mission); err != nil {
 			log.Error(err, "Failed to publish briefing, will retry")
 			meta.SetStatusCondition(&mission.Status.Conditions, metav1.Condition{
-				Type:               "BriefingPublished",
+				Type:               aiv1alpha1.ConditionBriefingPublished,
 				Status:             metav1.ConditionFalse,
-				Reason:             "PublishFailed",
+				Reason:             aiv1alpha1.ReasonBriefingPublishFailed,
 				Message:            fmt.Sprintf("Failed to publish briefing: %v", err),
 				ObservedGeneration: mission.Generation,
 			})
@@ -432,17 +432,17 @@ func (r *MissionReconciler) reconcileBriefing(ctx context.Context, mission *aiv1
 
 		log.Info("Briefing published", "mission", mission.Name)
 		meta.SetStatusCondition(&mission.Status.Conditions, metav1.Condition{
-			Type:               "BriefingPublished",
+			Type:               aiv1alpha1.ConditionBriefingPublished,
 			Status:             metav1.ConditionTrue,
-			Reason:             "Published",
+			Reason:             aiv1alpha1.ReasonBriefingPublished,
 			Message:            "Mission briefing published to all knights",
 			ObservedGeneration: mission.Generation,
 		})
 	} else {
 		meta.SetStatusCondition(&mission.Status.Conditions, metav1.Condition{
-			Type:               "BriefingPublished",
+			Type:               aiv1alpha1.ConditionBriefingPublished,
 			Status:             metav1.ConditionTrue,
-			Reason:             "NoBriefing",
+			Reason:             aiv1alpha1.ReasonNoBriefing,
 			Message:            "No briefing text configured",
 			ObservedGeneration: mission.Generation,
 		})
@@ -477,7 +477,7 @@ func (r *MissionReconciler) reconcileActive(ctx context.Context, mission *aiv1al
 			log.Info("Mission timed out", "mission", mission.Name, "elapsed", elapsed)
 			err := status.ForMission(mission).
 				Failed(fmt.Sprintf("Mission timed out after %ds", mission.Spec.Timeout)).
-				Condition("Complete", "Timeout",
+				Condition(aiv1alpha1.ConditionMissionComplete, aiv1alpha1.ReasonMissionTimeout,
 					fmt.Sprintf("Mission timed out after %ds", mission.Spec.Timeout),
 					metav1.ConditionTrue).
 				Apply(ctx, r.Client)
@@ -509,7 +509,7 @@ func (r *MissionReconciler) reconcileActive(ctx context.Context, mission *aiv1al
 
 					err := status.ForMission(mission).
 						Failed(fmt.Sprintf("Cost budget exceeded: $%.2f > $%.2f", totalCost, budget)).
-						Condition("Complete", "OverBudget",
+						Condition(aiv1alpha1.ConditionMissionComplete, aiv1alpha1.ReasonOverBudget,
 							fmt.Sprintf("Cost $%.2f exceeded budget $%.2f", totalCost, budget),
 							metav1.ConditionTrue).
 						Apply(ctx, r.Client)
@@ -559,9 +559,9 @@ func (r *MissionReconciler) reconcileActive(ctx context.Context, mission *aiv1al
 			mission.Status.CompletedAt = &now
 			mission.Status.Result = "One or more mission chains failed"
 			meta.SetStatusCondition(&mission.Status.Conditions, metav1.Condition{
-				Type:               "Complete",
+				Type:               aiv1alpha1.ConditionMissionComplete,
 				Status:             metav1.ConditionTrue,
-				Reason:             "ChainFailed",
+				Reason:             aiv1alpha1.ReasonMissionChainFailed,
 				Message:            "One or more mission chains failed",
 				ObservedGeneration: mission.Generation,
 			})
@@ -579,9 +579,9 @@ func (r *MissionReconciler) reconcileActive(ctx context.Context, mission *aiv1al
 			mission.Status.CompletedAt = &now
 			mission.Status.Result = "All mission chains completed successfully"
 			meta.SetStatusCondition(&mission.Status.Conditions, metav1.Condition{
-				Type:               "Complete",
+				Type:               aiv1alpha1.ConditionMissionComplete,
 				Status:             metav1.ConditionTrue,
-				Reason:             "Succeeded",
+				Reason:             aiv1alpha1.ReasonMissionSucceeded,
 				Message:            "All mission chains completed successfully",
 				ObservedGeneration: mission.Generation,
 			})
@@ -706,7 +706,7 @@ func (r *MissionReconciler) reconcileCleaningUp(ctx context.Context, mission *ai
 
 	// If cleanup already completed, skip directly to terminal phase transition.
 	// This prevents repeated delete attempts on every reconcile loop.
-	if meta.IsStatusConditionTrue(mission.Status.Conditions, "CleanupComplete") {
+	if meta.IsStatusConditionTrue(mission.Status.Conditions, aiv1alpha1.ConditionCleanupComplete) {
 		return r.transitionToTerminalPhase(ctx, mission)
 	}
 
@@ -791,9 +791,9 @@ func (r *MissionReconciler) reconcileCleaningUp(ctx context.Context, mission *ai
 
 	// Mark cleanup as done
 	meta.SetStatusCondition(&mission.Status.Conditions, metav1.Condition{
-		Type:               "CleanupComplete",
+		Type:               aiv1alpha1.ConditionCleanupComplete,
 		Status:             metav1.ConditionTrue,
-		Reason:             "CleanedUp",
+		Reason:             aiv1alpha1.ReasonCleanupComplete,
 		Message:            "Mission cleanup completed",
 		ObservedGeneration: mission.Generation,
 	})

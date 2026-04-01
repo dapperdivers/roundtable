@@ -107,9 +107,9 @@ func (r *ChainReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	// Validate roundTableRef is present
 	if chain.Spec.RoundTableRef == "" && chain.Spec.MissionRef == "" {
 		meta.SetStatusCondition(&chain.Status.Conditions, metav1.Condition{
-			Type:               "Valid",
+			Type:               aiv1alpha1.ConditionChainValid,
 			Status:             metav1.ConditionFalse,
-			Reason:             "MissingRoundTableRef",
+			Reason:             aiv1alpha1.ReasonMissingRoundTableRef,
 			Message:            "Chain must have either roundTableRef or missionRef configured",
 			ObservedGeneration: chain.Generation,
 		})
@@ -122,9 +122,9 @@ func (r *ChainReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	// Validate knight refs
 	if err := r.validateKnightRefs(ctx, chain); err != nil {
 		meta.SetStatusCondition(&chain.Status.Conditions, metav1.Condition{
-			Type:               "Valid",
+			Type:               aiv1alpha1.ConditionChainValid,
 			Status:             metav1.ConditionFalse,
-			Reason:             "InvalidKnightRef",
+			Reason:             aiv1alpha1.ReasonInvalidKnightRef,
 			Message:            err.Error(),
 			ObservedGeneration: chain.Generation,
 		})
@@ -136,9 +136,9 @@ func (r *ChainReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	// Validate DAG
 	if err := r.validateDAG(chain); err != nil {
 		meta.SetStatusCondition(&chain.Status.Conditions, metav1.Condition{
-			Type:               "Valid",
+			Type:               aiv1alpha1.ConditionChainValid,
 			Status:             metav1.ConditionFalse,
-			Reason:             "CyclicDependency",
+			Reason:             aiv1alpha1.ReasonCyclicDependency,
 			Message:            err.Error(),
 			ObservedGeneration: chain.Generation,
 		})
@@ -150,9 +150,9 @@ func (r *ChainReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	// Validate templates parse correctly
 	if err := r.validateTemplates(chain); err != nil {
 		meta.SetStatusCondition(&chain.Status.Conditions, metav1.Condition{
-			Type:               "Valid",
+			Type:               aiv1alpha1.ConditionChainValid,
 			Status:             metav1.ConditionFalse,
-			Reason:             "InvalidTemplate",
+			Reason:             aiv1alpha1.ReasonInvalidTemplate,
 			Message:            err.Error(),
 			ObservedGeneration: chain.Generation,
 		})
@@ -162,9 +162,9 @@ func (r *ChainReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	}
 
 	meta.SetStatusCondition(&chain.Status.Conditions, metav1.Condition{
-		Type:               "Valid",
+		Type:               aiv1alpha1.ConditionChainValid,
 		Status:             metav1.ConditionTrue,
-		Reason:             "Valid",
+		Reason:             aiv1alpha1.ReasonChainValid,
 		Message:            "Chain spec is valid",
 		ObservedGeneration: chain.Generation,
 	})
@@ -337,9 +337,9 @@ func (r *ChainReconciler) reconcileRunning(ctx context.Context, chain *aiv1alpha
 			chain.Status.CompletedAt = &now
 			chain.Status.RunsFailed++
 			meta.SetStatusCondition(&chain.Status.Conditions, metav1.Condition{
-				Type:               "Complete",
+				Type:               aiv1alpha1.ConditionChainComplete,
 				Status:             metav1.ConditionTrue,
-				Reason:             "Timeout",
+				Reason:             aiv1alpha1.ReasonChainTimeout,
 				Message:            fmt.Sprintf("Chain timed out after %ds", chain.Spec.Timeout),
 				ObservedGeneration: chain.Generation,
 			})
@@ -606,9 +606,9 @@ func (r *ChainReconciler) reconcileRunning(ctx context.Context, chain *aiv1alpha
 			chain.Status.Phase = aiv1alpha1.ChainPhaseFailed
 			chain.Status.RunsFailed++
 			meta.SetStatusCondition(&chain.Status.Conditions, metav1.Condition{
-				Type:               "Complete",
+				Type:               aiv1alpha1.ConditionChainComplete,
 				Status:             metav1.ConditionTrue,
-				Reason:             "Failed",
+				Reason:             aiv1alpha1.ReasonChainFailed,
 				Message:            fmt.Sprintf("%d step(s) failed without continueOnFailure", hardFailures),
 				ObservedGeneration: chain.Generation,
 			})
@@ -617,9 +617,9 @@ func (r *ChainReconciler) reconcileRunning(ctx context.Context, chain *aiv1alpha
 			chain.Status.Phase = aiv1alpha1.ChainPhasePartiallySucceeded
 			chain.Status.RunsCompleted++ // Count as completed (not failed)
 			meta.SetStatusCondition(&chain.Status.Conditions, metav1.Condition{
-				Type:               "Complete",
+				Type:               aiv1alpha1.ConditionChainComplete,
 				Status:             metav1.ConditionTrue,
-				Reason:             "PartiallySucceeded",
+				Reason:             aiv1alpha1.ReasonChainPartiallySucceeded,
 				Message:            fmt.Sprintf("%d/%d steps succeeded (%d failed with continueOnFailure)", succeededSteps, totalSteps, softFailures),
 				ObservedGeneration: chain.Generation,
 			})
@@ -628,9 +628,9 @@ func (r *ChainReconciler) reconcileRunning(ctx context.Context, chain *aiv1alpha
 			chain.Status.Phase = aiv1alpha1.ChainPhaseSucceeded
 			chain.Status.RunsCompleted++
 			meta.SetStatusCondition(&chain.Status.Conditions, metav1.Condition{
-				Type:               "Complete",
+				Type:               aiv1alpha1.ConditionChainComplete,
 				Status:             metav1.ConditionTrue,
-				Reason:             "Succeeded",
+				Reason:             aiv1alpha1.ReasonChainSucceeded,
 				Message:            fmt.Sprintf("All %d steps completed successfully", totalSteps),
 				ObservedGeneration: chain.Generation,
 			})

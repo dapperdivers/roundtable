@@ -74,9 +74,9 @@ func (r *RoundTableReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	if rt.Spec.Suspended {
 		rt.Status.Phase = aiv1alpha1.RoundTablePhaseSuspended
 		meta.SetStatusCondition(&rt.Status.Conditions, metav1.Condition{
-			Type:               "Available",
+			Type:               aiv1alpha1.ConditionRoundTableAvailable,
 			Status:             metav1.ConditionFalse,
-			Reason:             "Suspended",
+			Reason:             aiv1alpha1.ReasonRoundTableSuspended,
 			Message:            "RoundTable is suspended",
 			ObservedGeneration: rt.Generation,
 		})
@@ -130,17 +130,17 @@ func (r *RoundTableReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		if err := r.ensureStreams(ctx, rt); err != nil {
 			log.Error(err, "Failed to ensure NATS streams")
 			meta.SetStatusCondition(&rt.Status.Conditions, metav1.Condition{
-				Type:               "NATSReady",
+				Type:               aiv1alpha1.ConditionNATSReady,
 				Status:             metav1.ConditionFalse,
-				Reason:             "StreamError",
+				Reason:             aiv1alpha1.ReasonStreamError,
 				Message:            err.Error(),
 				ObservedGeneration: rt.Generation,
 			})
 		} else {
 			meta.SetStatusCondition(&rt.Status.Conditions, metav1.Condition{
-				Type:               "NATSReady",
+				Type:               aiv1alpha1.ConditionNATSReady,
 				Status:             metav1.ConditionTrue,
-				Reason:             "StreamsReady",
+				Reason:             aiv1alpha1.ReasonStreamsReady,
 				Message:            "JetStream streams are configured",
 				ObservedGeneration: rt.Generation,
 			})
@@ -169,33 +169,33 @@ func (r *RoundTableReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	switch phase {
 	case aiv1alpha1.RoundTablePhaseReady:
 		meta.SetStatusCondition(&rt.Status.Conditions, metav1.Condition{
-			Type:               "Available",
+			Type:               aiv1alpha1.ConditionRoundTableAvailable,
 			Status:             metav1.ConditionTrue,
-			Reason:             "AllKnightsReady",
+			Reason:             aiv1alpha1.ReasonAllKnightsReady,
 			Message:            fmt.Sprintf("All %d knights are ready", total),
 			ObservedGeneration: rt.Generation,
 		})
 	case aiv1alpha1.RoundTablePhaseDegraded:
 		meta.SetStatusCondition(&rt.Status.Conditions, metav1.Condition{
-			Type:               "Available",
+			Type:               aiv1alpha1.ConditionRoundTableAvailable,
 			Status:             metav1.ConditionFalse,
-			Reason:             "KnightsDegraded",
+			Reason:             aiv1alpha1.ReasonKnightsDegraded,
 			Message:            fmt.Sprintf("%d/%d knights ready", readyCount, total),
 			ObservedGeneration: rt.Generation,
 		})
 	case aiv1alpha1.RoundTablePhaseOverBudget:
 		meta.SetStatusCondition(&rt.Status.Conditions, metav1.Condition{
-			Type:               "Available",
+			Type:               aiv1alpha1.ConditionRoundTableAvailable,
 			Status:             metav1.ConditionFalse,
-			Reason:             "OverBudget",
+			Reason:             aiv1alpha1.ReasonOverBudget,
 			Message:            fmt.Sprintf("Cost %.4f exceeds budget %s", totalCost, rt.Spec.Policies.CostBudgetUSD),
 			ObservedGeneration: rt.Generation,
 		})
 	default:
 		meta.SetStatusCondition(&rt.Status.Conditions, metav1.Condition{
-			Type:               "Available",
+			Type:               aiv1alpha1.ConditionRoundTableAvailable,
 			Status:             metav1.ConditionFalse,
-			Reason:             "Provisioning",
+			Reason:             aiv1alpha1.ReasonRoundTableProvisioning,
 			Message:            "RoundTable is provisioning",
 			ObservedGeneration: rt.Generation,
 		})

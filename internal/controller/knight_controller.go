@@ -230,9 +230,9 @@ func (r *KnightReconciler) reconcileSuspended(ctx context.Context, knight *aiv1a
 	knight.Status.Phase = aiv1alpha1.KnightPhaseSuspended
 	knight.Status.Ready = false
 	meta.SetStatusCondition(&knight.Status.Conditions, metav1.Condition{
-		Type:               "Available",
+		Type:               aiv1alpha1.ConditionKnightAvailable,
 		Status:             metav1.ConditionFalse,
-		Reason:             "Suspended",
+		Reason:             aiv1alpha1.ReasonKnightSuspended,
 		Message:            "Knight is suspended",
 		ObservedGeneration: knight.Generation,
 	})
@@ -249,9 +249,9 @@ func (r *KnightReconciler) finishSuspended(ctx context.Context, knight *aiv1alph
 	knight.Status.Phase = aiv1alpha1.KnightPhaseSuspended
 	knight.Status.Ready = false
 	meta.SetStatusCondition(&knight.Status.Conditions, metav1.Condition{
-		Type:               "Available",
+		Type:               aiv1alpha1.ConditionKnightAvailable,
 		Status:             metav1.ConditionFalse,
-		Reason:             "Suspended",
+		Reason:             aiv1alpha1.ReasonKnightSuspended,
 		Message:            "Knight is suspended",
 		ObservedGeneration: knight.Generation,
 	})
@@ -646,9 +646,9 @@ func (r *KnightReconciler) updateStatus(ctx context.Context, knight *aiv1alpha1.
 		knight.Status.Phase = aiv1alpha1.KnightPhaseDegraded
 		knight.Status.Ready = false
 		meta.SetStatusCondition(&knight.Status.Conditions, metav1.Condition{
-			Type:               "Available",
+			Type:               aiv1alpha1.ConditionKnightAvailable,
 			Status:             metav1.ConditionFalse,
-			Reason:             "ReconcileError",
+			Reason:             aiv1alpha1.ReasonKnightReconcileError,
 			Message:            reconcileErr.Error(),
 			ObservedGeneration: knight.Generation,
 		})
@@ -656,9 +656,9 @@ func (r *KnightReconciler) updateStatus(ctx context.Context, knight *aiv1alpha1.
 		knight.Status.Phase = aiv1alpha1.KnightPhaseReady
 		knight.Status.Ready = true
 		meta.SetStatusCondition(&knight.Status.Conditions, metav1.Condition{
-			Type:               "Available",
+			Type:               aiv1alpha1.ConditionKnightAvailable,
 			Status:             metav1.ConditionTrue,
-			Reason:             "KnightReady",
+			Reason:             aiv1alpha1.ReasonKnightReady,
 			Message:            fmt.Sprintf("Knight %s is ready and accepting tasks", knight.Name),
 			ObservedGeneration: knight.Generation,
 		})
@@ -666,9 +666,9 @@ func (r *KnightReconciler) updateStatus(ctx context.Context, knight *aiv1alpha1.
 		knight.Status.Phase = aiv1alpha1.KnightPhaseProvisioning
 		knight.Status.Ready = false
 		meta.SetStatusCondition(&knight.Status.Conditions, metav1.Condition{
-			Type:               "Available",
+			Type:               aiv1alpha1.ConditionKnightAvailable,
 			Status:             metav1.ConditionFalse,
-			Reason:             "Provisioning",
+			Reason:             aiv1alpha1.ReasonKnightProvisioning,
 			Message:            "Knight deployment is being provisioned",
 			ObservedGeneration: knight.Generation,
 		})
