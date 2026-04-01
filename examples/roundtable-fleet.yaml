@@ -1,0 +1,42 @@
+apiVersion: ai.roundtable.io/v1alpha1
+kind: RoundTable
+metadata:
+  name: fleet-a
+  namespace: roundtable
+spec:
+  description: "Personal AI fleet — security, research, infrastructure, and more"
+
+  nats:
+    url: nats://nats.database.svc:4222
+    subjectPrefix: fleet-a
+    tasksStream: fleet_a_tasks
+    resultsStream: fleet_a_results
+    createStreams: true
+    streamRetention: WorkQueue
+
+  defaults:
+    model: claude-sonnet-4-20250514
+    concurrency: 2
+    taskTimeout: 120
+
+  # Optional: pre-warm knights for instant mission startup
+  warmPool:
+    size: 2
+    runtime: deployment
+    maxIdleTime: 1h
+    replaceOnClaim: true
+    template:
+      domain: warm-pool
+      model: claude-sonnet-4-20250514
+      skills:
+        - general
+      nats:
+        subjects:
+          - "fleet-a.tasks.warm-pool.>"
+
+  policies:
+    maxConcurrentTasks: 20
+    maxKnights: 15
+    maxMissions: 5
+    costBudgetUSD: "50"
+    costResetSchedule: "0 0 1 * *"  # Monthly

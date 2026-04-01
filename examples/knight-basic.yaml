@@ -1,0 +1,21 @@
+apiVersion: ai.roundtable.io/v1alpha1
+kind: Knight
+metadata:
+  name: galahad
+  namespace: roundtable
+spec:
+  domain: security
+  model: claude-sonnet-4-20250514
+  skills:
+    - security
+    - threat-intel
+  nats:
+    url: nats://nats.database.svc:4222
+    stream: fleet_a_tasks
+    resultsStream: fleet_a_results
+    subjects:
+      - "fleet-a.tasks.security.>"
+  concurrency: 2
+  taskTimeout: 300
+  workspace:
+    size: 2Gi
