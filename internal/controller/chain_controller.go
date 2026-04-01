@@ -332,7 +332,7 @@ func (r *ChainReconciler) reconcileRunning(ctx context.Context, chain *aiv1alpha
 		now := metav1.Now()
 		chain.Status.StartedAt = &now
 		chain.Status.ObservedGeneration = chain.Generation
-		return ctrl.Result{RequeueAfter: 1 * time.Second}, r.Status().Update(ctx, chain)
+		return ctrl.Result{RequeueAfter: RequeueFast}, r.Status().Update(ctx, chain)
 	}
 	if chain.Status.StartedAt == nil {
 		now := metav1.Now()
@@ -664,7 +664,7 @@ func (r *ChainReconciler) reconcileRunning(ctx context.Context, chain *aiv1alpha
 	}
 
 	// Requeue to poll for results
-	return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+	return ctrl.Result{RequeueAfter: RequeueDefault}, nil
 }
 
 // renderTemplate renders Go templates in the task string with step outputs and input.

@@ -89,14 +89,14 @@ func (r *RoundTableReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		if err := r.Status().Update(ctx, rt); err != nil {
 			return ctrl.Result{}, err
 		}
-		return ctrl.Result{RequeueAfter: 60 * time.Second}, nil
+		return ctrl.Result{RequeueAfter: RequeueVerySlow}, nil
 	}
 
 	// 1. Knight Discovery
 	knights, err := r.discoverKnights(ctx, rt)
 	if err != nil {
 		log.Error(err, "Failed to discover knights")
-		return ctrl.Result{RequeueAfter: 30 * time.Second}, err
+		return ctrl.Result{RequeueAfter: RequeueSlow}, err
 	}
 
 	// 2. Health Aggregation
@@ -226,7 +226,7 @@ func (r *RoundTableReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return ctrl.Result{}, err
 	}
 
-	return ctrl.Result{RequeueAfter: 60 * time.Second}, nil
+	return ctrl.Result{RequeueAfter: RequeueVerySlow}, nil
 }
 
 // discoverKnights lists Knight CRs matching the RoundTable's knightSelector.
