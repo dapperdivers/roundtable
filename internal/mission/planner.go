@@ -960,7 +960,8 @@ func (p *Planner) applyPlan(ctx context.Context, mission *aiv1alpha1.Mission, pl
 
 		mission.Spec.GeneratedChains = append(mission.Spec.GeneratedChains, gc)
 
-		chainName := fmt.Sprintf("%s-%s", mission.Name, pc.Name)
+		// FIX #3: Use consistent naming convention with mission controller
+		chainName := fmt.Sprintf("mission-%s-%s", mission.Name, pc.Name)
 		chain := &aiv1alpha1.Chain{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      chainName,

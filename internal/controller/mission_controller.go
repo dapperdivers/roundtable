@@ -120,9 +120,13 @@ func (r *MissionReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		expiresAt := metav1.NewTime(now.Add(time.Duration(mission.Spec.TTL) * time.Second))
 		mission.Status.ExpiresAt = &expiresAt
 		r.initKnightStatuses(mission)
-		return ctrl.Result{}, status.ForMission(mission).
+		err := status.ForMission(mission).
 			Phase(aiv1alpha1.MissionPhasePending).
 			Apply(ctx, r.Client)
+		if apierrors.IsConflict(err) {
+			return ctrl.Result{Requeue: true}, nil
+		}
+		return ctrl.Result{}, err
 	}
 
 	// Check TTL expiration in any non-terminal phase
@@ -133,10 +137,14 @@ func (r *MissionReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 			// Go straight to CleaningUp in a single status update to avoid
 			// double-update conflicts (the old code set Expired then immediately
 			// overwrote to CleaningUp — the second update stomped the first).
-			return ctrl.Result{RequeueAfter: 5 * time.Second}, status.ForMission(mission).
+			err := status.ForMission(mission).
 				Complete("Mission expired (TTL exceeded)", aiv1alpha1.MissionPhaseCleaningUp).
 				Condition("Complete", "Expired", "Mission TTL expired", metav1.ConditionTrue).
 				Apply(ctx, r.Client)
+			if apierrors.IsConflict(err) {
+				return ctrl.Result{Requeue: true}, nil
+			}
+			return ctrl.Result{RequeueAfter: 5 * time.Second}, err
 		}
 	}
 
@@ -160,13 +168,21 @@ func (r *MissionReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		}
 		mission.Status.Phase = aiv1alpha1.MissionPhaseCleaningUp
 		mission.Status.ObservedGeneration = mission.Generation
-		return ctrl.Result{RequeueAfter: 5 * time.Second}, r.Status().Update(ctx, mission)
+		err := r.Status().Update(ctx, mission)
+		if apierrors.IsConflict(err) {
+			return ctrl.Result{Requeue: true}, nil
+		}
+		return ctrl.Result{RequeueAfter: 5 * time.Second}, err
 	case aiv1alpha1.MissionPhaseCleaningUp:
 		return r.reconcileCleaningUp(ctx, mission)
 	case aiv1alpha1.MissionPhaseExpired:
 		// Already handled above, but if we get here directly just clean up
 		mission.Status.Phase = aiv1alpha1.MissionPhaseCleaningUp
-		return ctrl.Result{RequeueAfter: 5 * time.Second}, r.Status().Update(ctx, mission)
+		err := r.Status().Update(ctx, mission)
+		if apierrors.IsConflict(err) {
+			return ctrl.Result{Requeue: true}, nil
+		}
+		return ctrl.Result{RequeueAfter: 5 * time.Second}, err
 	}
 
 	return ctrl.Result{}, nil
@@ -255,9 +271,13 @@ func (r *MissionReconciler) reconcilePending(ctx context.Context, mission *aiv1a
 	}
 
 	log.Info("Mission spec validation passed", "mission", mission.Name)
-	return ctrl.Result{RequeueAfter: 1 * time.Second}, status.ForMission(mission).
+	err := status.ForMission(mission).
 		Phase(aiv1alpha1.MissionPhaseProvisioning).
 		Apply(ctx, r.Client)
+	if apierrors.IsConflict(err) {
+		return ctrl.Result{Requeue: true}, nil
+	}
+	return ctrl.Result{RequeueAfter: 1 * time.Second}, err
 }
 
 // reconcileProvisioning creates the ephemeral RoundTable and NATS streams if needed.
@@ -365,6 +385,9 @@ func (r *MissionReconciler) reconcileProvisioning(ctx context.Context, mission *
 	mission.Status.Phase = nextPhaseAfterProvisioning(mission)
 	mission.Status.ObservedGeneration = mission.Generation
 	if err := r.Status().Update(ctx, mission); err != nil {
+		if apierrors.IsConflict(err) {
+			return ctrl.Result{Requeue: true}, nil
+		}
 		return ctrl.Result{}, fmt.Errorf("failed to transition to Assembling: %w", err)
 	}
 
@@ -436,7 +459,11 @@ func (r *MissionReconciler) reconcileBriefing(ctx context.Context, mission *aiv1
 
 	mission.Status.Phase = aiv1alpha1.MissionPhaseActive
 	mission.Status.ObservedGeneration = mission.Generation
-	return ctrl.Result{RequeueAfter: 1 * time.Second}, r.Status().Update(ctx, mission)
+	err := r.Status().Update(ctx, mission)
+	if apierrors.IsConflict(err) {
+		return ctrl.Result{Requeue: true}, nil
+	}
+	return ctrl.Result{RequeueAfter: 1 * time.Second}, err
 }
 
 // reconcileActive monitors chain execution, timeout, and knight status.
@@ -448,12 +475,16 @@ func (r *MissionReconciler) reconcileActive(ctx context.Context, mission *aiv1al
 		elapsed := time.Since(mission.Status.StartedAt.Time)
 		if elapsed > time.Duration(mission.Spec.Timeout)*time.Second {
 			log.Info("Mission timed out", "mission", mission.Name, "elapsed", elapsed)
-			return ctrl.Result{}, status.ForMission(mission).
+			err := status.ForMission(mission).
 				Failed(fmt.Sprintf("Mission timed out after %ds", mission.Spec.Timeout)).
 				Condition("Complete", "Timeout",
 					fmt.Sprintf("Mission timed out after %ds", mission.Spec.Timeout),
 					metav1.ConditionTrue).
 				Apply(ctx, r.Client)
+			if apierrors.IsConflict(err) {
+				return ctrl.Result{Requeue: true}, nil
+			}
+			return ctrl.Result{}, err
 		}
 	}
 
@@ -476,12 +507,16 @@ func (r *MissionReconciler) reconcileActive(ctx context.Context, mission *aiv1al
 						log.Error(err, "Failed to suspend mission chains")
 					}
 
-					return ctrl.Result{}, status.ForMission(mission).
+					err := status.ForMission(mission).
 						Failed(fmt.Sprintf("Cost budget exceeded: $%.2f > $%.2f", totalCost, budget)).
 						Condition("Complete", "OverBudget",
 							fmt.Sprintf("Cost $%.2f exceeded budget $%.2f", totalCost, budget),
 							metav1.ConditionTrue).
 						Apply(ctx, r.Client)
+					if apierrors.IsConflict(err) {
+						return ctrl.Result{Requeue: true}, nil
+					}
+					return ctrl.Result{}, err
 				}
 			}
 		}
@@ -493,6 +528,29 @@ func (r *MissionReconciler) reconcileActive(ctx context.Context, mission *aiv1al
 		if err != nil {
 			log.Error(err, "Failed to reconcile mission chains")
 			return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+		}
+
+		// FIX #2: Guard transition to terminal state - ensure all chains in status.chainStatuses
+		// have reached terminal phase before allowing mission to transition to Succeeded/Failed.
+		// This prevents premature cleanup while chains are still running.
+		if anyChainFailed || allChainsComplete {
+			// Double-check all chains in status have reached terminal state
+			hasNonTerminalChains := false
+			for _, cs := range mission.Status.ChainStatuses {
+				if cs.Phase != aiv1alpha1.ChainPhaseSucceeded && cs.Phase != aiv1alpha1.ChainPhaseFailed {
+					hasNonTerminalChains = true
+					log.V(1).Info("Waiting for chain to reach terminal state",
+						"chain", cs.Name,
+						"currentPhase", cs.Phase)
+					break
+				}
+			}
+
+			if hasNonTerminalChains {
+				// Requeue and wait for all chains to finish
+				log.Info("Chains still running, waiting for completion before transitioning mission")
+				return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+			}
 		}
 
 		if anyChainFailed {
@@ -508,7 +566,11 @@ func (r *MissionReconciler) reconcileActive(ctx context.Context, mission *aiv1al
 				ObservedGeneration: mission.Generation,
 			})
 			mission.Status.ObservedGeneration = mission.Generation
-			return ctrl.Result{}, r.Status().Update(ctx, mission)
+			err := r.Status().Update(ctx, mission)
+			if apierrors.IsConflict(err) {
+				return ctrl.Result{Requeue: true}, nil
+			}
+			return ctrl.Result{}, err
 		}
 
 		if allChainsComplete {
@@ -524,7 +586,11 @@ func (r *MissionReconciler) reconcileActive(ctx context.Context, mission *aiv1al
 				ObservedGeneration: mission.Generation,
 			})
 			mission.Status.ObservedGeneration = mission.Generation
-			return ctrl.Result{}, r.Status().Update(ctx, mission)
+			err := r.Status().Update(ctx, mission)
+			if apierrors.IsConflict(err) {
+				return ctrl.Result{Requeue: true}, nil
+			}
+			return ctrl.Result{}, err
 		}
 	} else {
 		// No chains — stay Active until TTL expires or external completion.
