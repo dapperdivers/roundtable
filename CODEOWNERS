@@ -1,0 +1,11 @@
+# Global owners
+* @dapperdivers
+
+# CRD types — changes here affect everything
+/api/ @dapperdivers
+
+# Operator controllers
+/internal/controller/ @dapperdivers
+
+# Helm chart
+/charts/ @dapperdivers
