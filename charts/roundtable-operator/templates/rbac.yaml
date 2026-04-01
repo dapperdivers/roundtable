@@ -21,9 +21,16 @@ rules:
       - roundtables/status
       - roundtables/finalizers
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-  # Managed resources
+  # Managed resources — Deployments
   - apiGroups: ["apps"]
     resources: ["deployments"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Managed resources — Agent Sandbox
+  - apiGroups: ["agents.x-k8s.io"]
+    resources: ["sandboxes", "sandboxes/status"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["extensions.agents.x-k8s.io"]
+    resources: ["sandboxtemplates", "sandboxclaims", "sandboxwarmpools"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: [""]
     resources: ["persistentvolumeclaims", "configmaps", "serviceaccounts"]
