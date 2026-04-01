@@ -151,7 +151,7 @@ func (r *MissionReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 			}
 			r.Recorder.Event(mission, corev1.EventTypeWarning, "Timeout", "Mission exceeded TTL")
 			r.Recorder.Eventf(mission, corev1.EventTypeNormal, "PhaseTransition", "Mission transitioned to %s", aiv1alpha1.MissionPhaseCleaningUp)
-			return ctrl.Result{RequeueAfter: 5 * time.Second}, err
+			return ctrl.Result{RequeueAfter: RequeueDefault}, err
 		}
 	}
 
@@ -179,7 +179,7 @@ func (r *MissionReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		if apierrors.IsConflict(err) {
 			return ctrl.Result{Requeue: true}, nil
 		}
-		return ctrl.Result{RequeueAfter: 5 * time.Second}, err
+		return ctrl.Result{RequeueAfter: RequeueDefault}, err
 	case aiv1alpha1.MissionPhaseCleaningUp:
 		return r.reconcileCleaningUp(ctx, mission)
 	case aiv1alpha1.MissionPhaseExpired:
@@ -189,7 +189,7 @@ func (r *MissionReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		if apierrors.IsConflict(err) {
 			return ctrl.Result{Requeue: true}, nil
 		}
-		return ctrl.Result{RequeueAfter: 5 * time.Second}, err
+		return ctrl.Result{RequeueAfter: RequeueDefault}, err
 	}
 
 	return ctrl.Result{}, nil
@@ -285,7 +285,7 @@ func (r *MissionReconciler) reconcilePending(ctx context.Context, mission *aiv1a
 		return ctrl.Result{Requeue: true}, nil
 	}
 	r.Recorder.Eventf(mission, corev1.EventTypeNormal, "PhaseTransition", "Mission transitioned to %s", aiv1alpha1.MissionPhaseProvisioning)
-	return ctrl.Result{RequeueAfter: 1 * time.Second}, err
+	return ctrl.Result{RequeueAfter: RequeueFast}, err
 }
 
 // reconcileProvisioning creates the ephemeral RoundTable and NATS streams if needed.
@@ -306,7 +306,7 @@ func (r *MissionReconciler) reconcileProvisioning(ctx context.Context, mission *
 		log.Info("Using existing RoundTable", "roundTable", mission.Spec.RoundTableRef)
 		mission.Status.Phase = nextPhaseAfterProvisioning(mission)
 		mission.Status.ObservedGeneration = mission.Generation
-		return ctrl.Result{RequeueAfter: 1 * time.Second}, r.Status().Update(ctx, mission)
+		return ctrl.Result{RequeueAfter: RequeueFast}, r.Status().Update(ctx, mission)
 	}
 
 	// If no ephemeral knights, skip ephemeral RT creation (v1 compatibility)
@@ -321,7 +321,7 @@ func (r *MissionReconciler) reconcileProvisioning(ctx context.Context, mission *
 		log.Info("No ephemeral knights, skipping ephemeral RoundTable creation")
 		mission.Status.Phase = nextPhaseAfterProvisioning(mission)
 		mission.Status.ObservedGeneration = mission.Generation
-		return ctrl.Result{RequeueAfter: 1 * time.Second}, r.Status().Update(ctx, mission)
+		return ctrl.Result{RequeueAfter: RequeueFast}, r.Status().Update(ctx, mission)
 	}
 
 	// Generate resource names
@@ -372,7 +372,7 @@ func (r *MissionReconciler) reconcileProvisioning(ctx context.Context, mission *
 		}
 
 		// Requeue to wait for RoundTable to become Ready
-		return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
+		return ctrl.Result{RequeueAfter: RequeueMedium}, nil
 	}
 
 	// RoundTable exists, check if it's Ready
@@ -380,7 +380,7 @@ func (r *MissionReconciler) reconcileProvisioning(ctx context.Context, mission *
 		log.Info("Waiting for ephemeral RoundTable to become Ready",
 			"roundTable", roundTableName,
 			"currentPhase", rt.Status.Phase)
-		return ctrl.Result{RequeueAfter: 3 * time.Second}, nil
+		return ctrl.Result{RequeueAfter: RequeueMedium}, nil
 	}
 
 	// RoundTable is Ready, streams are created
@@ -445,10 +445,10 @@ func (r *MissionReconciler) reconcileBriefing(ctx context.Context, mission *aiv1
 				ObservedGeneration: mission.Generation,
 			})
 			mission.Status.ObservedGeneration = mission.Generation
-			if err := r.Status().Update(ctx, mission); err != nil {
-				log.Error(err, "Failed to update status after briefing publish failure")
+			if statusErr := r.Status().Update(ctx, mission); statusErr != nil {
+				log.Error(statusErr, "Failed to update status after briefing publish failure")
 			}
-			return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+			return ctrl.Result{RequeueAfter: RequeueDefault}, nil
 		}
 
 		log.Info("Briefing published", "mission", mission.Name)
@@ -475,7 +475,7 @@ func (r *MissionReconciler) reconcileBriefing(ctx context.Context, mission *aiv1
 	// chains need to be manually started by setting their status.phase to Running.
 	if err := r.triggerGeneratedChains(ctx, mission); err != nil {
 		log.Error(err, "Failed to trigger generated chains, will retry")
-		return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
+		return ctrl.Result{RequeueAfter: RequeueMedium}, nil
 	}
 
 	mission.Status.Phase = aiv1alpha1.MissionPhaseActive
@@ -485,7 +485,7 @@ func (r *MissionReconciler) reconcileBriefing(ctx context.Context, mission *aiv1
 		return ctrl.Result{Requeue: true}, nil
 	}
 	r.Recorder.Eventf(mission, corev1.EventTypeNormal, "PhaseTransition", "Mission transitioned to %s", aiv1alpha1.MissionPhaseActive)
-	return ctrl.Result{RequeueAfter: 1 * time.Second}, err
+	return ctrl.Result{RequeueAfter: RequeueFast}, err
 }
 
 // reconcileActive monitors chain execution, timeout, and knight status.
@@ -549,7 +549,7 @@ func (r *MissionReconciler) reconcileActive(ctx context.Context, mission *aiv1al
 		allChainsComplete, anyChainFailed, err := r.reconcileMissionChains(ctx, mission)
 		if err != nil {
 			log.Error(err, "Failed to reconcile mission chains")
-			return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+			return ctrl.Result{RequeueAfter: RequeueDefault}, nil
 		}
 
 		// FIX #2: Guard transition to terminal state - ensure all chains in status.chainStatuses
@@ -571,7 +571,7 @@ func (r *MissionReconciler) reconcileActive(ctx context.Context, mission *aiv1al
 			if hasNonTerminalChains {
 				// Requeue and wait for all chains to finish
 				log.Info("Chains still running, waiting for completion before transitioning mission")
-				return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+				return ctrl.Result{RequeueAfter: RequeueDefault}, nil
 			}
 		}
 
@@ -624,10 +624,10 @@ func (r *MissionReconciler) reconcileActive(ctx context.Context, mission *aiv1al
 	// Update knight statuses
 	r.updateKnightStatuses(ctx, mission)
 	mission.Status.ObservedGeneration = mission.Generation
-	if err := r.Status().Update(ctx, mission); err != nil {
-		log.Error(err, "Failed to update status with knight statuses")
+	if statusErr := r.Status().Update(ctx, mission); statusErr != nil {
+		log.Error(statusErr, "Failed to update status with knight statuses")
 	}
-	return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+	return ctrl.Result{RequeueAfter: RequeueDefault}, nil
 }
 
 // reconcileMissionChains creates and monitors Chain CRs for the mission.
@@ -756,11 +756,11 @@ func (r *MissionReconciler) reconcileCleaningUp(ctx context.Context, mission *ai
 				log.Error(err, "Failed to trigger teardown chain", "chain", chainRef.Name)
 			}
 			// Requeue to wait for teardown
-			return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+			return ctrl.Result{RequeueAfter: RequeueDefault}, nil
 		}
 		// If teardown chain is still running, wait
 		if chain.Status.Phase == aiv1alpha1.ChainPhaseRunning {
-			return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+			return ctrl.Result{RequeueAfter: RequeueDefault}, nil
 		}
 	}
 
@@ -782,7 +782,7 @@ func (r *MissionReconciler) reconcileCleaningUp(ctx context.Context, mission *ai
 		log.Info("Deleting ephemeral Knight CRs")
 		if err := r.deleteEphemeralKnights(ctx, mission); err != nil {
 			log.Error(err, "Failed to delete ephemeral knights, retrying")
-			return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+			return ctrl.Result{RequeueAfter: RequeueDefault}, nil
 		}
 
 		// Step 2: Delete NATS consumers (best effort)
@@ -799,7 +799,7 @@ func (r *MissionReconciler) reconcileCleaningUp(ctx context.Context, mission *ai
 				"resultsStream", mission.Status.NATSResultsStream)
 			if err := r.deleteNATSStreams(ctx, mission); err != nil {
 				log.Error(err, "Failed to delete NATS streams, retrying with backoff")
-				return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+				return ctrl.Result{RequeueAfter: RequeueModerate}, nil
 			}
 		}
 
@@ -808,7 +808,7 @@ func (r *MissionReconciler) reconcileCleaningUp(ctx context.Context, mission *ai
 			log.Info("Deleting ephemeral RoundTable", "name", mission.Status.RoundTableName)
 			if err := r.deleteEphemeralRoundTable(ctx, mission); err != nil {
 				log.Error(err, "Failed to delete RoundTable, retrying")
-				return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+				return ctrl.Result{RequeueAfter: RequeueDefault}, nil
 			}
 		}
 	}

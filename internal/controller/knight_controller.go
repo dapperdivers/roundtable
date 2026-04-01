@@ -20,7 +20,6 @@ import (
 	"context"
 	"fmt"
 	"strings"
-	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -175,7 +174,7 @@ func (r *KnightReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	}
 
 	if reconcileErr != nil {
-		return ctrl.Result{RequeueAfter: 30 * time.Second}, reconcileErr
+		return ctrl.Result{RequeueAfter: RequeueSlow}, reconcileErr
 	}
 
 	return ctrl.Result{}, nil
