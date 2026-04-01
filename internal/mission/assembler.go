@@ -108,7 +108,7 @@ func (a *KnightAssembler) ReconcileAssembling(ctx context.Context, mission *aiv1
 					// Note: Caller should update status
 					return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
 				}
-				return ctrl.Result{}, err
+				return ctrl.Result{}, fmt.Errorf("failed to get recruited knight %q: %w", mk.Name, err)
 			}
 
 			if existingKnight.Status.Phase != aiv1alpha1.KnightPhaseReady || !existingKnight.Status.Ready {
@@ -214,7 +214,7 @@ func (a *KnightAssembler) ReconcileAssembling(ctx context.Context, mission *aiv1
 				fmt.Sprintf("Knights not ready within %v: %v", assemblyTimeout, notReadyKnights),
 				metav1.ConditionFalse).
 			Apply(ctx, a.Client); err != nil {
-			return ctrl.Result{}, err
+			return ctrl.Result{}, fmt.Errorf("failed to update mission status: %w", err)
 		}
 		return ctrl.Result{}, nil
 	}
@@ -490,7 +490,7 @@ func (a *KnightAssembler) buildEphemeralKnight(
 	// Resolve spec from template or inline (checks both mission and RoundTable templates)
 	spec, err := a.resolveKnightSpec(mission, mk, rt)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to resolve knight spec for %q: %w", mk.Name, err)
 	}
 
 	// Generate knight name
@@ -702,6 +702,7 @@ func (a *KnightAssembler) buildMissionNetworkPolicy(mission *aiv1alpha1.Mission,
 
 // BuildEphemeralRoundTable creates the spec for an ephemeral RoundTable for a mission.
 func (a *KnightAssembler) BuildEphemeralRoundTable(
+	ctx context.Context,
 	mission *aiv1alpha1.Mission,
 	name, natsPrefix, tasksStream, resultsStream string,
 ) *aiv1alpha1.RoundTable {
@@ -713,8 +714,8 @@ func (a *KnightAssembler) BuildEphemeralRoundTable(
 	if mission.Spec.RoundTableRef != "" {
 		parentRT := &aiv1alpha1.RoundTable{}
 		parentKey := types.NamespacedName{Name: mission.Spec.RoundTableRef, Namespace: mission.Namespace}
-		// Use background context for fetching defaults (non-critical)
-		if err := a.Client.Get(context.Background(), parentKey, parentRT); err == nil {
+		// Propagate context for proper cancellation and tracing
+		if err := a.Client.Get(ctx, parentKey, parentRT); err == nil {
 			if parentRT.Spec.Defaults != nil {
 				parentDefaults = parentRT.Spec.Defaults
 			}
