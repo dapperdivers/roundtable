@@ -119,7 +119,9 @@ func (r *ChainReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		})
 		chain.Status.Phase = aiv1alpha1.ChainPhaseFailed
 		chain.Status.ObservedGeneration = chain.Generation
-		_ = r.Status().Update(ctx, chain)
+		if statusErr := r.Status().Update(ctx, chain); statusErr != nil {
+			log.Error(statusErr, "Failed to update status during validation error")
+		}
 		return ctrl.Result{}, fmt.Errorf("chain %s/%s missing roundTableRef or missionRef", chain.Namespace, chain.Name)
 	}
 
@@ -133,7 +135,9 @@ func (r *ChainReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 			ObservedGeneration: chain.Generation,
 		})
 		chain.Status.ObservedGeneration = chain.Generation
-		_ = r.Status().Update(ctx, chain)
+		if statusErr := r.Status().Update(ctx, chain); statusErr != nil {
+			log.Error(statusErr, "Failed to update status during validation error")
+		}
 		return ctrl.Result{}, err
 	}
 
@@ -147,7 +151,9 @@ func (r *ChainReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 			ObservedGeneration: chain.Generation,
 		})
 		chain.Status.ObservedGeneration = chain.Generation
-		_ = r.Status().Update(ctx, chain)
+		if statusErr := r.Status().Update(ctx, chain); statusErr != nil {
+			log.Error(statusErr, "Failed to update status during validation error")
+		}
 		return ctrl.Result{}, err
 	}
 
@@ -161,7 +167,9 @@ func (r *ChainReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 			ObservedGeneration: chain.Generation,
 		})
 		chain.Status.ObservedGeneration = chain.Generation
-		_ = r.Status().Update(ctx, chain)
+		if statusErr := r.Status().Update(ctx, chain); statusErr != nil {
+			log.Error(statusErr, "Failed to update status during validation error")
+		}
 		return ctrl.Result{}, err
 	}
 
