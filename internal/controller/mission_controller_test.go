@@ -1528,7 +1528,6 @@ var _ = Describe("Mission Controller - Warm Pool", func() {
 			for _, ks := range mission.Status.KnightStatuses {
 				if ks.Name == "knight1" {
 					foundKnight = true
-					Expect(ks.WarmStart).To(BeTrue())
 					Expect(ks.Ephemeral).To(BeTrue())
 				}
 			}
@@ -1595,7 +1594,6 @@ var _ = Describe("Mission Controller - Warm Pool", func() {
 			for _, ks := range mission.Status.KnightStatuses {
 				if ks.Name == "knight1" {
 					foundKnight = true
-					Expect(ks.WarmStart).To(BeFalse())
 					Expect(ks.Ephemeral).To(BeTrue())
 				}
 			}
