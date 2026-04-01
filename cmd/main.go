@@ -39,6 +39,7 @@ import (
 	"github.com/dapperdivers/roundtable/internal/controller"
 	"github.com/dapperdivers/roundtable/internal/mission"
 	natspkg "github.com/dapperdivers/roundtable/pkg/nats"
+	rtruntime "github.com/dapperdivers/roundtable/pkg/runtime"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -196,11 +197,20 @@ func main() {
 		}
 	}()
 
-	if err := (&controller.KnightReconciler{
+	defaultImage := os.Getenv("DEFAULT_KNIGHT_IMAGE")
+	knightReconciler := &controller.KnightReconciler{
 		Client:       mgr.GetClient(),
 		Scheme:       mgr.GetScheme(),
-		DefaultImage: os.Getenv("DEFAULT_KNIGHT_IMAGE"),
-	}).SetupWithManager(mgr); err != nil {
+		DefaultImage: defaultImage,
+	}
+	// Wire up the RuntimeBackend with a PodSpecBuilder that delegates to the reconciler's buildDeploymentSpec
+	knightReconciler.RuntimeBackend = rtruntime.NewDeploymentBackend(
+		mgr.GetClient(),
+		mgr.GetScheme(),
+		defaultImage,
+		knightReconciler.BuildDeploymentSpec,
+	)
+	if err := knightReconciler.SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "Knight")
 		os.Exit(1)
 	}

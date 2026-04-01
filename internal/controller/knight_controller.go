@@ -18,10 +18,7 @@ package controller
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
-	"sort"
 	"strings"
 	"time"
 
@@ -40,6 +37,7 @@ import (
 
 	aiv1alpha1 "github.com/dapperdivers/roundtable/api/v1alpha1"
 	knightpkg "github.com/dapperdivers/roundtable/internal/knight"
+	rtruntime "github.com/dapperdivers/roundtable/pkg/runtime"
 )
 
 const (
@@ -49,21 +47,17 @@ const (
 	specHashAnnotation     = "roundtable.io/spec-hash"
 )
 
-// nixToolsHash computes a deterministic hash of the Nix tool list.
-// Used to detect when tools change so stale Nix PVCs can be recycled.
-func nixToolsHash(tools []string) string {
-	sorted := make([]string, len(tools))
-	copy(sorted, tools)
-	sort.Strings(sorted)
-	h := sha256.Sum256([]byte(strings.Join(sorted, ",")))
-	return hex.EncodeToString(h[:8]) // 16-char hex prefix
-}
-
 // KnightReconciler reconciles a Knight object
 type KnightReconciler struct {
 	client.Client
 	Scheme       *runtime.Scheme
 	DefaultImage string // Default pi-knight image (set via DEFAULT_KNIGHT_IMAGE env var)
+
+	// RuntimeBackend abstracts the lifecycle of Knight runtime resources.
+	// When set, the controller delegates Deployment reconciliation and
+	// suspend/resume to this backend. When nil, falls back to the
+	// inline reconcileDeployment / reconcileSuspended methods.
+	RuntimeBackend rtruntime.RuntimeBackend
 }
 
 // +kubebuilder:rbac:groups=ai.roundtable.io,resources=knights,verbs=get;list;watch;create;update;patch;delete
@@ -118,6 +112,12 @@ func (r *KnightReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 
 	// Handle suspended state
 	if knight.Spec.Suspended {
+		if r.RuntimeBackend != nil {
+			if err := r.RuntimeBackend.Suspend(ctx, knight); err != nil {
+				return ctrl.Result{}, err
+			}
+			return r.finishSuspended(ctx, knight)
+		}
 		return r.reconcileSuspended(ctx, knight)
 	}
 
@@ -137,9 +137,16 @@ func (r *KnightReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	}
 
 	// 3. Deployment (pi-knight + skill-filter sidecar)
-	if err := r.reconcileDeployment(ctx, knight); err != nil {
-		reconcileErr = err
-		log.Error(err, "Failed to reconcile Deployment")
+	if r.RuntimeBackend != nil {
+		if err := r.RuntimeBackend.Reconcile(ctx, knight); err != nil {
+			reconcileErr = err
+			log.Error(err, "Failed to reconcile Deployment via RuntimeBackend")
+		}
+	} else {
+		if err := r.reconcileDeployment(ctx, knight); err != nil {
+			reconcileErr = err
+			log.Error(err, "Failed to reconcile Deployment")
+		}
 	}
 
 	// Update status based on reconciliation results
@@ -186,6 +193,24 @@ func (r *KnightReconciler) reconcileSuspended(ctx context.Context, knight *aiv1a
 		return ctrl.Result{}, err
 	}
 
+	return ctrl.Result{}, nil
+}
+
+// finishSuspended updates the Knight status after the RuntimeBackend has suspended it.
+func (r *KnightReconciler) finishSuspended(ctx context.Context, knight *aiv1alpha1.Knight) (ctrl.Result, error) {
+	knight.Status.Phase = aiv1alpha1.KnightPhaseSuspended
+	knight.Status.Ready = false
+	meta.SetStatusCondition(&knight.Status.Conditions, metav1.Condition{
+		Type:               "Available",
+		Status:             metav1.ConditionFalse,
+		Reason:             "Suspended",
+		Message:            "Knight is suspended",
+		ObservedGeneration: knight.Generation,
+	})
+	knight.Status.ObservedGeneration = knight.Generation
+	if err := r.Status().Update(ctx, knight); err != nil {
+		return ctrl.Result{}, err
+	}
 	return ctrl.Result{}, nil
 }
 
@@ -298,7 +323,7 @@ func (r *KnightReconciler) reconcilePVC(ctx context.Context, knight *aiv1alpha1.
 	// Create Nix PVC if tools.nix is configured, recycle if tools changed
 	if knight.Spec.Tools != nil && len(knight.Spec.Tools.Nix) > 0 {
 		nixPVCName := fmt.Sprintf("knight-%s-nix", knight.Name)
-		currentHash := nixToolsHash(knight.Spec.Tools.Nix)
+		currentHash := knightpkg.NixToolsHash(knight.Spec.Tools.Nix)
 		nixPVC := &corev1.PersistentVolumeClaim{}
 		err := r.Get(ctx, types.NamespacedName{Name: nixPVCName, Namespace: knight.Namespace}, nixPVC)
 
@@ -437,7 +462,7 @@ func (r *KnightReconciler) reconcileDeployment(ctx context.Context, knight *aiv1
 		"roundtable.io/domain": knight.Spec.Domain,
 	}
 	if knight.Spec.Tools != nil && len(knight.Spec.Tools.Nix) > 0 {
-		podAnnotations[nixToolsHashAnnotation] = nixToolsHash(knight.Spec.Tools.Nix)
+		podAnnotations[nixToolsHashAnnotation] = knightpkg.NixToolsHash(knight.Spec.Tools.Nix)
 	}
 	desired.Spec.Template.ObjectMeta.Annotations = podAnnotations
 	desired.Spec.Template.Spec = r.buildPodSpec(ctx, knight)
@@ -500,8 +525,32 @@ func (r *KnightReconciler) reconcileDeployment(ctx context.Context, knight *aiv1
 	return nil
 }
 
-// buildPodSpec constructs the complete pod spec for a knight.
-// Matches the proven deployment pattern from the working Helm-based knights.
+// BuildDeploymentSpec constructs the full DeploymentSpec for a Knight.
+// Exported so it can be passed as a PodSpecBuilder to RuntimeBackend.
+func (r *KnightReconciler) BuildDeploymentSpec(ctx context.Context, knight *aiv1alpha1.Knight) appsv1.DeploymentSpec {
+	labels := map[string]string{
+		"app.kubernetes.io/name":       "knight",
+		"app.kubernetes.io/instance":   knight.Name,
+		"app.kubernetes.io/managed-by": "roundtable-operator",
+		"roundtable.io/domain":         knight.Spec.Domain,
+	}
+	replicas := int32(1)
+	return appsv1.DeploymentSpec{
+		Replicas: &replicas,
+		Strategy: appsv1.DeploymentStrategy{
+			Type: appsv1.RecreateDeploymentStrategyType,
+		},
+		Selector: &metav1.LabelSelector{
+			MatchLabels: labels,
+		},
+		Template: corev1.PodTemplateSpec{
+			ObjectMeta: metav1.ObjectMeta{
+				Labels: labels,
+			},
+			Spec: r.buildPodSpec(ctx, knight),
+		},
+	}
+}
 
 // buildPodSpec constructs the complete pod spec for a knight using the composable builder.
 func (r *KnightReconciler) buildPodSpec(ctx context.Context, k *aiv1alpha1.Knight) corev1.PodSpec {
@@ -527,9 +576,19 @@ func (r *KnightReconciler) buildPodSpec(ctx context.Context, k *aiv1alpha1.Knigh
 }
 
 func (r *KnightReconciler) updateStatus(ctx context.Context, knight *aiv1alpha1.Knight, reconcileErr error) error {
-	// Check deployment readiness
-	deploy := &appsv1.Deployment{}
-	deployErr := r.Get(ctx, types.NamespacedName{Name: knight.Name, Namespace: knight.Namespace}, deploy)
+	// Check deployment readiness — prefer RuntimeBackend if available
+	var isReady bool
+	if r.RuntimeBackend != nil {
+		ready, err := r.RuntimeBackend.IsReady(ctx, knight)
+		if err == nil {
+			isReady = ready
+		}
+	} else {
+		deploy := &appsv1.Deployment{}
+		if err := r.Get(ctx, types.NamespacedName{Name: knight.Name, Namespace: knight.Namespace}, deploy); err == nil {
+			isReady = deploy.Status.ReadyReplicas > 0
+		}
+	}
 
 	if reconcileErr != nil {
 		knight.Status.Phase = aiv1alpha1.KnightPhaseDegraded
@@ -541,7 +600,7 @@ func (r *KnightReconciler) updateStatus(ctx context.Context, knight *aiv1alpha1.
 			Message:            reconcileErr.Error(),
 			ObservedGeneration: knight.Generation,
 		})
-	} else if deployErr == nil && deploy.Status.ReadyReplicas > 0 {
+	} else if isReady {
 		knight.Status.Phase = aiv1alpha1.KnightPhaseReady
 		knight.Status.Ready = true
 		meta.SetStatusCondition(&knight.Status.Conditions, metav1.Condition{

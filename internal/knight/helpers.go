@@ -18,13 +18,25 @@ package knight
 
 import (
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
 	aiv1alpha1 "github.com/dapperdivers/roundtable/api/v1alpha1"
 )
+
+// NixToolsHash computes a deterministic hash of the Nix tool list.
+// Used to detect when tools change so stale Nix PVCs can be recycled.
+func NixToolsHash(tools []string) string {
+	sorted := make([]string, len(tools))
+	copy(sorted, tools)
+	sort.Strings(sorted)
+	h := sha256.Sum256([]byte(strings.Join(sorted, ",")))
+	return hex.EncodeToString(h[:8]) // 16-char hex prefix
+}
 
 // GenerateFlakeNix produces the flake.nix content for Nix package provisioning.
 func GenerateFlakeNix(knight *aiv1alpha1.Knight) string {

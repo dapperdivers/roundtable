@@ -129,6 +129,10 @@ type KnightSpec struct {
 	// +optional
 	Workspace *KnightWorkspace `json:"workspace,omitempty"`
 
+	// lifecycle controls suspend/resume behavior.
+	// +optional
+	Lifecycle *KnightLifecycle `json:"lifecycle,omitempty"`
+
 	// suspended, if true, scales the knight deployment to 0 replicas.
 	// +kubebuilder:default=false
 	// +optional
@@ -169,6 +173,21 @@ type KnightWorkspace struct {
 	// +kubebuilder:default="1Gi"
 	// +optional
 	Size string `json:"size,omitempty"`
+}
+
+// KnightLifecycle controls suspend/resume behavior for the knight.
+type KnightLifecycle struct {
+	// suspendPolicy controls when the knight is suspended.
+	// Values: auto, manual, never (default: never)
+	// +kubebuilder:validation:Enum=auto;manual;never
+	// +kubebuilder:default="never"
+	// +optional
+	SuspendPolicy string `json:"suspendPolicy,omitempty"`
+
+	// idleTimeout is how long after the last task before auto-suspending.
+	// Only used when SuspendPolicy is "auto" (e.g., "30m", "1h").
+	// +optional
+	IdleTimeout string `json:"idleTimeout,omitempty"`
 }
 
 // KnightCapabilities defines optional runtime capabilities for the knight pod.
