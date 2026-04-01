@@ -7,6 +7,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -52,6 +53,8 @@ func (a *KnightAssembler) ReconcileAssembling(ctx context.Context, mission *aiv1
 
 	// Resolve the RoundTable lazily — only fetched when an ephemeral knight needs it.
 	var rt *aiv1alpha1.RoundTable
+	// Track which warm pool knights have been claimed this reconcile cycle
+	claimedWarmKnights := make(map[string]bool)
 	getRoundTable := func() (*aiv1alpha1.RoundTable, error) {
 		if rt != nil {
 			return rt, nil
@@ -122,25 +125,43 @@ func (a *KnightAssembler) ReconcileAssembling(ctx context.Context, mission *aiv1
 			continue
 		}
 
-		// Ephemeral knight - create if doesn't exist
+		// Ephemeral knight - create if doesn't exist (or claim from warm pool)
 		knightName := fmt.Sprintf("%s-%s", mission.Name, mk.Name)
 		knight := &aiv1alpha1.Knight{}
 		knightKey := types.NamespacedName{Name: knightName, Namespace: mission.Namespace}
 		err := a.Client.Get(ctx, knightKey, knight)
 
 		if err != nil && client.IgnoreNotFound(err) == nil {
-			// Create ephemeral knight — lazy-load the RoundTable
+			// Knight doesn't exist yet — lazy-load the RoundTable
 			resolvedRT, rtErr := getRoundTable()
 			if rtErr != nil {
 				return ctrl.Result{}, rtErr
 			}
 
+			// Try to claim a warm pool knight first
+			claimed, claimErr := a.claimWarmKnight(ctx, mission, mk, resolvedRT, claimedWarmKnights)
+			if claimErr != nil {
+				log.Error(claimErr, "Failed to claim warm pool knight, falling back to cold start", "knight", mk.Name)
+			}
+
+			if claimed {
+				log.Info("Claimed warm pool knight for mission", "missionKnight", mk.Name)
+				// Warm knight is already running and ready
+				knightStatuses[mk.Name] = aiv1alpha1.MissionKnightStatus{
+					Name:      mk.Name,
+					Ephemeral: true,
+					Ready:     true,
+				}
+				continue
+			}
+
+			// No warm knight available — cold start
 			knight, err := a.buildEphemeralKnight(ctx, mission, mk, resolvedRT)
 			if err != nil {
 				return ctrl.Result{}, fmt.Errorf("failed to build ephemeral knight %q: %w", mk.Name, err)
 			}
 
-			log.Info("Creating ephemeral knight", "name", knightName)
+			log.Info("Creating ephemeral knight (cold start)", "name", knightName)
 			if err := a.Client.Create(ctx, knight); err != nil {
 				return ctrl.Result{}, fmt.Errorf("failed to create ephemeral knight: %w", err)
 			}
@@ -224,6 +245,164 @@ func (a *KnightAssembler) ReconcileAssembling(ctx context.Context, mission *aiv1
 		"notReady", len(notReadyKnights))
 
 	return ctrl.Result{RequeueAfter: 3 * time.Second}, nil
+}
+
+// claimWarmKnight attempts to claim an available warm pool knight for a mission.
+// It finds an unclaimed, ready warm knight, patches its spec for the mission, and
+// renames it by creating a new knight with the mission name and deleting the warm one.
+// Returns true if a knight was successfully claimed.
+func (a *KnightAssembler) claimWarmKnight(
+	ctx context.Context,
+	mission *aiv1alpha1.Mission,
+	mk aiv1alpha1.MissionKnight,
+	rt *aiv1alpha1.RoundTable,
+	alreadyClaimed map[string]bool,
+) (bool, error) {
+	log := logf.FromContext(ctx)
+
+	// Check if the RoundTable has a warm pool
+	if rt.Spec.WarmPool == nil || rt.Spec.WarmPool.Size == 0 {
+		return false, nil
+	}
+
+	// List unclaimed, ready warm pool knights
+	knightList := &aiv1alpha1.KnightList{}
+	if err := a.Client.List(ctx, knightList,
+		client.InNamespace(mission.Namespace),
+		client.MatchingLabels{
+			aiv1alpha1.LabelWarmPool:       "true",
+			aiv1alpha1.LabelWarmPoolClaimed: "false",
+			aiv1alpha1.LabelRoundTable:      rt.Name,
+		},
+	); err != nil {
+		return false, fmt.Errorf("failed to list warm pool knights: %w", err)
+	}
+
+	// Collect ready knight candidates
+	var candidates []*aiv1alpha1.Knight
+	for i := range knightList.Items {
+		k := &knightList.Items[i]
+		if k.Status.Phase == aiv1alpha1.KnightPhaseReady && k.Status.Ready && !alreadyClaimed[k.Name] {
+			candidates = append(candidates, k)
+		}
+	}
+
+	if len(candidates) == 0 {
+		return false, nil // No warm knights available
+	}
+
+	// Try each candidate in order — optimistic locking handles concurrent claims
+	for _, warmKnight := range candidates {
+		log.Info("Attempting to claim warm pool knight",
+			"warmKnight", warmKnight.Name,
+			"mission", mission.Name,
+			"missionKnight", mk.Name)
+
+		// Resolve the desired spec for this mission knight
+		spec, err := a.resolveKnightSpec(mission, mk, rt)
+		if err != nil {
+			return false, fmt.Errorf("failed to resolve knight spec: %w", err)
+		}
+
+		// Patch the warm knight's spec with mission-specific config
+		natsPrefix := rt.Spec.NATS.SubjectPrefix
+		warmKnight.Spec.Domain = spec.Domain
+		warmKnight.Spec.Model = spec.Model
+		warmKnight.Spec.Skills = spec.Skills
+		warmKnight.Spec.NATS = aiv1alpha1.KnightNATS{
+			URL:           rt.Spec.NATS.URL,
+			Stream:        rt.Spec.NATS.TasksStream,
+			ResultsStream: rt.Spec.NATS.ResultsStream,
+			Subjects: []string{
+				fmt.Sprintf("%s.tasks.%s.>", natsPrefix, spec.Domain),
+			},
+			ConsumerName: fmt.Sprintf("msn-%s-%s", mission.Name, mk.Name),
+			MaxDeliver:   1,
+		}
+		if spec.Prompt != nil {
+			warmKnight.Spec.Prompt = spec.Prompt
+		}
+		if spec.Tools != nil {
+			warmKnight.Spec.Tools = spec.Tools
+		}
+		if spec.Concurrency > 0 {
+			warmKnight.Spec.Concurrency = spec.Concurrency
+		}
+		if spec.TaskTimeout > 0 {
+			warmKnight.Spec.TaskTimeout = spec.TaskTimeout
+		}
+		if spec.GeneratedSkills != nil {
+			warmKnight.Spec.GeneratedSkills = spec.GeneratedSkills
+		}
+		if spec.NixPackages != nil {
+			warmKnight.Spec.NixPackages = spec.NixPackages
+		}
+
+		// Inject mission secrets
+		if len(mission.Spec.Secrets) > 0 {
+			for _, secretRef := range mission.Spec.Secrets {
+				warmKnight.Spec.EnvFrom = append(warmKnight.Spec.EnvFrom, corev1.EnvFromSource{
+					SecretRef: &corev1.SecretEnvSource{
+						LocalObjectReference: secretRef,
+					},
+				})
+			}
+		}
+
+		// Use mission-scoped ServiceAccount
+		warmKnight.Spec.ServiceAccountName = fmt.Sprintf("mission-%s", mission.Name)
+
+		// Update labels: mark as claimed, link to mission
+		warmKnight.Labels[aiv1alpha1.LabelWarmPoolClaimed] = "true"
+		warmKnight.Labels[aiv1alpha1.LabelMission] = mission.Name
+		warmKnight.Labels[aiv1alpha1.LabelEphemeral] = "true"
+		if mk.Role != "" {
+			sanitized := sanitizeLabelValue(mk.Role)
+			if sanitized != "" {
+				warmKnight.Labels[aiv1alpha1.LabelRole] = sanitized
+			}
+		}
+
+		// Add mission as a NON-CONTROLLER owner reference.
+		// RoundTable is already the controller owner — only one controller is allowed.
+		warmKnight.OwnerReferences = append(warmKnight.OwnerReferences,
+			metav1.OwnerReference{
+				APIVersion:         aiv1alpha1.GroupVersion.String(),
+				Kind:               "Mission",
+				Name:               mission.Name,
+				UID:                mission.UID,
+				Controller:         ptrBool(false),
+				BlockOwnerDeletion: ptrBool(true),
+			},
+		)
+
+		// Attempt update — resourceVersion provides optimistic locking.
+		// If another mission claimed this knight, we get a Conflict and try the next candidate.
+		if err := a.Client.Update(ctx, warmKnight); err != nil {
+			if apierrors.IsConflict(err) {
+				log.Info("Conflict claiming warm knight, trying next candidate",
+					"warmKnight", warmKnight.Name)
+				continue
+			}
+			return false, fmt.Errorf("failed to update warm knight: %w", err)
+		}
+
+		// Mark as claimed in this cycle to avoid double-claiming
+		alreadyClaimed[warmKnight.Name] = true
+
+		log.Info("Successfully claimed warm pool knight",
+			"warmKnight", warmKnight.Name,
+			"mission", mission.Name,
+			"domain", spec.Domain)
+
+		return true, nil
+	}
+
+	// All candidates were claimed by concurrent reconciles
+	log.Info("All warm knight candidates claimed by concurrent reconciles",
+		"mission", mission.Name,
+		"candidateCount", len(candidates))
+	return false, nil
 }
 
 // resolveKnightSpec resolves a KnightSpec from template or inline ephemeral spec.
@@ -650,4 +829,9 @@ func sanitizeLabelValue(s string) string {
 
 func isAlphanumeric(c byte) bool {
 	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
+}
+
+// ptrBool returns a pointer to a bool value.
+func ptrBool(b bool) *bool {
+	return &b
 }

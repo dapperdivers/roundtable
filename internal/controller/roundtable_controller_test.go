@@ -18,10 +18,10 @@ package controller
 
 import (
 	"context"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -29,623 +29,353 @@ import (
 	aiv1alpha1 "github.com/dapperdivers/roundtable/api/v1alpha1"
 )
 
-var _ = Describe("RoundTable Controller", func() {
-	const (
-		rtName    = "test-roundtable"
-		namespace = "default"
-	)
-
-	ctx := context.Background()
-	rtNamespacedName := types.NamespacedName{Name: rtName, Namespace: namespace}
-
-	newReconciler := func() *RoundTableReconciler {
-		return &RoundTableReconciler{
-			Client: k8sClient,
-			Scheme: k8sClient.Scheme(),
-		}
-	}
-
-	Context("Knight Discovery", func() {
-		BeforeEach(func() {
-			// Create RoundTable with label selector
-			rt := &aiv1alpha1.RoundTable{}
-			err := k8sClient.Get(ctx, rtNamespacedName, rt)
-			if err != nil && errors.IsNotFound(err) {
-				rt = &aiv1alpha1.RoundTable{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      rtName,
-						Namespace: namespace,
-					},
-					Spec: aiv1alpha1.RoundTableSpec{
-						NATS: aiv1alpha1.RoundTableNATS{
-							URL:           "nats://nats.test:4222",
-							SubjectPrefix: "test-fleet",
-							TasksStream:   "test_fleet_tasks",
-							ResultsStream: "test_fleet_results",
-						},
-						KnightSelector: &metav1.LabelSelector{
-							MatchLabels: map[string]string{
-								"roundtable.io/fleet": "test",
-							},
-						},
-					},
-				}
-				Expect(k8sClient.Create(ctx, rt)).To(Succeed())
-			}
-
-			// Create matching knights
-			for _, name := range []string{"knight-alpha", "knight-beta"} {
-				k := &aiv1alpha1.Knight{}
-				knn := types.NamespacedName{Name: name, Namespace: namespace}
-				err := k8sClient.Get(ctx, knn, k)
-				if err != nil && errors.IsNotFound(err) {
-					k = &aiv1alpha1.Knight{
-						ObjectMeta: metav1.ObjectMeta{
-							Name:      name,
-							Namespace: namespace,
-							Labels: map[string]string{
-								"roundtable.io/fleet": "test",
-							},
-						},
-						Spec: aiv1alpha1.KnightSpec{
-							Domain: "security",
-							Skills: []string{"security"},
-							NATS: aiv1alpha1.KnightNATS{
-								URL:      "nats://nats.test:4222",
-								Subjects: []string{"test-fleet.tasks.security.>"},
-								Stream:   "test_fleet_tasks",
-							},
-						},
-					}
-					Expect(k8sClient.Create(ctx, k)).To(Succeed())
-				}
-			}
-		})
-
-		AfterEach(func() {
-			// Cleanup
-			for _, name := range []string{"knight-alpha", "knight-beta"} {
-				k := &aiv1alpha1.Knight{}
-				knn := types.NamespacedName{Name: name, Namespace: namespace}
-				if err := k8sClient.Get(ctx, knn, k); err == nil {
-					_ = k8sClient.Delete(ctx, k)
-				}
-			}
-			rt := &aiv1alpha1.RoundTable{}
-			if err := k8sClient.Get(ctx, rtNamespacedName, rt); err == nil {
-				_ = k8sClient.Delete(ctx, rt)
-			}
-		})
-
-		It("should discover knights matching the label selector", func() {
-			rec := newReconciler()
-			result, err := rec.Reconcile(ctx, reconcile.Request{NamespacedName: rtNamespacedName})
-			Expect(err).NotTo(HaveOccurred())
-			Expect(result.RequeueAfter).To(BeNumerically(">", 0))
-
-			rt := &aiv1alpha1.RoundTable{}
-			Expect(k8sClient.Get(ctx, rtNamespacedName, rt)).To(Succeed())
-			Expect(rt.Status.KnightsTotal).To(Equal(int32(2)))
-			Expect(rt.Status.Knights).To(HaveLen(2))
-		})
-
-		It("should set Provisioning phase when no knights are discovered", func() {
-			// Delete the knights first
-			for _, name := range []string{"knight-alpha", "knight-beta"} {
-				k := &aiv1alpha1.Knight{}
-				knn := types.NamespacedName{Name: name, Namespace: namespace}
-				if err := k8sClient.Get(ctx, knn, k); err == nil {
-					Expect(k8sClient.Delete(ctx, k)).To(Succeed())
-				}
-			}
-
-			rec := newReconciler()
-			_, err := rec.Reconcile(ctx, reconcile.Request{NamespacedName: rtNamespacedName})
-			Expect(err).NotTo(HaveOccurred())
-
-			rt := &aiv1alpha1.RoundTable{}
-			Expect(k8sClient.Get(ctx, rtNamespacedName, rt)).To(Succeed())
-			Expect(rt.Status.Phase).To(Equal(aiv1alpha1.RoundTablePhaseProvisioning))
-			Expect(rt.Status.KnightsTotal).To(Equal(int32(0)))
-		})
-	})
-
-	Context("Health Aggregation", func() {
-		BeforeEach(func() {
-			rt := &aiv1alpha1.RoundTable{}
-			err := k8sClient.Get(ctx, rtNamespacedName, rt)
-			if err != nil && errors.IsNotFound(err) {
-				rt = &aiv1alpha1.RoundTable{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      rtName,
-						Namespace: namespace,
-					},
-					Spec: aiv1alpha1.RoundTableSpec{
-						NATS: aiv1alpha1.RoundTableNATS{
-							URL:           "nats://nats.test:4222",
-							SubjectPrefix: "test-fleet",
-							TasksStream:   "test_fleet_tasks",
-							ResultsStream: "test_fleet_results",
-						},
-						KnightSelector: &metav1.LabelSelector{
-							MatchLabels: map[string]string{
-								"roundtable.io/fleet": "health-test",
-							},
-						},
-					},
-				}
-				Expect(k8sClient.Create(ctx, rt)).To(Succeed())
-			}
-		})
-
-		AfterEach(func() {
-			for _, name := range []string{"healthy-knight", "unhealthy-knight"} {
-				k := &aiv1alpha1.Knight{}
-				knn := types.NamespacedName{Name: name, Namespace: namespace}
-				if err := k8sClient.Get(ctx, knn, k); err == nil {
-					_ = k8sClient.Delete(ctx, k)
-				}
-			}
-			rt := &aiv1alpha1.RoundTable{}
-			if err := k8sClient.Get(ctx, rtNamespacedName, rt); err == nil {
-				_ = k8sClient.Delete(ctx, rt)
-			}
-		})
-
-		It("should report Degraded when some knights are not ready", func() {
-			// Create two knights, set one as ready and one not
-			for _, tc := range []struct {
-				name  string
-				ready bool
-				phase aiv1alpha1.KnightPhase
-			}{
-				{"healthy-knight", true, aiv1alpha1.KnightPhaseReady},
-				{"unhealthy-knight", false, aiv1alpha1.KnightPhaseDegraded},
-			} {
-				k := &aiv1alpha1.Knight{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      tc.name,
-						Namespace: namespace,
-						Labels: map[string]string{
-							"roundtable.io/fleet": "health-test",
-						},
-					},
-					Spec: aiv1alpha1.KnightSpec{
-						Domain: "security",
-						Skills: []string{"security"},
-						NATS: aiv1alpha1.KnightNATS{
-							URL:      "nats://nats.test:4222",
-							Subjects: []string{"test-fleet.tasks.security.>"},
-							Stream:   "test_fleet_tasks",
-						},
-					},
-				}
-				Expect(k8sClient.Create(ctx, k)).To(Succeed())
-
-				// Update status
-				k.Status.Phase = tc.phase
-				k.Status.Ready = tc.ready
-				Expect(k8sClient.Status().Update(ctx, k)).To(Succeed())
-			}
-
-			rec := newReconciler()
-			_, err := rec.Reconcile(ctx, reconcile.Request{NamespacedName: rtNamespacedName})
-			Expect(err).NotTo(HaveOccurred())
-
-			rt := &aiv1alpha1.RoundTable{}
-			Expect(k8sClient.Get(ctx, rtNamespacedName, rt)).To(Succeed())
-			Expect(rt.Status.Phase).To(Equal(aiv1alpha1.RoundTablePhaseDegraded))
-			Expect(rt.Status.KnightsReady).To(Equal(int32(1)))
-			Expect(rt.Status.KnightsTotal).To(Equal(int32(2)))
-		})
-
-		It("should report Ready when all knights are ready", func() {
-			for _, name := range []string{"healthy-knight", "unhealthy-knight"} {
-				k := &aiv1alpha1.Knight{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      name,
-						Namespace: namespace,
-						Labels: map[string]string{
-							"roundtable.io/fleet": "health-test",
-						},
-					},
-					Spec: aiv1alpha1.KnightSpec{
-						Domain: "security",
-						Skills: []string{"security"},
-						NATS: aiv1alpha1.KnightNATS{
-							URL:      "nats://nats.test:4222",
-							Subjects: []string{"test-fleet.tasks.security.>"},
-							Stream:   "test_fleet_tasks",
-						},
-					},
-				}
-				Expect(k8sClient.Create(ctx, k)).To(Succeed())
-
-				k.Status.Phase = aiv1alpha1.KnightPhaseReady
-				k.Status.Ready = true
-				Expect(k8sClient.Status().Update(ctx, k)).To(Succeed())
-			}
-
-			rec := newReconciler()
-			_, err := rec.Reconcile(ctx, reconcile.Request{NamespacedName: rtNamespacedName})
-			Expect(err).NotTo(HaveOccurred())
-
-			rt := &aiv1alpha1.RoundTable{}
-			Expect(k8sClient.Get(ctx, rtNamespacedName, rt)).To(Succeed())
-			Expect(rt.Status.Phase).To(Equal(aiv1alpha1.RoundTablePhaseReady))
-			Expect(rt.Status.KnightsReady).To(Equal(int32(2)))
-		})
-	})
-
-	Context("Suspended State", func() {
-		BeforeEach(func() {
-			rt := &aiv1alpha1.RoundTable{}
-			err := k8sClient.Get(ctx, rtNamespacedName, rt)
-			if err != nil && errors.IsNotFound(err) {
-				rt = &aiv1alpha1.RoundTable{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      rtName,
-						Namespace: namespace,
-					},
-					Spec: aiv1alpha1.RoundTableSpec{
-						NATS: aiv1alpha1.RoundTableNATS{
-							URL:           "nats://nats.test:4222",
-							SubjectPrefix: "test-fleet",
-							TasksStream:   "test_fleet_tasks",
-							ResultsStream: "test_fleet_results",
-						},
-						Suspended: true,
-					},
-				}
-				Expect(k8sClient.Create(ctx, rt)).To(Succeed())
-			}
-		})
-
-		AfterEach(func() {
-			rt := &aiv1alpha1.RoundTable{}
-			if err := k8sClient.Get(ctx, rtNamespacedName, rt); err == nil {
-				_ = k8sClient.Delete(ctx, rt)
-			}
-		})
-
-		It("should set Suspended phase when spec.suspended is true", func() {
-			rec := newReconciler()
-			_, err := rec.Reconcile(ctx, reconcile.Request{NamespacedName: rtNamespacedName})
-			Expect(err).NotTo(HaveOccurred())
-
-			rt := &aiv1alpha1.RoundTable{}
-			Expect(k8sClient.Get(ctx, rtNamespacedName, rt)).To(Succeed())
-			Expect(rt.Status.Phase).To(Equal(aiv1alpha1.RoundTablePhaseSuspended))
-		})
-	})
-
-	Context("Phase Computation", func() {
-		It("should return OverBudget when cost exceeds budget", func() {
-			rec := newReconciler()
-			rt := &aiv1alpha1.RoundTable{
-				Spec: aiv1alpha1.RoundTableSpec{
-					Policies: &aiv1alpha1.RoundTablePolicies{
-						CostBudgetUSD: "10.00",
-					},
-				},
-			}
-			phase := rec.computePhase(rt, 2, 2, 15.0)
-			Expect(phase).To(Equal(aiv1alpha1.RoundTablePhaseOverBudget))
-		})
-
-		It("should return Provisioning when no knights exist", func() {
-			rec := newReconciler()
-			rt := &aiv1alpha1.RoundTable{}
-			phase := rec.computePhase(rt, 0, 0, 0)
-			Expect(phase).To(Equal(aiv1alpha1.RoundTablePhaseProvisioning))
-		})
-
-		It("should return Ready when all knights are ready", func() {
-			rec := newReconciler()
-			rt := &aiv1alpha1.RoundTable{}
-			phase := rec.computePhase(rt, 3, 3, 0)
-			Expect(phase).To(Equal(aiv1alpha1.RoundTablePhaseReady))
-		})
-
-		It("should return Degraded when some knights are not ready", func() {
-			rec := newReconciler()
-			rt := &aiv1alpha1.RoundTable{}
-			phase := rec.computePhase(rt, 1, 3, 0)
-			Expect(phase).To(Equal(aiv1alpha1.RoundTablePhaseDegraded))
-		})
-	})
-
-	Context("Ephemeral Knight Filtering (Issue #18)", func() {
+var _ = Describe("RoundTable Controller - Warm Pool", func() {
+	Context("When reconciling a RoundTable with warm pool configuration", func() {
 		const (
-			fleetRT     = "fleet-roundtable"
-			ephemeralRT = "mission-test-abc123"
+			rtName        = "test-rt-warmpool"
+			namespace     = "default"
+			poolSize      = int32(3)
+			templateName  = "default-knight"
 		)
 
+		ctx := context.Background()
+		rtNN := types.NamespacedName{Name: rtName, Namespace: namespace}
+
 		BeforeEach(func() {
-			// Create fleet (non-ephemeral) RoundTable
-			fleetTable := &aiv1alpha1.RoundTable{}
-			fleetKey := types.NamespacedName{Name: fleetRT, Namespace: namespace}
-			err := k8sClient.Get(ctx, fleetKey, fleetTable)
-			if err != nil && errors.IsNotFound(err) {
-				fleetTable = &aiv1alpha1.RoundTable{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      fleetRT,
-						Namespace: namespace,
-					},
-					Spec: aiv1alpha1.RoundTableSpec{
-						NATS: aiv1alpha1.RoundTableNATS{
-							URL:           "nats://nats.test:4222",
-							SubjectPrefix: "fleet-a",
-							TasksStream:   "fleet_a_tasks",
-							ResultsStream: "fleet_a_results",
-						},
-						Ephemeral: false,
-					},
-				}
-				Expect(k8sClient.Create(ctx, fleetTable)).To(Succeed())
-			}
-
-			// Create ephemeral RoundTable
-			ephRT := &aiv1alpha1.RoundTable{}
-			ephKey := types.NamespacedName{Name: ephemeralRT, Namespace: namespace}
-			err = k8sClient.Get(ctx, ephKey, ephRT)
-			if err != nil && errors.IsNotFound(err) {
-				ephRT = &aiv1alpha1.RoundTable{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      ephemeralRT,
-						Namespace: namespace,
-						Labels: map[string]string{
-							aiv1alpha1.LabelEphemeral: "true",
-							aiv1alpha1.LabelMission:   "test-mission",
-						},
-					},
-					Spec: aiv1alpha1.RoundTableSpec{
-						NATS: aiv1alpha1.RoundTableNATS{
-							URL:           "nats://nats.test:4222",
-							SubjectPrefix: "msn-test-abc123",
-							TasksStream:   "msn_test_abc123_tasks",
-							ResultsStream: "msn_test_abc123_results",
-						},
-						Ephemeral:  true,
-						MissionRef: "test-mission",
-					},
-				}
-				Expect(k8sClient.Create(ctx, ephRT)).To(Succeed())
-			}
-		})
-
-		AfterEach(func() {
-			// Cleanup knights (from all tests in this context)
-			for _, name := range []string{"galahad", "mission-test-scanner", "mission-other-scanner", "regular-knight", "eph-knight"} {
-				k := &aiv1alpha1.Knight{}
-				knn := types.NamespacedName{Name: name, Namespace: namespace}
-				if err := k8sClient.Get(ctx, knn, k); err == nil {
-					_ = k8sClient.Delete(ctx, k)
-				}
-			}
-			// Cleanup RoundTables
-			for _, name := range []string{fleetRT, ephemeralRT, "fleet-no-selector"} {
-				rt := &aiv1alpha1.RoundTable{}
-				rtKey := types.NamespacedName{Name: name, Namespace: namespace}
-				if err := k8sClient.Get(ctx, rtKey, rt); err == nil {
-					_ = k8sClient.Delete(ctx, rt)
-				}
-			}
-		})
-
-		It("should exclude ephemeral knights from fleet RoundTable aggregation", func() {
-			// Ensure galahad doesn't exist from previous test
-			existingGalahad := &aiv1alpha1.Knight{}
-			if err := k8sClient.Get(ctx, types.NamespacedName{Name: "galahad", Namespace: namespace}, existingGalahad); err == nil {
-				_ = k8sClient.Delete(ctx, existingGalahad)
-			}
-
-			// Create regular fleet knight
-			galahad := &aiv1alpha1.Knight{
+			By("Creating a RoundTable with warm pool configuration")
+			rt := &aiv1alpha1.RoundTable{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "galahad",
-					Namespace: namespace,
-					// No ephemeral label
-				},
-				Spec: aiv1alpha1.KnightSpec{
-					Domain: "security",
-					Skills: []string{"security"},
-					NATS: aiv1alpha1.KnightNATS{
-						URL:      "nats://nats.test:4222",
-						Subjects: []string{"fleet-a.tasks.security.>"},
-						Stream:   "fleet_a_tasks",
-					},
-				},
-			}
-			Expect(k8sClient.Create(ctx, galahad)).To(Succeed())
-			galahad.Status.Ready = true
-			galahad.Status.Phase = aiv1alpha1.KnightPhaseReady
-			Expect(k8sClient.Status().Update(ctx, galahad)).To(Succeed())
-
-			// Create ephemeral knight (for mission)
-			ephemeralKnight := &aiv1alpha1.Knight{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "mission-test-scanner",
-					Namespace: namespace,
-					Labels: map[string]string{
-						aiv1alpha1.LabelEphemeral:  "true",
-						aiv1alpha1.LabelMission:    "test-mission",
-						aiv1alpha1.LabelRoundTable: ephemeralRT,
-					},
-				},
-				Spec: aiv1alpha1.KnightSpec{
-					Domain: "security",
-					Skills: []string{"security"},
-					NATS: aiv1alpha1.KnightNATS{
-						URL:      "nats://nats.test:4222",
-						Subjects: []string{"msn-test-abc123.tasks.security.>"},
-						Stream:   "msn_test_abc123_tasks",
-					},
-				},
-			}
-			Expect(k8sClient.Create(ctx, ephemeralKnight)).To(Succeed())
-			ephemeralKnight.Status.Ready = true
-			ephemeralKnight.Status.Phase = aiv1alpha1.KnightPhaseReady
-			Expect(k8sClient.Status().Update(ctx, ephemeralKnight)).To(Succeed())
-
-			// Reconcile fleet RoundTable
-			rec := newReconciler()
-			fleetKey := types.NamespacedName{Name: fleetRT, Namespace: namespace}
-			_, err := rec.Reconcile(ctx, reconcile.Request{NamespacedName: fleetKey})
-			Expect(err).NotTo(HaveOccurred())
-
-			// Verify fleet RoundTable only sees galahad (not ephemeral knight)
-			rt := &aiv1alpha1.RoundTable{}
-			Expect(k8sClient.Get(ctx, fleetKey, rt)).To(Succeed())
-			Expect(rt.Status.KnightsTotal).To(Equal(int32(1)), "Fleet RT should only count non-ephemeral knights")
-			Expect(rt.Status.KnightsReady).To(Equal(int32(1)))
-			Expect(rt.Status.Knights).To(HaveLen(1))
-			Expect(rt.Status.Knights[0].Name).To(Equal("galahad"))
-		})
-
-		It("should only discover knights belonging to ephemeral RoundTable", func() {
-			// Create knight for THIS ephemeral RoundTable
-			missionKnight := &aiv1alpha1.Knight{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "mission-test-scanner",
-					Namespace: namespace,
-					Labels: map[string]string{
-						aiv1alpha1.LabelEphemeral:  "true",
-						aiv1alpha1.LabelMission:    "test-mission",
-						aiv1alpha1.LabelRoundTable: ephemeralRT,
-					},
-				},
-				Spec: aiv1alpha1.KnightSpec{
-					Domain: "security",
-					Skills: []string{"security"},
-					NATS: aiv1alpha1.KnightNATS{
-						URL:      "nats://nats.test:4222",
-						Subjects: []string{"msn-test-abc123.tasks.security.>"},
-						Stream:   "msn_test_abc123_tasks",
-					},
-				},
-			}
-			Expect(k8sClient.Create(ctx, missionKnight)).To(Succeed())
-			missionKnight.Status.Ready = true
-			missionKnight.Status.Phase = aiv1alpha1.KnightPhaseReady
-			Expect(k8sClient.Status().Update(ctx, missionKnight)).To(Succeed())
-
-			// Create knight for DIFFERENT ephemeral RoundTable
-			otherKnight := &aiv1alpha1.Knight{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "mission-other-scanner",
-					Namespace: namespace,
-					Labels: map[string]string{
-						aiv1alpha1.LabelEphemeral:  "true",
-						aiv1alpha1.LabelMission:    "other-mission",
-						aiv1alpha1.LabelRoundTable: "mission-other-xyz789",
-					},
-				},
-				Spec: aiv1alpha1.KnightSpec{
-					Domain: "security",
-					Skills: []string{"security"},
-					NATS: aiv1alpha1.KnightNATS{
-						URL:      "nats://nats.test:4222",
-						Subjects: []string{"msn-other-xyz789.tasks.security.>"},
-						Stream:   "msn_other_xyz789_tasks",
-					},
-				},
-			}
-			Expect(k8sClient.Create(ctx, otherKnight)).To(Succeed())
-
-			// Reconcile ephemeral RoundTable
-			rec := newReconciler()
-			ephKey := types.NamespacedName{Name: ephemeralRT, Namespace: namespace}
-			_, err := rec.Reconcile(ctx, reconcile.Request{NamespacedName: ephKey})
-			Expect(err).NotTo(HaveOccurred())
-
-			// Verify ephemeral RoundTable only sees its own knight
-			rt := &aiv1alpha1.RoundTable{}
-			Expect(k8sClient.Get(ctx, ephKey, rt)).To(Succeed())
-			Expect(rt.Status.KnightsTotal).To(Equal(int32(1)), "Ephemeral RT should only see its own knights")
-			Expect(rt.Status.KnightsReady).To(Equal(int32(1)))
-			Expect(rt.Status.Knights).To(HaveLen(1))
-			Expect(rt.Status.Knights[0].Name).To(Equal("mission-test-scanner"))
-		})
-
-		It("should exclude ephemeral knights even without label selector", func() {
-			// Create a fleet RoundTable without explicit knight selector
-			rtNoSelector := &aiv1alpha1.RoundTable{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "fleet-no-selector",
+					Name:      rtName,
 					Namespace: namespace,
 				},
 				Spec: aiv1alpha1.RoundTableSpec{
 					NATS: aiv1alpha1.RoundTableNATS{
 						URL:           "nats://nats.test:4222",
-						SubjectPrefix: "fleet-b",
-						TasksStream:   "fleet_b_tasks",
-						ResultsStream: "fleet_b_results",
+						SubjectPrefix: "test",
+						TasksStream:   "test_tasks",
+						ResultsStream: "test_results",
 					},
-					Ephemeral: false,
-					// No knightSelector specified
-				},
-			}
-			Expect(k8sClient.Create(ctx, rtNoSelector)).To(Succeed())
-			defer func() {
-				_ = k8sClient.Delete(ctx, rtNoSelector)
-			}()
-
-			// Create regular knight
-			regularKnight := &aiv1alpha1.Knight{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "regular-knight",
-					Namespace: namespace,
-				},
-				Spec: aiv1alpha1.KnightSpec{
-					Domain: "infra",
-					Skills: []string{"infra"},
-					NATS: aiv1alpha1.KnightNATS{
-						URL:      "nats://nats.test:4222",
-						Subjects: []string{"fleet-b.tasks.infra.>"},
-						Stream:   "fleet_b_tasks",
+					KnightTemplates: map[string]aiv1alpha1.KnightSpec{
+						templateName: {
+							Domain: "general",
+							Model:  "claude-sonnet-4-20250514",
+							Skills: []string{"general"},
+							NATS: aiv1alpha1.KnightNATS{
+								URL:           "nats://nats.test:4222",
+								Subjects:      []string{"test.tasks.general.>"},
+								Stream:        "test_tasks",
+								ResultsStream: "test_results",
+							},
+							Concurrency: 2,
+							TaskTimeout: 120,
+						},
+					},
+					WarmPool: &aiv1alpha1.WarmPoolConfig{
+						Size:        poolSize,
+						Template:    templateName,
+						MaxIdleTime: "1h",
 					},
 				},
 			}
-			Expect(k8sClient.Create(ctx, regularKnight)).To(Succeed())
-			defer func() {
-				_ = k8sClient.Delete(ctx, regularKnight)
-			}()
+			Expect(k8sClient.Create(ctx, rt)).To(Succeed())
+		})
 
-			// Create ephemeral knight
-			ephKnight := &aiv1alpha1.Knight{
+		AfterEach(func() {
+			By("Cleaning up RoundTable and warm pool knights")
+			rt := &aiv1alpha1.RoundTable{}
+			if err := k8sClient.Get(ctx, rtNN, rt); err == nil {
+				// Delete warm pool knights first
+				knights := &aiv1alpha1.KnightList{}
+				_ = k8sClient.List(ctx, knights)
+				for _, knight := range knights.Items {
+					if knight.Labels[aiv1alpha1.LabelRoundTable] == rtName &&
+						knight.Labels[aiv1alpha1.LabelWarmPool] == "true" {
+						_ = k8sClient.Delete(ctx, &knight)
+					}
+				}
+				_ = k8sClient.Delete(ctx, rt)
+			}
+		})
+
+		It("should create knights to match the pool size", func() {
+			By("Reconciling the RoundTable")
+			reconciler := &RoundTableReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+
+			// Reconcile multiple times to ensure knights are created
+			for i := 0; i < 5; i++ {
+				_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: rtNN})
+				Expect(err).NotTo(HaveOccurred())
+				time.Sleep(100 * time.Millisecond)
+			}
+
+			By("Verifying warm pool knights were created")
+			knights := &aiv1alpha1.KnightList{}
+			Expect(k8sClient.List(ctx, knights)).To(Succeed())
+
+			warmKnights := []aiv1alpha1.Knight{}
+			for _, knight := range knights.Items {
+				if knight.Labels[aiv1alpha1.LabelRoundTable] == rtName &&
+					knight.Labels[aiv1alpha1.LabelWarmPool] == "true" {
+					warmKnights = append(warmKnights, knight)
+				}
+			}
+
+			Expect(warmKnights).To(HaveLen(int(poolSize)))
+
+			By("Verifying warm pool status is updated")
+			rt := &aiv1alpha1.RoundTable{}
+			Expect(k8sClient.Get(ctx, rtNN, rt)).To(Succeed())
+			Expect(rt.Status.WarmPool).NotTo(BeNil())
+			// Initially all knights are provisioning (not ready yet)
+			Expect(rt.Status.WarmPool.Provisioning).To(Equal(poolSize))
+			Expect(rt.Status.WarmPool.Ready).To(Equal(int32(0)))
+			Expect(rt.Status.WarmPool.Claimed).To(Equal(int32(0)))
+		})
+
+		It("should recycle idle knights that exceed MaxIdleTime", func() {
+			By("Creating a warm pool knight with old creation timestamp")
+			oldKnight := &aiv1alpha1.Knight{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "eph-knight",
+					Name:      rtName + "-warm-old",
 					Namespace: namespace,
 					Labels: map[string]string{
-						aiv1alpha1.LabelEphemeral: "true",
+						aiv1alpha1.LabelRoundTable: rtName,
+						aiv1alpha1.LabelWarmPool:   "true",
+					},
+					Annotations: map[string]string{
+						// Set creation time to 2 hours ago
+						aiv1alpha1.AnnotationWarmPoolCreatedAt: time.Now().Add(-2 * time.Hour).Format(time.RFC3339),
 					},
 				},
 				Spec: aiv1alpha1.KnightSpec{
-					Domain: "security",
-					Skills: []string{"security"},
+					Domain: "general",
+					Model:  "claude-sonnet-4-20250514",
+					Skills: []string{"general"},
 					NATS: aiv1alpha1.KnightNATS{
-						URL:      "nats://nats.test:4222",
-						Subjects: []string{"msn-x.tasks.security.>"},
-						Stream:   "msn_x_tasks",
+						URL:           "nats://nats.test:4222",
+						Subjects:      []string{"test.tasks.general.>"},
+						Stream:        "test_tasks",
+						ResultsStream: "test_results",
+					},
+					Concurrency: 2,
+					TaskTimeout: 120,
+				},
+			}
+			Expect(k8sClient.Create(ctx, oldKnight)).To(Succeed())
+
+			// Mark it as ready
+			oldKnight.Status.Ready = true
+			oldKnight.Status.Phase = aiv1alpha1.KnightPhaseReady
+			Expect(k8sClient.Status().Update(ctx, oldKnight)).To(Succeed())
+
+			By("Reconciling the RoundTable")
+			reconciler := &RoundTableReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: rtNN})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying the old knight was recycled")
+			// Give it a moment for the delete to propagate
+			Eventually(func() bool {
+				knight := &aiv1alpha1.Knight{}
+				err := k8sClient.Get(ctx, types.NamespacedName{
+					Name:      rtName + "-warm-old",
+					Namespace: namespace,
+				}, knight)
+				return err != nil
+			}, 5*time.Second, 500*time.Millisecond).Should(BeTrue())
+		})
+
+		It("should update status counts correctly", func() {
+			By("Creating warm pool knights with different states")
+			// Ready unclaimed knight
+			readyKnight := &aiv1alpha1.Knight{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      rtName + "-warm-ready",
+					Namespace: namespace,
+					Labels: map[string]string{
+						aiv1alpha1.LabelRoundTable: rtName,
+						aiv1alpha1.LabelWarmPool:   "true",
+					},
+					Annotations: map[string]string{
+						aiv1alpha1.AnnotationWarmPoolCreatedAt: time.Now().Format(time.RFC3339),
+					},
+				},
+				Spec: aiv1alpha1.KnightSpec{
+					Domain: "general",
+					Model:  "claude-sonnet-4-20250514",
+					Skills: []string{"general"},
+					NATS: aiv1alpha1.KnightNATS{
+						URL:           "nats://nats.test:4222",
+						Subjects:      []string{"test.tasks.general.>"},
+						Stream:        "test_tasks",
+						ResultsStream: "test_results",
 					},
 				},
 			}
-			Expect(k8sClient.Create(ctx, ephKnight)).To(Succeed())
-			defer func() {
-				_ = k8sClient.Delete(ctx, ephKnight)
-			}()
+			Expect(k8sClient.Create(ctx, readyKnight)).To(Succeed())
+			readyKnight.Status.Ready = true
+			readyKnight.Status.Phase = aiv1alpha1.KnightPhaseReady
+			Expect(k8sClient.Status().Update(ctx, readyKnight)).To(Succeed())
 
-			// Reconcile
-			rec := newReconciler()
-			key := types.NamespacedName{Name: "fleet-no-selector", Namespace: namespace}
-			_, err := rec.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+			// Claimed knight
+			claimedKnight := &aiv1alpha1.Knight{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      rtName + "-warm-claimed",
+					Namespace: namespace,
+					Labels: map[string]string{
+						aiv1alpha1.LabelRoundTable:      rtName,
+						aiv1alpha1.LabelWarmPool:        "true",
+						aiv1alpha1.LabelWarmPoolClaimed: "true",
+					},
+					Annotations: map[string]string{
+						aiv1alpha1.AnnotationWarmPoolCreatedAt: time.Now().Format(time.RFC3339),
+					},
+				},
+				Spec: aiv1alpha1.KnightSpec{
+					Domain: "general",
+					Model:  "claude-sonnet-4-20250514",
+					Skills: []string{"general"},
+					NATS: aiv1alpha1.KnightNATS{
+						URL:           "nats://nats.test:4222",
+						Subjects:      []string{"test.tasks.general.>"},
+						Stream:        "test_tasks",
+						ResultsStream: "test_results",
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, claimedKnight)).To(Succeed())
+
+			// Provisioning knight
+			provisioningKnight := &aiv1alpha1.Knight{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      rtName + "-warm-provisioning",
+					Namespace: namespace,
+					Labels: map[string]string{
+						aiv1alpha1.LabelRoundTable: rtName,
+						aiv1alpha1.LabelWarmPool:   "true",
+					},
+					Annotations: map[string]string{
+						aiv1alpha1.AnnotationWarmPoolCreatedAt: time.Now().Format(time.RFC3339),
+					},
+				},
+				Spec: aiv1alpha1.KnightSpec{
+					Domain: "general",
+					Model:  "claude-sonnet-4-20250514",
+					Skills: []string{"general"},
+					NATS: aiv1alpha1.KnightNATS{
+						URL:           "nats://nats.test:4222",
+						Subjects:      []string{"test.tasks.general.>"},
+						Stream:        "test_tasks",
+						ResultsStream: "test_results",
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, provisioningKnight)).To(Succeed())
+			provisioningKnight.Status.Ready = false
+			provisioningKnight.Status.Phase = aiv1alpha1.KnightPhaseProvisioning
+			Expect(k8sClient.Status().Update(ctx, provisioningKnight)).To(Succeed())
+
+			By("Reconciling the RoundTable")
+			reconciler := &RoundTableReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: rtNN})
 			Expect(err).NotTo(HaveOccurred())
 
-			// Verify only regular knight is counted
+			By("Verifying status counts are accurate")
 			rt := &aiv1alpha1.RoundTable{}
-			Expect(k8sClient.Get(ctx, key, rt)).To(Succeed())
-			Expect(rt.Status.KnightsTotal).To(Equal(int32(1)), "Should filter out ephemeral knight")
+			Expect(k8sClient.Get(ctx, rtNN, rt)).To(Succeed())
+			Expect(rt.Status.WarmPool).NotTo(BeNil())
+			Expect(rt.Status.WarmPool.Ready).To(Equal(int32(1)))      // readyKnight
+			Expect(rt.Status.WarmPool.Claimed).To(Equal(int32(1)))    // claimedKnight
+			// Provisioning count includes the ones from the pool size as well
+			Expect(rt.Status.WarmPool.Provisioning).To(BeNumerically(">=", int32(1)))
+		})
+
+		It("should not create warm pool knights when pool is not configured", func() {
+			By("Creating a RoundTable without warm pool")
+			rtNoPool := &aiv1alpha1.RoundTable{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      rtName + "-nopool",
+					Namespace: namespace,
+				},
+				Spec: aiv1alpha1.RoundTableSpec{
+					NATS: aiv1alpha1.RoundTableNATS{
+						URL:           "nats://nats.test:4222",
+						SubjectPrefix: "test",
+						TasksStream:   "test_tasks",
+						ResultsStream: "test_results",
+					},
+					KnightTemplates: map[string]aiv1alpha1.KnightSpec{
+						templateName: {
+							Domain: "general",
+							Model:  "claude-sonnet-4-20250514",
+							Skills: []string{"general"},
+							NATS: aiv1alpha1.KnightNATS{
+								URL:           "nats://nats.test:4222",
+								Subjects:      []string{"test.tasks.general.>"},
+								Stream:        "test_tasks",
+								ResultsStream: "test_results",
+							},
+						},
+					},
+					// No WarmPool configured
+				},
+			}
+			Expect(k8sClient.Create(ctx, rtNoPool)).To(Succeed())
+			defer func() {
+				_ = k8sClient.Delete(ctx, rtNoPool)
+			}()
+
+			By("Reconciling the RoundTable")
+			reconciler := &RoundTableReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      rtName + "-nopool",
+					Namespace: namespace,
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying no warm pool knights were created")
+			knights := &aiv1alpha1.KnightList{}
+			Expect(k8sClient.List(ctx, knights)).To(Succeed())
+
+			warmKnights := []aiv1alpha1.Knight{}
+			for _, knight := range knights.Items {
+				if knight.Labels[aiv1alpha1.LabelRoundTable] == rtName+"-nopool" &&
+					knight.Labels[aiv1alpha1.LabelWarmPool] == "true" {
+					warmKnights = append(warmKnights, knight)
+				}
+			}
+
+			Expect(warmKnights).To(BeEmpty())
+
+			By("Verifying warm pool status is nil")
+			rt := &aiv1alpha1.RoundTable{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      rtName + "-nopool",
+				Namespace: namespace,
+			}, rt)).To(Succeed())
+			// Status may be nil or have zero values
+			if rt.Status.WarmPool != nil {
+				Expect(rt.Status.WarmPool.Ready).To(Equal(int32(0)))
+				Expect(rt.Status.WarmPool.Claimed).To(Equal(int32(0)))
+				Expect(rt.Status.WarmPool.Provisioning).To(Equal(int32(0)))
+			}
 		})
 	})
 })
