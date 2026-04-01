@@ -24,6 +24,7 @@ import (
 	. "github.com/onsi/gomega"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	aiv1alpha1 "github.com/dapperdivers/roundtable/api/v1alpha1"
@@ -112,8 +113,9 @@ var _ = Describe("RoundTable Controller - Warm Pool", func() {
 		It("should create knights to match the pool size", func() {
 			By("Reconciling the RoundTable")
 			reconciler := &RoundTableReconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
+				Client:   k8sClient,
+				Scheme:   k8sClient.Scheme(),
+				Recorder: record.NewFakeRecorder(10),
 			}
 
 			// Reconcile multiple times to ensure knights are created
@@ -154,8 +156,9 @@ var _ = Describe("RoundTable Controller - Warm Pool", func() {
 					Name:      rtName + "-warm-old",
 					Namespace: namespace,
 					Labels: map[string]string{
-						aiv1alpha1.LabelRoundTable: rtName,
-						aiv1alpha1.LabelWarmPool:   "true",
+						aiv1alpha1.LabelRoundTable:      rtName,
+						aiv1alpha1.LabelWarmPool:        "true",
+						aiv1alpha1.LabelWarmPoolClaimed: "false",
 					},
 					Annotations: map[string]string{
 						// Set creation time to 2 hours ago
@@ -185,8 +188,9 @@ var _ = Describe("RoundTable Controller - Warm Pool", func() {
 
 			By("Reconciling the RoundTable")
 			reconciler := &RoundTableReconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
+				Client:   k8sClient,
+				Scheme:   k8sClient.Scheme(),
+				Recorder: record.NewFakeRecorder(10),
 			}
 
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: rtNN})
@@ -212,8 +216,9 @@ var _ = Describe("RoundTable Controller - Warm Pool", func() {
 					Name:      rtName + "-warm-ready",
 					Namespace: namespace,
 					Labels: map[string]string{
-						aiv1alpha1.LabelRoundTable: rtName,
-						aiv1alpha1.LabelWarmPool:   "true",
+						aiv1alpha1.LabelRoundTable:      rtName,
+						aiv1alpha1.LabelWarmPool:        "true",
+						aiv1alpha1.LabelWarmPoolClaimed: "false",
 					},
 					Annotations: map[string]string{
 						aiv1alpha1.AnnotationWarmPoolCreatedAt: time.Now().Format(time.RFC3339),
@@ -270,8 +275,9 @@ var _ = Describe("RoundTable Controller - Warm Pool", func() {
 					Name:      rtName + "-warm-provisioning",
 					Namespace: namespace,
 					Labels: map[string]string{
-						aiv1alpha1.LabelRoundTable: rtName,
-						aiv1alpha1.LabelWarmPool:   "true",
+						aiv1alpha1.LabelRoundTable:      rtName,
+						aiv1alpha1.LabelWarmPool:        "true",
+						aiv1alpha1.LabelWarmPoolClaimed: "false",
 					},
 					Annotations: map[string]string{
 						aiv1alpha1.AnnotationWarmPoolCreatedAt: time.Now().Format(time.RFC3339),
@@ -296,8 +302,9 @@ var _ = Describe("RoundTable Controller - Warm Pool", func() {
 
 			By("Reconciling the RoundTable")
 			reconciler := &RoundTableReconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
+				Client:   k8sClient,
+				Scheme:   k8sClient.Scheme(),
+				Recorder: record.NewFakeRecorder(10),
 			}
 
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: rtNN})
@@ -350,8 +357,9 @@ var _ = Describe("RoundTable Controller - Warm Pool", func() {
 
 			By("Reconciling the RoundTable")
 			reconciler := &RoundTableReconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
+				Client:   k8sClient,
+				Scheme:   k8sClient.Scheme(),
+				Recorder: record.NewFakeRecorder(10),
 			}
 
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{
