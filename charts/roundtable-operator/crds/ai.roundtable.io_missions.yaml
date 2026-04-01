@@ -277,6 +277,16 @@ spec:
                                 skills.
                               type: string
                           type: object
+                        capabilities:
+                          description: capabilities configures optional runtime capabilities
+                            for the knight pod.
+                          properties:
+                            browser:
+                              description: |-
+                                browser enables a headless Chrome sidecar with agent-browser CLI for web automation.
+                                When true, the operator injects a browser sidecar and sets BROWSER_ENABLED=true.
+                              type: boolean
+                          type: object
                         concurrency:
                           default: 2
                           description: concurrency is the maximum number of concurrent
@@ -526,6 +536,25 @@ spec:
                             image is the container image for the knight runtime.
                             If empty, the operator uses DEFAULT_KNIGHT_IMAGE env var.
                           type: string
+                        lifecycle:
+                          description: lifecycle controls suspend/resume behavior.
+                          properties:
+                            idleTimeout:
+                              description: |-
+                                idleTimeout is how long after the last task before auto-suspending.
+                                Only used when SuspendPolicy is "auto" (e.g., "30m", "1h").
+                              type: string
+                            suspendPolicy:
+                              default: never
+                              description: |-
+                                suspendPolicy controls when the knight is suspended.
+                                Values: auto, manual, never (default: never)
+                              enum:
+                              - auto
+                              - manual
+                              - never
+                              type: string
+                          type: object
                         model:
                           default: claude-sonnet-4-20250514
                           description: model is the AI model to use (e.g., "claude-sonnet-4-20250514",
@@ -630,6 +659,16 @@ spec:
                               pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
                               x-kubernetes-int-or-string: true
                           type: object
+                        runtime:
+                          default: deployment
+                          description: |-
+                            runtime selects the backend for managing this knight's pod.
+                            "deployment" uses a standard Kubernetes Deployment (default).
+                            "sandbox" uses Agent Sandbox (agents.x-k8s.io) for lifecycle management.
+                          enum:
+                          - deployment
+                          - sandbox
+                          type: string
                         serviceAccountName:
                           description: |-
                             serviceAccountName is the name of the ServiceAccount to use for the knight pod.
@@ -1010,6 +1049,16 @@ spec:
                                 skills.
                               type: string
                           type: object
+                        capabilities:
+                          description: capabilities configures optional runtime capabilities
+                            for the knight pod.
+                          properties:
+                            browser:
+                              description: |-
+                                browser enables a headless Chrome sidecar with agent-browser CLI for web automation.
+                                When true, the operator injects a browser sidecar and sets BROWSER_ENABLED=true.
+                              type: boolean
+                          type: object
                         concurrency:
                           default: 2
                           description: concurrency is the maximum number of concurrent
@@ -1259,6 +1308,25 @@ spec:
                             image is the container image for the knight runtime.
                             If empty, the operator uses DEFAULT_KNIGHT_IMAGE env var.
                           type: string
+                        lifecycle:
+                          description: lifecycle controls suspend/resume behavior.
+                          properties:
+                            idleTimeout:
+                              description: |-
+                                idleTimeout is how long after the last task before auto-suspending.
+                                Only used when SuspendPolicy is "auto" (e.g., "30m", "1h").
+                              type: string
+                            suspendPolicy:
+                              default: never
+                              description: |-
+                                suspendPolicy controls when the knight is suspended.
+                                Values: auto, manual, never (default: never)
+                              enum:
+                              - auto
+                              - manual
+                              - never
+                              type: string
+                          type: object
                         model:
                           default: claude-sonnet-4-20250514
                           description: model is the AI model to use (e.g., "claude-sonnet-4-20250514",
@@ -1363,6 +1431,16 @@ spec:
                               pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
                               x-kubernetes-int-or-string: true
                           type: object
+                        runtime:
+                          default: deployment
+                          description: |-
+                            runtime selects the backend for managing this knight's pod.
+                            "deployment" uses a standard Kubernetes Deployment (default).
+                            "sandbox" uses Agent Sandbox (agents.x-k8s.io) for lifecycle management.
+                          enum:
+                          - deployment
+                          - sandbox
+                          type: string
                         serviceAccountName:
                           description: |-
                             serviceAccountName is the name of the ServiceAccount to use for the knight pod.
@@ -1502,6 +1580,16 @@ spec:
                                 skills.
                               type: string
                           type: object
+                        capabilities:
+                          description: capabilities configures optional runtime capabilities
+                            for the knight pod.
+                          properties:
+                            browser:
+                              description: |-
+                                browser enables a headless Chrome sidecar with agent-browser CLI for web automation.
+                                When true, the operator injects a browser sidecar and sets BROWSER_ENABLED=true.
+                              type: boolean
+                          type: object
                         concurrency:
                           default: 2
                           description: concurrency is the maximum number of concurrent
@@ -1751,6 +1839,25 @@ spec:
                             image is the container image for the knight runtime.
                             If empty, the operator uses DEFAULT_KNIGHT_IMAGE env var.
                           type: string
+                        lifecycle:
+                          description: lifecycle controls suspend/resume behavior.
+                          properties:
+                            idleTimeout:
+                              description: |-
+                                idleTimeout is how long after the last task before auto-suspending.
+                                Only used when SuspendPolicy is "auto" (e.g., "30m", "1h").
+                              type: string
+                            suspendPolicy:
+                              default: never
+                              description: |-
+                                suspendPolicy controls when the knight is suspended.
+                                Values: auto, manual, never (default: never)
+                              enum:
+                              - auto
+                              - manual
+                              - never
+                              type: string
+                          type: object
                         model:
                           default: claude-sonnet-4-20250514
                           description: model is the AI model to use (e.g., "claude-sonnet-4-20250514",
@@ -1855,6 +1962,16 @@ spec:
                               pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
                               x-kubernetes-int-or-string: true
                           type: object
+                        runtime:
+                          default: deployment
+                          description: |-
+                            runtime selects the backend for managing this knight's pod.
+                            "deployment" uses a standard Kubernetes Deployment (default).
+                            "sandbox" uses Agent Sandbox (agents.x-k8s.io) for lifecycle management.
+                          enum:
+                          - deployment
+                          - sandbox
+                          type: string
                         serviceAccountName:
                           description: |-
                             serviceAccountName is the name of the ServiceAccount to use for the knight pod.
@@ -2254,6 +2371,16 @@ spec:
                               skills.
                             type: string
                         type: object
+                      capabilities:
+                        description: capabilities configures optional runtime capabilities
+                          for the knight pod.
+                        properties:
+                          browser:
+                            description: |-
+                              browser enables a headless Chrome sidecar with agent-browser CLI for web automation.
+                              When true, the operator injects a browser sidecar and sets BROWSER_ENABLED=true.
+                            type: boolean
+                        type: object
                       concurrency:
                         default: 2
                         description: concurrency is the maximum number of concurrent
@@ -2503,6 +2630,25 @@ spec:
                           image is the container image for the knight runtime.
                           If empty, the operator uses DEFAULT_KNIGHT_IMAGE env var.
                         type: string
+                      lifecycle:
+                        description: lifecycle controls suspend/resume behavior.
+                        properties:
+                          idleTimeout:
+                            description: |-
+                              idleTimeout is how long after the last task before auto-suspending.
+                              Only used when SuspendPolicy is "auto" (e.g., "30m", "1h").
+                            type: string
+                          suspendPolicy:
+                            default: never
+                            description: |-
+                              suspendPolicy controls when the knight is suspended.
+                              Values: auto, manual, never (default: never)
+                            enum:
+                            - auto
+                            - manual
+                            - never
+                            type: string
+                        type: object
                       model:
                         default: claude-sonnet-4-20250514
                         description: model is the AI model to use (e.g., "claude-sonnet-4-20250514",
@@ -2607,6 +2753,16 @@ spec:
                             pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
                             x-kubernetes-int-or-string: true
                         type: object
+                      runtime:
+                        default: deployment
+                        description: |-
+                          runtime selects the backend for managing this knight's pod.
+                          "deployment" uses a standard Kubernetes Deployment (default).
+                          "sandbox" uses Agent Sandbox (agents.x-k8s.io) for lifecycle management.
+                        enum:
+                        - deployment
+                        - sandbox
+                        type: string
                       serviceAccountName:
                         description: |-
                           serviceAccountName is the name of the ServiceAccount to use for the knight pod.
