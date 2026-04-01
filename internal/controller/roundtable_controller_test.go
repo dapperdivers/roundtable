@@ -143,7 +143,7 @@ var _ = Describe("RoundTable Controller - Warm Pool", func() {
 			Expect(rt.Status.WarmPool).NotTo(BeNil())
 			// Initially all knights are provisioning (not ready yet)
 			Expect(rt.Status.WarmPool.Provisioning).To(Equal(poolSize))
-			Expect(rt.Status.WarmPool.Ready).To(Equal(int32(0)))
+			Expect(rt.Status.WarmPool.Available).To(Equal(int32(0)))
 			Expect(rt.Status.WarmPool.Claimed).To(Equal(int32(0)))
 		})
 
@@ -307,7 +307,7 @@ var _ = Describe("RoundTable Controller - Warm Pool", func() {
 			rt := &aiv1alpha1.RoundTable{}
 			Expect(k8sClient.Get(ctx, rtNN, rt)).To(Succeed())
 			Expect(rt.Status.WarmPool).NotTo(BeNil())
-			Expect(rt.Status.WarmPool.Ready).To(Equal(int32(1)))      // readyKnight
+			Expect(rt.Status.WarmPool.Available).To(Equal(int32(1)))      // readyKnight
 			Expect(rt.Status.WarmPool.Claimed).To(Equal(int32(1)))    // claimedKnight
 			// Provisioning count includes the ones from the pool size as well
 			Expect(rt.Status.WarmPool.Provisioning).To(BeNumerically(">=", int32(1)))
@@ -384,7 +384,7 @@ var _ = Describe("RoundTable Controller - Warm Pool", func() {
 			}, rt)).To(Succeed())
 			// Status may be nil or have zero values
 			if rt.Status.WarmPool != nil {
-				Expect(rt.Status.WarmPool.Ready).To(Equal(int32(0)))
+				Expect(rt.Status.WarmPool.Available).To(Equal(int32(0)))
 				Expect(rt.Status.WarmPool.Claimed).To(Equal(int32(0)))
 				Expect(rt.Status.WarmPool.Provisioning).To(Equal(int32(0)))
 			}
