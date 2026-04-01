@@ -24,6 +24,7 @@ import (
 	"sync"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -129,6 +130,7 @@ func (r *MissionReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		if apierrors.IsConflict(err) {
 			return ctrl.Result{Requeue: true}, nil
 		}
+		r.Recorder.Eventf(mission, corev1.EventTypeNormal, "PhaseTransition", "Mission transitioned to %s", aiv1alpha1.MissionPhasePending)
 		return ctrl.Result{}, err
 	}
 
@@ -147,6 +149,8 @@ func (r *MissionReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 			if apierrors.IsConflict(err) {
 				return ctrl.Result{Requeue: true}, nil
 			}
+			r.Recorder.Event(mission, corev1.EventTypeWarning, "Timeout", "Mission exceeded TTL")
+			r.Recorder.Eventf(mission, corev1.EventTypeNormal, "PhaseTransition", "Mission transitioned to %s", aiv1alpha1.MissionPhaseCleaningUp)
 			return ctrl.Result{RequeueAfter: 5 * time.Second}, err
 		}
 	}
@@ -280,6 +284,7 @@ func (r *MissionReconciler) reconcilePending(ctx context.Context, mission *aiv1a
 	if apierrors.IsConflict(err) {
 		return ctrl.Result{Requeue: true}, nil
 	}
+	r.Recorder.Eventf(mission, corev1.EventTypeNormal, "PhaseTransition", "Mission transitioned to %s", aiv1alpha1.MissionPhaseProvisioning)
 	return ctrl.Result{RequeueAfter: 1 * time.Second}, err
 }
 
@@ -399,6 +404,8 @@ func (r *MissionReconciler) reconcileProvisioning(ctx context.Context, mission *
 
 // reconcileAssembling creates ephemeral knights and validates all knight references for readiness.
 func (r *MissionReconciler) reconcileAssembling(ctx context.Context, mission *aiv1alpha1.Mission) (ctrl.Result, error) {
+	oldPhase := mission.Status.Phase
+
 	// Delegate to KnightAssembler
 	result, err := r.Assembler.ReconcileAssembling(ctx, mission)
 	if err != nil {
@@ -408,6 +415,15 @@ func (r *MissionReconciler) reconcileAssembling(ctx context.Context, mission *ai
 	// Update status after assembly
 	if err := r.Status().Update(ctx, mission); err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to update mission status: %w", err)
+	}
+
+	// Emit events for phase transitions and assembly completion
+	if mission.Status.Phase != oldPhase {
+		r.Recorder.Eventf(mission, corev1.EventTypeNormal, "PhaseTransition", "Mission transitioned to %s", mission.Status.Phase)
+	}
+	if mission.Status.Phase == aiv1alpha1.MissionPhaseBriefing {
+		knightCount := len(mission.Status.KnightStatuses)
+		r.Recorder.Eventf(mission, corev1.EventTypeNormal, "KnightsAssembled", "%d knights assembled", knightCount)
 	}
 
 	return result, nil
@@ -466,6 +482,7 @@ func (r *MissionReconciler) reconcileBriefing(ctx context.Context, mission *aiv1
 	if apierrors.IsConflict(err) {
 		return ctrl.Result{Requeue: true}, nil
 	}
+	r.Recorder.Eventf(mission, corev1.EventTypeNormal, "PhaseTransition", "Mission transitioned to %s", aiv1alpha1.MissionPhaseActive)
 	return ctrl.Result{RequeueAfter: 1 * time.Second}, err
 }
 
@@ -800,6 +817,8 @@ func (r *MissionReconciler) reconcileCleaningUp(ctx context.Context, mission *ai
 		Message:            "Mission cleanup completed",
 		ObservedGeneration: mission.Generation,
 	})
+
+	r.Recorder.Event(mission, corev1.EventTypeNormal, "CleanupComplete", "Mission resources cleaned up")
 
 	return r.transitionToTerminalPhase(ctx, mission)
 }

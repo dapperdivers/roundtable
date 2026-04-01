@@ -25,6 +25,7 @@ import (
 	"strconv"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -195,6 +196,7 @@ func (r *RoundTableReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 			Message:            fmt.Sprintf("Cost %.4f exceeds budget %s", totalCost, rt.Spec.Policies.CostBudgetUSD),
 			ObservedGeneration: rt.Generation,
 		})
+		r.Recorder.Event(rt, corev1.EventTypeWarning, "BudgetExceeded", "Cost budget exceeded, suspending knights")
 	default:
 		meta.SetStatusCondition(&rt.Status.Conditions, metav1.Condition{
 			Type:               aiv1alpha1.ConditionRoundTableAvailable,
@@ -398,6 +400,7 @@ func (r *RoundTableReconciler) reconcileWarmPool(ctx context.Context, rt *aiv1al
 					if err := r.Delete(ctx, k); err != nil {
 						log.Error(err, "Failed to delete idle warm knight", "knight", k.Name)
 					} else {
+						r.Recorder.Event(rt, corev1.EventTypeNormal, "WarmKnightRecycled", "Idle warm knight recycled")
 						// Adjust counts — the deleted knight is no longer available
 						if k.Status.Phase == aiv1alpha1.KnightPhaseReady && k.Status.Ready {
 							available--
@@ -472,6 +475,9 @@ func (r *RoundTableReconciler) reconcileWarmPool(ctx context.Context, rt *aiv1al
 			return err
 		}
 		provisioning++
+	}
+	if deficit > 0 {
+		r.Recorder.Eventf(rt, corev1.EventTypeNormal, "WarmPoolScaled", "Warm pool scaled to %d", available+provisioning)
 	}
 
 	// Count claimed knights for status
