@@ -42,7 +42,7 @@ import (
 )
 
 const (
-	knightFinalizer        = "ai.roundtable.io/finalizer"
+	knightFinalizer        = "ai.roundtable.io/knight-finalizer"
 	fieldOwner             = "roundtable-operator"
 	nixToolsHashAnnotation = "roundtable.io/nix-tools-hash"
 	specHashAnnotation     = "roundtable.io/spec-hash"

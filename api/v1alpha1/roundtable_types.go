@@ -317,7 +317,7 @@ type WarmPoolStatus struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:resource:shortName=rt
+// +kubebuilder:resource:shortName=rt,categories=roundtable
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
 // +kubebuilder:printcolumn:name="Knights",type=string,JSONPath=`.status.knightsReady`,description="Ready/Total knights"
 // +kubebuilder:printcolumn:name="Total",type=integer,JSONPath=`.status.knightsTotal`

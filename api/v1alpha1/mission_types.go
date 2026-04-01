@@ -492,6 +492,7 @@ type PlanningResult struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +kubebuilder:resource:shortName=msn,categories=roundtable
 // +kubebuilder:printcolumn:name="Objective",type=string,JSONPath=`.spec.objective`,priority=1
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
 // +kubebuilder:printcolumn:name="Knights",type=integer,JSONPath=`.spec.knights`,priority=1
