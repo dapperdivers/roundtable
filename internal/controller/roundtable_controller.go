@@ -21,6 +21,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"sort"
 	"strconv"
 	"time"
 
@@ -391,8 +392,62 @@ func (r *RoundTableReconciler) reconcileWarmPool(ctx context.Context, rt *aiv1al
 		}
 	}
 
-	// Create new warm knights if pool is under capacity
+	// Scale-down: delete excess unclaimed knights if pool size was reduced
+	currentTotal := available + provisioning
+	if currentTotal > wp.Size {
+		excess := currentTotal - wp.Size
+		log.Info("Scaling down warm pool", "current", currentTotal, "desired", wp.Size, "excess", excess)
+
+		// Re-list remaining unclaimed knights for sorting
+		remainingKnights, err := r.listWarmPoolKnights(ctx, rt, false)
+		if err == nil {
+			// Sort: non-ready first, then oldest first
+			sort.Slice(remainingKnights, func(i, j int) bool {
+				ki, kj := &remainingKnights[i], &remainingKnights[j]
+				readyI := ki.Status.Phase == aiv1alpha1.KnightPhaseReady && ki.Status.Ready
+				readyJ := kj.Status.Phase == aiv1alpha1.KnightPhaseReady && kj.Status.Ready
+				if readyI != readyJ {
+					return !readyI // non-ready first
+				}
+				createdAtI, okI := ki.Annotations[aiv1alpha1.AnnotationWarmPoolCreatedAt]
+				createdAtJ, okJ := kj.Annotations[aiv1alpha1.AnnotationWarmPoolCreatedAt]
+				if okI && okJ {
+					timeI, errI := time.Parse(time.RFC3339, createdAtI)
+					timeJ, errJ := time.Parse(time.RFC3339, createdAtJ)
+					if errI == nil && errJ == nil {
+						return timeI.Before(timeJ) // oldest first
+					}
+				}
+				return ki.Name < kj.Name
+			})
+
+			deleted := int32(0)
+			for i := range remainingKnights {
+				if deleted >= excess {
+					break
+				}
+				k := &remainingKnights[i]
+				log.Info("Deleting excess warm pool knight", "knight", k.Name)
+				if err := r.Delete(ctx, k); err != nil {
+					log.Error(err, "Failed to delete excess warm knight", "knight", k.Name)
+				} else {
+					if k.Status.Phase == aiv1alpha1.KnightPhaseReady && k.Status.Ready {
+						available--
+					} else {
+						provisioning--
+					}
+					deleted++
+				}
+			}
+		}
+	}
+
+	// Create new warm knights if pool is under capacity (burst-limited)
+	const maxWarmCreationsPerReconcile int32 = 5
 	deficit := wp.Size - (available + provisioning)
+	if deficit > maxWarmCreationsPerReconcile {
+		deficit = maxWarmCreationsPerReconcile
+	}
 	for i := int32(0); i < deficit; i++ {
 		if err := r.createWarmKnight(ctx, rt); err != nil {
 			log.Error(err, "Failed to create warm pool knight")
