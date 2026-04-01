@@ -279,7 +279,7 @@ func (r *RoundTableReconciler) computePhase(rt *aiv1alpha1.RoundTable, readyCoun
 func (r *RoundTableReconciler) countActiveMissions(ctx context.Context, rt *aiv1alpha1.RoundTable) (int32, error) {
 	missionList := &aiv1alpha1.MissionList{}
 	if err := r.List(ctx, missionList, client.InNamespace(rt.Namespace)); err != nil {
-		return 0, err
+		return 0, fmt.Errorf("failed to list missions: %w", err)
 	}
 
 	var count int32
@@ -494,7 +494,7 @@ func (r *RoundTableReconciler) listWarmPoolKnights(ctx context.Context, rt *aiv1
 			aiv1alpha1.LabelRoundTable:       rt.Name,
 		},
 	); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to list warm pool knights: %w", err)
 	}
 	return knightList.Items, nil
 }

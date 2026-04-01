@@ -346,7 +346,7 @@ func (r *MissionReconciler) reconcileProvisioning(ctx context.Context, mission *
 		}
 
 		// RoundTable doesn't exist, create it
-		rt = r.Assembler.BuildEphemeralRoundTable(mission, roundTableName, natsPrefix, tasksStream, resultsStream)
+		rt = r.Assembler.BuildEphemeralRoundTable(ctx, mission, roundTableName, natsPrefix, tasksStream, resultsStream)
 
 		log.Info("Creating ephemeral RoundTable", "name", roundTableName)
 		if err := r.Create(ctx, rt); err != nil {

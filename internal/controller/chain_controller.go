@@ -806,7 +806,11 @@ func (r *ChainReconciler) reconcileSchedule(ctx context.Context, chain *aiv1alph
 }
 
 // triggerChain resets a chain's step statuses and sets it to Running.
+// This is called from a cron goroutine, not from a reconcile cycle, so we use
+// context.Background() instead of a passed context. The operation should complete
+// independently of any ongoing reconciliation.
 func (r *ChainReconciler) triggerChain(nn types.NamespacedName) {
+	// Use Background context since this is triggered by cron, not reconciliation
 	ctx := context.Background()
 	log := logf.Log.WithName("chain-cron")
 
