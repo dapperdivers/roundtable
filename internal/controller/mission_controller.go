@@ -445,7 +445,9 @@ func (r *MissionReconciler) reconcileBriefing(ctx context.Context, mission *aiv1
 				ObservedGeneration: mission.Generation,
 			})
 			mission.Status.ObservedGeneration = mission.Generation
-			_ = r.Status().Update(ctx, mission)
+			if err := r.Status().Update(ctx, mission); err != nil {
+				log.Error(err, "Failed to update status after briefing publish failure")
+			}
 			return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 		}
 
@@ -622,7 +624,9 @@ func (r *MissionReconciler) reconcileActive(ctx context.Context, mission *aiv1al
 	// Update knight statuses
 	r.updateKnightStatuses(ctx, mission)
 	mission.Status.ObservedGeneration = mission.Generation
-	_ = r.Status().Update(ctx, mission)
+	if err := r.Status().Update(ctx, mission); err != nil {
+		log.Error(err, "Failed to update status with knight statuses")
+	}
 	return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 }
 
@@ -853,7 +857,9 @@ func (r *MissionReconciler) transitionToTerminalPhase(ctx context.Context, missi
 	}
 
 	mission.Status.ObservedGeneration = mission.Generation
-	_ = r.Status().Update(ctx, mission)
+	if err := r.Status().Update(ctx, mission); err != nil {
+		log.Error(err, "Failed to update status during terminal phase transition")
+	}
 
 	// Self-delete if cleanupPolicy=Delete and TTL expired
 	if mission.Spec.CleanupPolicy == "Delete" &&
