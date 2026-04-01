@@ -203,6 +203,7 @@ func main() {
 	knightReconciler := &controller.KnightReconciler{
 		Client:       mgr.GetClient(),
 		Scheme:       mgr.GetScheme(),
+		Recorder:     mgr.GetEventRecorderFor("knight-controller"),
 		DefaultImage: defaultImage,
 	}
 
@@ -232,17 +233,19 @@ func main() {
 		os.Exit(1)
 	}
 	if err := (&controller.ChainReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-		NATS:   natsProvider,
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		Recorder: mgr.GetEventRecorderFor("chain-controller"),
+		NATS:     natsProvider,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "Chain")
 		os.Exit(1)
 	}
 	if err := (&controller.RoundTableReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-		NATS:   natsProvider,
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		Recorder: mgr.GetEventRecorderFor("roundtable-controller"),
+		NATS:     natsProvider,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "RoundTable")
 		os.Exit(1)
@@ -253,10 +256,11 @@ func main() {
 		NATS:   natsProvider,
 	}
 	if err := (&controller.MissionReconciler{
-		Client:  mgr.GetClient(),
-		Scheme:  mgr.GetScheme(),
-		NATS:    natsProvider,
-		Planner: missionPlanner,
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		Recorder: mgr.GetEventRecorderFor("mission-controller"),
+		NATS:     natsProvider,
+		Planner:  missionPlanner,
 		Assembler: &mission.KnightAssembler{
 			Client: mgr.GetClient(),
 			Scheme: mgr.GetScheme(),

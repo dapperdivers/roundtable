@@ -30,6 +30,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -52,6 +53,7 @@ const (
 type KnightReconciler struct {
 	client.Client
 	Scheme       *runtime.Scheme
+	Recorder     record.EventRecorder
 	DefaultImage string // Default pi-knight image (set via DEFAULT_KNIGHT_IMAGE env var)
 
 	// RuntimeBackend abstracts the lifecycle of Knight runtime resources.
@@ -73,6 +75,7 @@ type KnightReconciler struct {
 // +kubebuilder:rbac:groups=core,resources=persistentvolumeclaims,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=configmaps,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=serviceaccounts,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=core,resources=events,verbs=create;patch
 
 func (r *KnightReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
@@ -224,6 +227,7 @@ func (r *KnightReconciler) reconcileSuspended(ctx context.Context, knight *aiv1a
 				return ctrl.Result{}, err
 			}
 			log.Info("Suspended knight — scaled to 0", "knight", knight.Name)
+			r.Recorder.Event(knight, corev1.EventTypeNormal, "Suspended", "Knight suspended")
 		}
 	}
 
@@ -384,6 +388,7 @@ func (r *KnightReconciler) reconcilePVC(ctx context.Context, knight *aiv1alpha1.
 					"name", nixPVCName,
 					"oldHash", existingHash,
 					"newHash", currentHash)
+				r.Recorder.Event(knight, corev1.EventTypeNormal, "NixPVCCleaned", "Stale Nix PVC deleted due to tools change")
 				if err := r.Delete(ctx, nixPVC); err != nil {
 					return fmt.Errorf("Nix PVC delete for recycle failed: %w", err)
 				}
@@ -643,6 +648,7 @@ func (r *KnightReconciler) updateStatus(ctx context.Context, knight *aiv1alpha1.
 	}
 
 	if reconcileErr != nil {
+		r.Recorder.Eventf(knight, corev1.EventTypeWarning, "ReconcileFailed", "Reconciliation failed: %v", reconcileErr)
 		knight.Status.Phase = aiv1alpha1.KnightPhaseDegraded
 		knight.Status.Ready = false
 		meta.SetStatusCondition(&knight.Status.Conditions, metav1.Condition{
@@ -653,6 +659,10 @@ func (r *KnightReconciler) updateStatus(ctx context.Context, knight *aiv1alpha1.
 			ObservedGeneration: knight.Generation,
 		})
 	} else if isReady {
+		// Record event when transitioning to Ready (avoid duplicate events)
+		if knight.Status.Phase != aiv1alpha1.KnightPhaseReady {
+			r.Recorder.Event(knight, corev1.EventTypeNormal, "Ready", "Knight is ready and accepting tasks")
+		}
 		knight.Status.Phase = aiv1alpha1.KnightPhaseReady
 		knight.Status.Ready = true
 		meta.SetStatusCondition(&knight.Status.Conditions, metav1.Condition{
