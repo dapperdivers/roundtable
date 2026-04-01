@@ -71,8 +71,20 @@ var _ = Describe("RoundTable Controller - Warm Pool", func() {
 						},
 					},
 					WarmPool: &aiv1alpha1.WarmPoolConfig{
-						Size:        poolSize,
-						Template:    templateName,
+						Size: poolSize,
+						Template: aiv1alpha1.KnightSpec{
+							Domain: "general",
+							Model:  "claude-sonnet-4-20250514",
+							Skills: []string{"general"},
+							NATS: aiv1alpha1.KnightNATS{
+								URL:           "nats://nats.test:4222",
+								Subjects:      []string{"test.tasks.general.>"},
+								Stream:        "test_tasks",
+								ResultsStream: "test_results",
+							},
+							Concurrency: 2,
+							TaskTimeout: 120,
+						},
 						MaxIdleTime: "1h",
 					},
 				},
