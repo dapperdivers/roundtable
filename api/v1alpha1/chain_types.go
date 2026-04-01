@@ -257,6 +257,7 @@ type ChainStatus struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +kubebuilder:resource:shortName=ch,categories=roundtable
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
 // +kubebuilder:printcolumn:name="Steps",type=integer,JSONPath=`.spec.steps`,priority=1
 // +kubebuilder:printcolumn:name="Schedule",type=string,JSONPath=`.spec.schedule`
