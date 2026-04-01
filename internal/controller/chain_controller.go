@@ -82,6 +82,7 @@ func (r *ChainReconciler) natsClient() (natspkg.Client, error) {
 // +kubebuilder:rbac:groups=core,resources=events,verbs=create;patch
 
 func (r *ChainReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	log := logf.FromContext(ctx)
 	chain := &aiv1alpha1.Chain{}
 	if err := r.Get(ctx, req.NamespacedName, chain); err != nil {
 		if client.IgnoreNotFound(err) == nil {
