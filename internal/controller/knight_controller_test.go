@@ -199,4 +199,134 @@ var _ = Describe("Knight Controller", func() {
 			Expect(deriveResultsPrefix(subjects)).To(Equal(""))
 		})
 	})
+
+	Describe("cleanupStaleRuntime", func() {
+		var (
+			ctx                context.Context
+			reconciler         *KnightReconciler
+			knightName         string
+			knightNamespace    string
+			typeNamespacedName types.NamespacedName
+		)
+
+		BeforeEach(func() {
+			ctx = context.Background()
+			reconciler = &KnightReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+			knightName = "test-runtime-transition"
+			knightNamespace = "default"
+			typeNamespacedName = types.NamespacedName{
+				Name:      knightName,
+				Namespace: knightNamespace,
+			}
+		})
+
+		AfterEach(func() {
+			// Clean up knight if it exists
+			knight := &aiv1alpha1.Knight{}
+			if err := k8sClient.Get(ctx, typeNamespacedName, knight); err == nil {
+				_ = k8sClient.Delete(ctx, knight)
+			}
+			// Clean up deployment if it exists
+			deploy := &appsv1.Deployment{}
+			if err := k8sClient.Get(ctx, typeNamespacedName, deploy); err == nil {
+				_ = k8sClient.Delete(ctx, deploy)
+			}
+		})
+
+		It("deletes stale Deployment when runtime is sandbox", func() {
+			// Create a Knight with default runtime (deployment)
+			knight := &aiv1alpha1.Knight{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      knightName,
+					Namespace: knightNamespace,
+				},
+				Spec: aiv1alpha1.KnightSpec{
+					Domain: "test",
+					Model:  "claude-sonnet-4-20250514",
+					Skills: []string{"shared"},
+					NATS: aiv1alpha1.KnightNATS{
+						URL:           "nats://nats.test:4222",
+						Subjects:      []string{"test.tasks.>"},
+						Stream:        "test_tasks",
+						ResultsStream: "test_results",
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, knight)).To(Succeed())
+
+			// Create a Deployment manually (simulating previous reconcile)
+			deploy := &appsv1.Deployment{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      knightName,
+					Namespace: knightNamespace,
+				},
+				Spec: appsv1.DeploymentSpec{
+					Selector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{"app": "test"},
+					},
+					Template: corev1.PodTemplateSpec{
+						ObjectMeta: metav1.ObjectMeta{
+							Labels: map[string]string{"app": "test"},
+						},
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{{
+								Name:  "test",
+								Image: "test:latest",
+							}},
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, deploy)).To(Succeed())
+
+			// Verify deployment exists
+			deployCheck := &appsv1.Deployment{}
+			Expect(k8sClient.Get(ctx, typeNamespacedName, deployCheck)).To(Succeed())
+
+			// Switch knight to sandbox runtime
+			knight.Spec.Runtime = "sandbox"
+
+			// Call cleanupStaleRuntime
+			err := reconciler.cleanupStaleRuntime(ctx, knight)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Verify deployment was deleted
+			deployAfter := &appsv1.Deployment{}
+			err = k8sClient.Get(ctx, typeNamespacedName, deployAfter)
+			Expect(errors.IsNotFound(err)).To(BeTrue())
+		})
+
+		It("is idempotent when no stale resources exist", func() {
+			// Create a Knight with default runtime
+			knight := &aiv1alpha1.Knight{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      knightName,
+					Namespace: knightNamespace,
+				},
+				Spec: aiv1alpha1.KnightSpec{
+					Domain: "test",
+					Model:  "claude-sonnet-4-20250514",
+					Skills: []string{"shared"},
+					NATS: aiv1alpha1.KnightNATS{
+						URL:           "nats://nats.test:4222",
+						Subjects:      []string{"test.tasks.>"},
+						Stream:        "test_tasks",
+						ResultsStream: "test_results",
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, knight)).To(Succeed())
+
+			// Call cleanupStaleRuntime without any stale resources
+			err := reconciler.cleanupStaleRuntime(ctx, knight)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Call again to verify idempotence
+			err = reconciler.cleanupStaleRuntime(ctx, knight)
+			Expect(err).NotTo(HaveOccurred())
+		})
+	})
 })

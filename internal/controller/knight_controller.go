@@ -119,6 +119,12 @@ func (r *KnightReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	// Resolve the runtime backend for this knight
 	backend := r.runtimeBackendFor(knight)
 
+	// Clean up resources from a previous runtime type (e.g., Deployment → Sandbox transition)
+	if err := r.cleanupStaleRuntime(ctx, knight); err != nil {
+		log.Error(err, "Failed to clean up stale runtime resources")
+		// Don't block reconciliation — the cleanup will retry on next reconcile
+	}
+
 	// Handle suspended state
 	if knight.Spec.Suspended {
 		if backend != nil {
@@ -169,6 +175,39 @@ func (r *KnightReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	}
 
 	return ctrl.Result{}, nil
+}
+
+// cleanupStaleRuntime removes runtime resources from a previous runtime type.
+// When a Knight transitions between "deployment" and "sandbox" runtimes,
+// the old resource (Deployment or Sandbox) must be removed to avoid
+// Multi-Attach errors on RWO PVCs.
+func (r *KnightReconciler) cleanupStaleRuntime(ctx context.Context, knight *aiv1alpha1.Knight) error {
+	log := logf.FromContext(ctx)
+	nn := types.NamespacedName{Name: knight.Name, Namespace: knight.Namespace}
+
+	if knight.Spec.Runtime == "sandbox" {
+		// Sandbox runtime — clean up any stale Deployment
+		deploy := &appsv1.Deployment{}
+		if err := r.Get(ctx, nn, deploy); err == nil {
+			log.Info("Runtime transition: deleting stale Deployment for sandbox knight",
+				"knight", knight.Name)
+			if err := r.Delete(ctx, deploy); err != nil && !apierrors.IsNotFound(err) {
+				return fmt.Errorf("failed to delete stale deployment during runtime transition: %w", err)
+			}
+		}
+	} else {
+		// Deployment runtime (default) — clean up any stale Sandbox
+		sandbox := &sandboxv1alpha1.Sandbox{}
+		if err := r.Get(ctx, nn, sandbox); err == nil {
+			log.Info("Runtime transition: deleting stale Sandbox for deployment knight",
+				"knight", knight.Name)
+			if err := r.Delete(ctx, sandbox); err != nil && !apierrors.IsNotFound(err) {
+				return fmt.Errorf("failed to delete stale sandbox during runtime transition: %w", err)
+			}
+		}
+	}
+
+	return nil
 }
 
 // reconcileSuspended scales the deployment to 0 and updates status.
