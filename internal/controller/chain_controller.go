@@ -82,6 +82,8 @@ func (r *ChainReconciler) natsClient() (natspkg.Client, error) {
 // +kubebuilder:rbac:groups=core,resources=events,verbs=create;patch
 
 func (r *ChainReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	log := logf.FromContext(ctx)
+	
 	chain := &aiv1alpha1.Chain{}
 	if err := r.Get(ctx, req.NamespacedName, chain); err != nil {
 		if client.IgnoreNotFound(err) == nil {
@@ -202,7 +204,6 @@ func (r *ChainReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	// Reset to Idle when spec changes (generation drift) and chain is not running
 	if chain.Status.ObservedGeneration != chain.Generation &&
 		chain.Status.Phase != aiv1alpha1.ChainPhaseRunning {
-		log := logf.FromContext(ctx)
 		log.Info("Spec changed, resetting chain to Idle",
 			"oldGen", chain.Status.ObservedGeneration,
 			"newGen", chain.Generation)
