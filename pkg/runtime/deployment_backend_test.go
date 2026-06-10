@@ -80,7 +80,7 @@ func newTestKnight(name, namespace string) *aiv1alpha1.Knight {
 			Image:  "ghcr.io/dapperdivers/openclaw-knight:v1",
 			Skills: []string{"recon", "vuln-scan"},
 			NATS: aiv1alpha1.KnightNATS{
-				Subject: "roundtable.security",
+				Subjects: []string{"roundtable.tasks.security.>"},
 			},
 		},
 	}
