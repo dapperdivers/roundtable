@@ -219,9 +219,12 @@ func (a *KnightAssembler) ReconcileAssembling(ctx context.Context, mission *aiv1
 		return ctrl.Result{}, nil
 	}
 
-	// If all knights ready, transition to Briefing
+	// If all knights ready, transition to Briefing. A mission with no knights
+	// of its own (chains-only, using standing knights) has nothing to assemble
+	// and proceeds immediately — gating on totalKnights > 0 would stall it in
+	// Assembling until the assembly timeout failed it.
 	totalKnights := len(allKnights)
-	if allReady && totalKnights > 0 {
+	if allReady {
 		log.Info("All knights assembled, transitioning to Briefing",
 			"mission", mission.Name,
 			"knightCount", totalKnights)
@@ -324,6 +327,9 @@ func (a *KnightAssembler) claimWarmKnight(
 		}
 		if spec.Tools != nil {
 			warmKnight.Spec.Tools = spec.Tools
+		}
+		if spec.Env != nil {
+			warmKnight.Spec.Env = spec.Env
 		}
 		if spec.Concurrency > 0 {
 			warmKnight.Spec.Concurrency = spec.Concurrency

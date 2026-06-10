@@ -28,10 +28,12 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	aiv1alpha1 "github.com/dapperdivers/roundtable/api/v1alpha1"
+	missionpkg "github.com/dapperdivers/roundtable/internal/mission"
 )
 
 var _ = Describe("Mission Controller", func() {
@@ -275,6 +277,8 @@ var _ = Describe("Mission Controller", func() {
 		return &MissionReconciler{
 			Client: k8sClient,
 			Scheme: k8sClient.Scheme(),
+			Recorder: record.NewFakeRecorder(100),
+			Assembler: &missionpkg.KnightAssembler{Client: k8sClient, Scheme: k8sClient.Scheme()},
 		}
 	}
 
@@ -1434,7 +1438,8 @@ var _ = Describe("Mission Controller - Warm Pool", func() {
 					Namespace: namespace,
 					Labels: map[string]string{
 						aiv1alpha1.LabelRoundTable: rtName,
-						aiv1alpha1.LabelWarmPool:   "true",
+						aiv1alpha1.LabelWarmPool:        "true",
+						aiv1alpha1.LabelWarmPoolClaimed: "false",
 					},
 					Annotations: map[string]string{
 						aiv1alpha1.AnnotationWarmPoolCreatedAt: time.Now().Format(time.RFC3339),
@@ -1494,6 +1499,8 @@ var _ = Describe("Mission Controller - Warm Pool", func() {
 			reconciler := &MissionReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
+				Recorder: record.NewFakeRecorder(100),
+				Assembler: &missionpkg.KnightAssembler{Client: k8sClient, Scheme: k8sClient.Scheme()},
 			}
 
 			// Drive to assembling phase
@@ -1502,8 +1509,9 @@ var _ = Describe("Mission Controller - Warm Pool", func() {
 				Expect(err).NotTo(HaveOccurred())
 				mission := &aiv1alpha1.Mission{}
 				_ = k8sClient.Get(ctx, missionNN, mission)
-				if mission.Status.Phase == aiv1alpha1.MissionPhaseAssembling ||
-					mission.Status.Phase == aiv1alpha1.MissionPhaseBriefing ||
+				// Keep reconciling through Assembling — the warm pool claim
+				// happens during the Assembling reconcile, not on entry to it.
+				if mission.Status.Phase == aiv1alpha1.MissionPhaseBriefing ||
 					mission.Status.Phase == aiv1alpha1.MissionPhaseActive {
 					break
 				}
@@ -1561,6 +1569,8 @@ var _ = Describe("Mission Controller - Warm Pool", func() {
 			reconciler := &MissionReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
+				Recorder: record.NewFakeRecorder(100),
+				Assembler: &missionpkg.KnightAssembler{Client: k8sClient, Scheme: k8sClient.Scheme()},
 			}
 
 			// Drive to assembling phase
@@ -1569,7 +1579,12 @@ var _ = Describe("Mission Controller - Warm Pool", func() {
 				Expect(err).NotTo(HaveOccurred())
 				mission := &aiv1alpha1.Mission{}
 				_ = k8sClient.Get(ctx, missionNN, mission)
-				if mission.Status.Phase == aiv1alpha1.MissionPhaseAssembling {
+				// Keep reconciling through Assembling — assembly work happens
+				// during the Assembling reconcile, not on entry to it. These
+				// missions stay in Assembling (their cold-start knights never
+				// become ready in envtest), so all iterations run.
+				if mission.Status.Phase == aiv1alpha1.MissionPhaseBriefing ||
+					mission.Status.Phase == aiv1alpha1.MissionPhaseActive {
 					break
 				}
 				time.Sleep(100 * time.Millisecond)
@@ -1608,7 +1623,8 @@ var _ = Describe("Mission Controller - Warm Pool", func() {
 					Namespace: namespace,
 					Labels: map[string]string{
 						aiv1alpha1.LabelRoundTable: rtName,
-						aiv1alpha1.LabelWarmPool:   "true",
+						aiv1alpha1.LabelWarmPool:        "true",
+						aiv1alpha1.LabelWarmPoolClaimed: "false",
 					},
 					Annotations: map[string]string{
 						aiv1alpha1.AnnotationWarmPoolCreatedAt: time.Now().Format(time.RFC3339),
@@ -1673,6 +1689,8 @@ var _ = Describe("Mission Controller - Warm Pool", func() {
 			reconciler := &MissionReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
+				Recorder: record.NewFakeRecorder(100),
+				Assembler: &missionpkg.KnightAssembler{Client: k8sClient, Scheme: k8sClient.Scheme()},
 			}
 
 			// Drive to assembling phase
@@ -1681,7 +1699,12 @@ var _ = Describe("Mission Controller - Warm Pool", func() {
 				Expect(err).NotTo(HaveOccurred())
 				mission := &aiv1alpha1.Mission{}
 				_ = k8sClient.Get(ctx, missionNN, mission)
-				if mission.Status.Phase == aiv1alpha1.MissionPhaseAssembling {
+				// Keep reconciling through Assembling — assembly work happens
+				// during the Assembling reconcile, not on entry to it. These
+				// missions stay in Assembling (their cold-start knights never
+				// become ready in envtest), so all iterations run.
+				if mission.Status.Phase == aiv1alpha1.MissionPhaseBriefing ||
+					mission.Status.Phase == aiv1alpha1.MissionPhaseActive {
 					break
 				}
 				time.Sleep(100 * time.Millisecond)
@@ -1713,7 +1736,8 @@ var _ = Describe("Mission Controller - Warm Pool", func() {
 					Namespace: namespace,
 					Labels: map[string]string{
 						aiv1alpha1.LabelRoundTable: rtName,
-						aiv1alpha1.LabelWarmPool:   "true",
+						aiv1alpha1.LabelWarmPool:        "true",
+						aiv1alpha1.LabelWarmPoolClaimed: "false",
 					},
 					Annotations: map[string]string{
 						aiv1alpha1.AnnotationWarmPoolCreatedAt: time.Now().Format(time.RFC3339),
@@ -1779,6 +1803,8 @@ var _ = Describe("Mission Controller - Warm Pool", func() {
 			reconciler := &MissionReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
+				Recorder: record.NewFakeRecorder(100),
+				Assembler: &missionpkg.KnightAssembler{Client: k8sClient, Scheme: k8sClient.Scheme()},
 			}
 
 			// Drive to assembling phase
@@ -1787,8 +1813,9 @@ var _ = Describe("Mission Controller - Warm Pool", func() {
 				Expect(err).NotTo(HaveOccurred())
 				mission := &aiv1alpha1.Mission{}
 				_ = k8sClient.Get(ctx, missionNN, mission)
-				if mission.Status.Phase == aiv1alpha1.MissionPhaseAssembling ||
-					mission.Status.Phase == aiv1alpha1.MissionPhaseBriefing {
+				// Keep reconciling through Assembling — the warm pool claim
+				// happens during the Assembling reconcile, not on entry to it.
+				if mission.Status.Phase == aiv1alpha1.MissionPhaseBriefing {
 					break
 				}
 				time.Sleep(100 * time.Millisecond)
@@ -1934,6 +1961,8 @@ var _ = Describe("Mission Controller - Generated Chains", func() {
 			reconciler := &MissionReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
+				Recorder: record.NewFakeRecorder(100),
+				Assembler: &missionpkg.KnightAssembler{Client: k8sClient, Scheme: k8sClient.Scheme()},
 			}
 
 			// Reconcile a few times to create the mission-scoped chain
