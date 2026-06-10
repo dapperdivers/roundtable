@@ -27,6 +27,11 @@ type TaskPayload struct {
 	// StepName is the name of the chain step (optional).
 	StepName string `json:"stepName,omitempty"`
 
+	// RunID identifies the chain run this task belongs to (optional).
+	// Knights should key fresh agent sessions on this value so context
+	// never bleeds between runs.
+	RunID string `json:"runId,omitempty"`
+
 	// Task is the task description or instruction to execute.
 	Task string `json:"task"`
 }

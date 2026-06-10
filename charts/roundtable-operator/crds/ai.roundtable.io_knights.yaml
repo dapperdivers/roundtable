@@ -8,9 +8,13 @@ metadata:
 spec:
   group: ai.roundtable.io
   names:
+    categories:
+    - roundtable
     kind: Knight
     listKind: KnightList
     plural: knights
+    shortNames:
+    - kn
     singular: knight
   scope: Namespaced
   versions:

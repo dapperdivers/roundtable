@@ -8,9 +8,13 @@ metadata:
 spec:
   group: ai.roundtable.io
   names:
+    categories:
+    - roundtable
     kind: Mission
     listKind: MissionList
     plural: missions
+    shortNames:
+    - msn
     singular: mission
   scope: Namespaced
   versions:

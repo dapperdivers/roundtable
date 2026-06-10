@@ -8,9 +8,13 @@ metadata:
 spec:
   group: ai.roundtable.io
   names:
+    categories:
+    - roundtable
     kind: Chain
     listKind: ChainList
     plural: chains
+    shortNames:
+    - ch
     singular: chain
   scope: Namespaced
   versions:
@@ -105,6 +109,16 @@ spec:
                   schedule is an optional cron expression to trigger this chain on a recurring basis.
                   Uses standard cron syntax (e.g., "0 */6 * * *").
                 type: string
+              startingDeadlineSeconds:
+                description: |-
+                  startingDeadlineSeconds bounds catch-up of missed scheduled runs.
+                  If the controller was down when a scheduled run should have fired, the
+                  run is triggered late only if fewer than this many seconds have passed
+                  since the missed schedule time. If not set, a missed run is always
+                  caught up (at most one catch-up run is triggered).
+                format: int64
+                minimum: 1
+                type: integer
               steps:
                 description: |-
                   steps defines the ordered list of pipeline steps.
@@ -286,6 +300,12 @@ spec:
                 - Failed
                 - Suspended
                 - PartiallySucceeded
+                type: string
+              runId:
+                description: |-
+                  runId uniquely identifies the current (or most recent) chain run.
+                  It is embedded in task IDs and NATS KV entries so results produced by
+                  a previous run can never be attributed to the current one.
                 type: string
               runsCompleted:
                 description: runsCompleted is the total number of successful chain
