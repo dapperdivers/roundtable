@@ -29,16 +29,21 @@ import (
 	"github.com/dapperdivers/roundtable/internal/util"
 	"github.com/robfig/cron/v3"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/uuid"
 	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/manager"
 
 	aiv1alpha1 "github.com/dapperdivers/roundtable/api/v1alpha1"
+	"github.com/dapperdivers/roundtable/pkg/metrics"
 	natspkg "github.com/dapperdivers/roundtable/pkg/nats"
 )
 
@@ -87,6 +92,8 @@ func (r *ChainReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	chain := &aiv1alpha1.Chain{}
 	if err := r.Get(ctx, req.NamespacedName, chain); err != nil {
 		if client.IgnoreNotFound(err) == nil {
+			// Chain is gone — make sure no cron entry outlives it.
+			r.removeCronEntry(req.NamespacedName)
 			return ctrl.Result{}, nil
 		}
 		return ctrl.Result{}, err
@@ -183,14 +190,18 @@ func (r *ChainReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		ObservedGeneration: chain.Generation,
 	})
 
-	// Handle schedule
-	r.reconcileSchedule(ctx, chain)
+	// Handle schedule, catching up a missed fire (e.g. operator downtime)
+	if r.reconcileSchedule(ctx, chain) {
+		log.Info("Missed scheduled run detected, triggering catch-up")
+		r.triggerChain(ctx, req.NamespacedName)
+		return ctrl.Result{Requeue: true}, nil
+	}
 
 	// Handle suspended
 	if chain.Spec.Suspended {
 		chain.Status.Phase = aiv1alpha1.ChainPhaseSuspended
 		chain.Status.ObservedGeneration = chain.Generation
-		return ctrl.Result{}, r.Status().Update(ctx, chain)
+		return r.updateStatus(ctx, chain, 0)
 	}
 
 	// Initialize status if empty
@@ -198,7 +209,7 @@ func (r *ChainReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		chain.Status.Phase = aiv1alpha1.ChainPhaseIdle
 		r.initStepStatuses(chain)
 		chain.Status.ObservedGeneration = chain.Generation
-		return ctrl.Result{}, r.Status().Update(ctx, chain)
+		return r.updateStatus(ctx, chain, 0)
 	}
 
 	// Reset to Idle when spec changes (generation drift) and chain is not running
@@ -217,7 +228,7 @@ func (r *ChainReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		}
 
 		chain.Status.ObservedGeneration = chain.Generation
-		return ctrl.Result{}, r.Status().Update(ctx, chain)
+		return r.updateStatus(ctx, chain, 0)
 	}
 
 	switch chain.Status.Phase {
@@ -237,6 +248,19 @@ func (r *ChainReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	}
 
 	return ctrl.Result{}, nil
+}
+
+// updateStatus writes the chain status, converting optimistic-concurrency
+// conflicts into a requeue instead of a reconcile error. On success the
+// result carries requeueAfter (zero means no requeue).
+func (r *ChainReconciler) updateStatus(ctx context.Context, chain *aiv1alpha1.Chain, requeueAfter time.Duration) (ctrl.Result, error) {
+	if err := r.Status().Update(ctx, chain); err != nil {
+		if apierrors.IsConflict(err) {
+			return ctrl.Result{Requeue: true}, nil
+		}
+		return ctrl.Result{}, err
+	}
+	return ctrl.Result{RequeueAfter: requeueAfter}, nil
 }
 
 // validateKnightRefs checks that all knightRef values resolve to Knight CRs.
@@ -324,6 +348,11 @@ func (r *ChainReconciler) reconcileRunning(ctx context.Context, chain *aiv1alpha
 		log.Info("Initializing step statuses for manually triggered chain")
 		r.initStepStatuses(chain)
 
+		// A manual trigger starts a new run with its own identity, so KV
+		// restore below only picks up outputs this run produced (none yet) —
+		// stale outputs from earlier runs can no longer masquerade as results.
+		chain.Status.RunID = string(uuid.NewUUID())
+
 		// Attempt to restore completed steps from NATS KV (resume capability)
 		restored := r.restoreStepOutputsFromKV(ctx, chain)
 		if restored > 0 {
@@ -333,8 +362,14 @@ func (r *ChainReconciler) reconcileRunning(ctx context.Context, chain *aiv1alpha
 		now := metav1.Now()
 		chain.Status.StartedAt = &now
 		chain.Status.ObservedGeneration = chain.Generation
-		return ctrl.Result{RequeueAfter: RequeueFast}, r.Status().Update(ctx, chain)
+		return r.updateStatus(ctx, chain, RequeueFast)
 	}
+
+	// Runs started before run identity existed get an ID on first reconcile.
+	if chain.Status.RunID == "" {
+		chain.Status.RunID = string(uuid.NewUUID())
+	}
+
 	if chain.Status.StartedAt == nil {
 		now := metav1.Now()
 		chain.Status.StartedAt = &now
@@ -411,6 +446,11 @@ func (r *ChainReconciler) reconcileRunning(ctx context.Context, chain *aiv1alpha
 				ss.CompletedAt = &now
 				resultErr := result.GetError()
 				resultOutput := result.GetOutput()
+				if resultErr == "" && isEmptyStepOutput(resultOutput) {
+					resultErr = "knight returned empty output"
+					r.Recorder.Eventf(chain, corev1.EventTypeWarning, "StepEmptyOutput",
+						"Step %s returned empty output, treating as failure", ss.Name)
+				}
 				if resultErr != "" {
 					ss.Phase = aiv1alpha1.ChainStepPhaseFailed
 					ss.Error = resultErr
@@ -437,7 +477,7 @@ func (r *ChainReconciler) reconcileRunning(ctx context.Context, chain *aiv1alpha
 
 					// Store full output to NATS KV (best-effort)
 					if spec := specMap[ss.Name]; spec != nil {
-						r.storeStepOutputToKV(ctx, chain.Name, ss.Name, resultOutput, resultErr, spec.KnightRef, ss.StartedAt, &now)
+						r.storeStepOutputToKV(ctx, chain.Name, chain.Status.RunID, ss.Name, resultOutput, resultErr, spec.KnightRef, ss.StartedAt, &now)
 					}
 
 					// Truncate CRD status output to avoid etcd bloat (4000 chars allows
@@ -534,12 +574,16 @@ func (r *ChainReconciler) reconcileRunning(ctx context.Context, chain *aiv1alpha
 			continue
 		}
 
-		taskID := fmt.Sprintf("chain-%s-%s.%d", chain.Name, step.Name, time.Now().UnixMilli())
+		// The run ID shares the final subject token with the timestamp (joined
+		// by "-") so the result subject keeps the same token count and the
+		// wildcard fallback in pollResult still matches.
+		taskID := fmt.Sprintf("chain-%s-%s.%s-%d", chain.Name, step.Name, chain.Status.RunID, time.Now().UnixMilli())
 
 		payload := natspkg.TaskPayload{
 			TaskID:    taskID,
 			ChainName: chain.Name,
 			StepName:  step.Name,
+			RunID:     chain.Status.RunID,
 			Task:      taskStr,
 		}
 
@@ -655,17 +699,31 @@ func (r *ChainReconciler) reconcileRunning(ctx context.Context, chain *aiv1alpha
 			})
 			r.Recorder.Event(chain, corev1.EventTypeNormal, "Succeeded", "Chain completed successfully")
 		}
+
+		// A run that never published a single task (every terminal step was
+		// restored from cache or skipped) did no real work. That usually means
+		// stale KV entries are masking a problem — make it visible.
+		executedSteps := 0
+		for _, ss := range chain.Status.StepStatuses {
+			if ss.TaskID != "" {
+				executedSteps++
+			}
+		}
+		if executedSteps == 0 && totalSteps > 0 {
+			log.Info("Chain run completed without executing any steps")
+			r.Recorder.Event(chain, corev1.EventTypeWarning, "NoStepsExecuted",
+				"Chain run completed without executing any steps (all outputs restored from cache)")
+			metrics.ChainNoOpRunsTotal.WithLabelValues(chain.Name).Inc()
+		}
+
 		chain.Status.ObservedGeneration = chain.Generation
-		return ctrl.Result{}, r.Status().Update(ctx, chain)
+		return r.updateStatus(ctx, chain, 0)
 	}
 
 	chain.Status.ObservedGeneration = chain.Generation
-	if err := r.Status().Update(ctx, chain); err != nil {
-		return ctrl.Result{}, err
-	}
 
 	// Requeue to poll for results
-	return ctrl.Result{RequeueAfter: RequeueDefault}, nil
+	return r.updateStatus(ctx, chain, RequeueDefault)
 }
 
 // renderTemplate renders Go templates in the task string with step outputs and input.
@@ -791,17 +849,18 @@ func (r *ChainReconciler) pollResult(ctx context.Context, nc natsConfig, chainNa
 	return &result, nil
 }
 
-// reconcileSchedule manages the cron schedule for the chain.
-func (r *ChainReconciler) reconcileSchedule(ctx context.Context, chain *aiv1alpha1.Chain) {
+// reconcileSchedule manages the cron schedule for the chain. It returns true
+// if a scheduled fire was missed (e.g. the operator was down) and a catch-up
+// run should be triggered.
+func (r *ChainReconciler) reconcileSchedule(ctx context.Context, chain *aiv1alpha1.Chain) bool {
 	key := chain.Namespace + "/" + chain.Name
 
 	if chain.Spec.Schedule == "" || chain.Spec.Suspended {
 		r.removeCronEntry(types.NamespacedName{Namespace: chain.Namespace, Name: chain.Name})
-		return
+		return false
 	}
 
 	r.mu.Lock()
-	defer r.mu.Unlock()
 
 	if r.cron == nil {
 		r.cron = cron.New()
@@ -809,53 +868,89 @@ func (r *ChainReconciler) reconcileSchedule(ctx context.Context, chain *aiv1alph
 		r.cron.Start()
 	}
 
-	// If already registered, skip
-	if _, ok := r.cronEntries[key]; ok {
-		return
+	if _, ok := r.cronEntries[key]; !ok {
+		nn := types.NamespacedName{Namespace: chain.Namespace, Name: chain.Name}
+		entryID, err := r.cron.AddFunc(chain.Spec.Schedule, func() {
+			r.triggerChain(context.Background(), nn)
+		})
+		if err != nil {
+			r.mu.Unlock()
+			logf.FromContext(ctx).Error(err, "Failed to add cron schedule", "schedule", chain.Spec.Schedule)
+			return false
+		}
+		r.cronEntries[key] = entryID
 	}
+	r.mu.Unlock()
 
-	nn := types.NamespacedName{Namespace: chain.Namespace, Name: chain.Name}
-	entryID, err := r.cron.AddFunc(chain.Spec.Schedule, func() {
-		r.triggerChain(nn)
-	})
-	if err != nil {
-		logf.FromContext(ctx).Error(err, "Failed to add cron schedule", "schedule", chain.Spec.Schedule)
-		return
-	}
-	r.cronEntries[key] = entryID
+	return r.missedSchedule(chain)
 }
 
-// triggerChain resets a chain's step statuses and sets it to Running.
-// This is called from a cron goroutine, not from a reconcile cycle, so we use
-// context.Background() instead of a passed context. The operation should complete
-// independently of any ongoing reconciliation.
-func (r *ChainReconciler) triggerChain(nn types.NamespacedName) {
-	// Use Background context since this is triggered by cron, not reconciliation
-	ctx := context.Background()
+// missedSchedule reports whether the chain's next fire after lastScheduledAt
+// has already passed without a run starting, within the optional
+// startingDeadlineSeconds window.
+func (r *ChainReconciler) missedSchedule(chain *aiv1alpha1.Chain) bool {
+	if chain.Status.LastScheduledAt == nil || chain.Status.Phase == aiv1alpha1.ChainPhaseRunning {
+		return false
+	}
+
+	sched, err := cron.ParseStandard(chain.Spec.Schedule)
+	if err != nil {
+		return false
+	}
+
+	expected := sched.Next(chain.Status.LastScheduledAt.Time)
+	now := time.Now()
+	if !expected.Before(now) {
+		return false
+	}
+	if dl := chain.Spec.StartingDeadlineSeconds; dl != nil && now.Sub(expected) > time.Duration(*dl)*time.Second {
+		return false
+	}
+	return true
+}
+
+// triggerChain starts a new chain run: it resets step statuses, assigns a
+// fresh run ID, and sets the phase to Running. Called from cron goroutines
+// (with context.Background()) and from reconcile for missed-schedule catch-up.
+func (r *ChainReconciler) triggerChain(ctx context.Context, nn types.NamespacedName) {
 	log := logf.Log.WithName("chain-cron")
 
-	chain := &aiv1alpha1.Chain{}
-	if err := r.Get(ctx, nn, chain); err != nil {
-		log.Error(err, "Failed to get chain for cron trigger")
-		return
-	}
+	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		chain := &aiv1alpha1.Chain{}
+		if err := r.Get(ctx, nn, chain); err != nil {
+			return err
+		}
 
-	if chain.Spec.Suspended {
-		return
-	}
+		if chain.Spec.Suspended {
+			return nil
+		}
 
-	// Reset step statuses
-	r.initStepStatuses(chain)
-	now := metav1.Now()
-	chain.Status.Phase = aiv1alpha1.ChainPhaseRunning
-	chain.Status.StartedAt = &now
-	chain.Status.CompletedAt = nil
-	chain.Status.LastScheduledAt = &now
+		// Guard against overlapping runs: resetting step statuses while a
+		// previous run is still in flight orphans its in-progress steps and
+		// lets stale outputs masquerade as results for the new run.
+		if chain.Status.Phase == aiv1alpha1.ChainPhaseRunning {
+			log.Info("Skipping cron trigger, previous run still in progress", "chain", nn.String())
+			r.Recorder.Event(chain, corev1.EventTypeWarning, "CronTriggerSkipped",
+				"Skipped scheduled trigger: previous run still in progress")
+			return nil
+		}
 
-	r.Recorder.Event(chain, corev1.EventTypeNormal, "CronTriggered", "Chain triggered by cron schedule")
+		r.initStepStatuses(chain)
+		now := metav1.Now()
+		chain.Status.RunID = string(uuid.NewUUID())
+		chain.Status.Phase = aiv1alpha1.ChainPhaseRunning
+		chain.Status.StartedAt = &now
+		chain.Status.CompletedAt = nil
+		chain.Status.LastScheduledAt = &now
 
-	if err := r.Status().Update(ctx, chain); err != nil {
-		log.Error(err, "Failed to update chain status for cron trigger")
+		if err := r.Status().Update(ctx, chain); err != nil {
+			return err
+		}
+		r.Recorder.Event(chain, corev1.EventTypeNormal, "CronTriggered", "Chain triggered by cron schedule")
+		return nil
+	})
+	if err != nil {
+		log.Error(err, "Failed to trigger chain", "chain", nn.String())
 	}
 }
 
@@ -919,7 +1014,7 @@ func (r *ChainReconciler) writeArtifact(ctx context.Context, nc natsConfig, chai
 		return fmt.Errorf("output knight %q not found: %w", knightName, err)
 	}
 
-	taskID := fmt.Sprintf("chain-%s-%s-artifact.%d", chain.Name, stepName, time.Now().UnixMilli())
+	taskID := fmt.Sprintf("chain-%s-%s-artifact.%s-%d", chain.Name, stepName, chain.Status.RunID, time.Now().UnixMilli())
 
 	// The task instructs the knight to write the content to the path
 	task := fmt.Sprintf("Write the following content to the file at path '%s'. Create any missing directories. Write ONLY the content below, do not modify or summarize it.\n\n---\n%s", outputPath, content)
@@ -928,6 +1023,7 @@ func (r *ChainReconciler) writeArtifact(ctx context.Context, nc natsConfig, chai
 		TaskID:    taskID,
 		ChainName: chain.Name,
 		StepName:  stepName + "-artifact",
+		RunID:     chain.Status.RunID,
 		Task:      task,
 	}
 
@@ -935,10 +1031,38 @@ func (r *ChainReconciler) writeArtifact(ctx context.Context, nc natsConfig, chai
 	return client.PublishJSON(subject, payload)
 }
 
+// emptyOutputSentinels are placeholder strings produced by knights when an
+// agent session yields no real content. They carry no usable output and must
+// not be treated as a successful step result.
+var emptyOutputSentinels = []string{
+	"[No output from agent]",
+}
+
+// isEmptyStepOutput reports whether a step output contains no usable content.
+func isEmptyStepOutput(output string) bool {
+	trimmed := strings.TrimSpace(output)
+	if trimmed == "" {
+		return true
+	}
+	for _, sentinel := range emptyOutputSentinels {
+		if trimmed == sentinel {
+			return true
+		}
+	}
+	return false
+}
+
 // storeStepOutputToKV stores the full step output to the NATS KV "chain-outputs" bucket.
 // This is best-effort — failures are logged but do not block chain execution.
-func (r *ChainReconciler) storeStepOutputToKV(ctx context.Context, chainName, stepName, output, errStr, knight string, startedAt, completedAt *metav1.Time) {
+func (r *ChainReconciler) storeStepOutputToKV(ctx context.Context, chainName, runID, stepName, output, errStr, knight string, startedAt, completedAt *metav1.Time) {
 	log := logf.FromContext(ctx)
+
+	// Never persist empty outputs — a poisoned KV entry would be restored as a
+	// "successful" step on later runs, silently skipping real work.
+	if errStr == "" && isEmptyStepOutput(output) {
+		log.Info("Refusing to store empty step output to KV", "step", stepName)
+		return
+	}
 
 	client, err := r.natsClient()
 	if err != nil {
@@ -955,6 +1079,7 @@ func (r *ChainReconciler) storeStepOutputToKV(ctx context.Context, chainName, st
 		"output":   output,
 		"error":    errStr,
 		"knight":   knight,
+		"runId":    runID,
 		"duration": durationStr,
 		"storedAt": time.Now().UTC().Format(time.RFC3339),
 	}
@@ -1007,6 +1132,26 @@ func (r *ChainReconciler) restoreStepOutputsFromKV(ctx context.Context, chain *a
 		output, _ := kvValue["output"].(string)
 		errStr, _ := kvValue["error"].(string)
 
+		// A stored entry with no usable output is poison left by a run that
+		// produced nothing — leave the step Pending so it re-executes, and
+		// delete the entry so it cannot mask future runs.
+		if errStr == "" && isEmptyStepOutput(output) {
+			log.Info("Skipping restore of empty stored output, deleting poisoned KV entry", "step", ss.Name, "key", key)
+			if err := client.KVDelete("chain-outputs", key); err != nil {
+				log.Error(err, "Failed to delete poisoned KV entry", "key", key)
+			}
+			continue
+		}
+
+		// Only outputs produced by the current run may be restored — entries
+		// from earlier runs (or pre-run-identity entries with no runId) would
+		// silently stand in for work this run never did.
+		storedRunID, _ := kvValue["runId"].(string)
+		if storedRunID == "" || storedRunID != chain.Status.RunID {
+			log.V(1).Info("Skipping stored output from a different run", "step", ss.Name, "storedRunId", storedRunID)
+			continue
+		}
+
 		if errStr != "" {
 			ss.Phase = aiv1alpha1.ChainStepPhaseFailed
 			ss.Error = errStr
@@ -1035,6 +1180,17 @@ func (r *ChainReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	r.cron = cron.New()
 	r.cron.Start()
 	r.cronEntries = make(map[string]cron.EntryID)
+
+	// Stop the cron scheduler on manager shutdown, waiting for any in-flight
+	// trigger to finish — otherwise the cron goroutine outlives the manager.
+	if err := mgr.Add(manager.RunnableFunc(func(ctx context.Context) error {
+		<-ctx.Done()
+		stopCtx := r.cron.Stop()
+		<-stopCtx.Done()
+		return nil
+	})); err != nil {
+		return err
+	}
 
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&aiv1alpha1.Chain{}).

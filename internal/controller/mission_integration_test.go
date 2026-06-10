@@ -27,6 +27,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	aiv1alpha1 "github.com/dapperdivers/roundtable/api/v1alpha1"
@@ -162,6 +163,7 @@ var _ = Describe("Mission Integration Tests", func() {
 			r := &MissionReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
+				Recorder: record.NewFakeRecorder(100),
 				Assembler: &missionpkg.KnightAssembler{Client: k8sClient, Scheme: k8sClient.Scheme()},
 			}
 
@@ -312,6 +314,7 @@ var _ = Describe("Mission Integration Tests", func() {
 			r := &MissionReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
+				Recorder: record.NewFakeRecorder(100),
 				Assembler: &missionpkg.KnightAssembler{Client: k8sClient, Scheme: k8sClient.Scheme()},
 			}
 
@@ -466,6 +469,7 @@ var _ = Describe("Mission Integration Tests", func() {
 			r := &MissionReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
+				Recorder: record.NewFakeRecorder(100),
 				Assembler: &missionpkg.KnightAssembler{Client: k8sClient, Scheme: k8sClient.Scheme()},
 			}
 
@@ -628,6 +632,7 @@ var _ = Describe("Mission Integration Tests", func() {
 			r := &MissionReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
+				Recorder: record.NewFakeRecorder(100),
 				Assembler: &missionpkg.KnightAssembler{Client: k8sClient, Scheme: k8sClient.Scheme()},
 			}
 
@@ -767,6 +772,7 @@ var _ = Describe("Mission Integration Tests", func() {
 			r := &MissionReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
+				Recorder: record.NewFakeRecorder(100),
 				Assembler: &missionpkg.KnightAssembler{Client: k8sClient, Scheme: k8sClient.Scheme()},
 			}
 

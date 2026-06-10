@@ -44,6 +44,15 @@ type ChainSpec struct {
 	// +optional
 	Schedule string `json:"schedule,omitempty"`
 
+	// startingDeadlineSeconds bounds catch-up of missed scheduled runs.
+	// If the controller was down when a scheduled run should have fired, the
+	// run is triggered late only if fewer than this many seconds have passed
+	// since the missed schedule time. If not set, a missed run is always
+	// caught up (at most one catch-up run is triggered).
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	StartingDeadlineSeconds *int64 `json:"startingDeadlineSeconds,omitempty"`
+
 	// input provides initial data passed to the first step(s) as JSON.
 	// +optional
 	Input string `json:"input,omitempty"`
@@ -243,6 +252,12 @@ type ChainStatus struct {
 	// lastScheduledAt is when the chain was last triggered by its cron schedule.
 	// +optional
 	LastScheduledAt *metav1.Time `json:"lastScheduledAt,omitempty"`
+
+	// runId uniquely identifies the current (or most recent) chain run.
+	// It is embedded in task IDs and NATS KV entries so results produced by
+	// a previous run can never be attributed to the current one.
+	// +optional
+	RunID string `json:"runId,omitempty"`
 
 	// observedGeneration is the most recent generation observed by the controller.
 	// +optional

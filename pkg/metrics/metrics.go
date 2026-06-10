@@ -64,6 +64,18 @@ var (
 		[]string{"chain", "status"}, // status: succeeded, failed
 	)
 
+	// ChainNoOpRunsTotal tracks chain runs that completed without executing
+	// a single step (all outputs restored from cache). A nonzero rate usually
+	// means stale KV entries are masking a real problem.
+	// Labels: chain (chain name)
+	ChainNoOpRunsTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "roundtable_chain_noop_runs_total",
+			Help: "Total chain runs that completed without executing any steps",
+		},
+		[]string{"chain"},
+	)
+
 	// MissionsTotal tracks the total number of missions by phase.
 	// Labels: phase (Pending, Provisioning, Planning, Assembling, Active, Succeeded, Failed, etc.)
 	MissionsTotal = prometheus.NewGaugeVec(
@@ -112,6 +124,7 @@ func init() {
 		TasksCompletedTotal,
 		TaskDurationSeconds,
 		ChainRunsTotal,
+		ChainNoOpRunsTotal,
 		MissionsTotal,
 		CostTotalUSD,
 		WarmPoolSize,

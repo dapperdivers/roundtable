@@ -25,6 +25,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -86,6 +87,7 @@ var _ = Describe("Knight Controller", func() {
 			controllerReconciler := &KnightReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
+				Recorder: record.NewFakeRecorder(100),
 			}
 
 			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
@@ -96,13 +98,14 @@ var _ = Describe("Knight Controller", func() {
 			By("Checking the Knight has a finalizer")
 			knight := &aiv1alpha1.Knight{}
 			Expect(k8sClient.Get(ctx, typeNamespacedName, knight)).To(Succeed())
-			Expect(knight.Finalizers).To(ContainElement("ai.roundtable.io/finalizer"))
+			Expect(knight.Finalizers).To(ContainElement(knightFinalizer))
 		})
 
 		It("should create a ConfigMap with knight configuration", func() {
 			controllerReconciler := &KnightReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
+				Recorder: record.NewFakeRecorder(100),
 			}
 
 			// Run reconciliation twice — first adds finalizer, second creates resources
@@ -124,6 +127,7 @@ var _ = Describe("Knight Controller", func() {
 			controllerReconciler := &KnightReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
+				Recorder: record.NewFakeRecorder(100),
 			}
 
 			_, _ = controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
@@ -141,6 +145,7 @@ var _ = Describe("Knight Controller", func() {
 			controllerReconciler := &KnightReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
+				Recorder: record.NewFakeRecorder(100),
 			}
 
 			_, _ = controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
@@ -214,6 +219,7 @@ var _ = Describe("Knight Controller", func() {
 			reconciler = &KnightReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
+				Recorder: record.NewFakeRecorder(100),
 			}
 			knightName = "test-runtime-transition"
 			knightNamespace = "default"
@@ -344,6 +350,7 @@ var _ = Describe("Knight Controller", func() {
 			reconciler = &KnightReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
+				Recorder: record.NewFakeRecorder(100),
 			}
 			knightName = "test-nix-cleanup"
 			knightNamespace = "default"
@@ -354,19 +361,38 @@ var _ = Describe("Knight Controller", func() {
 		})
 
 		AfterEach(func() {
-			// Clean up knight if it exists
+			// Delete the knight and reconcile once so the controller removes
+			// its finalizer — no manager is running reconciles for us here.
 			knight := &aiv1alpha1.Knight{}
 			if err := k8sClient.Get(ctx, typeNamespacedName, knight); err == nil {
 				_ = k8sClient.Delete(ctx, knight)
+				_, _ = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
 			}
-			// Clean up Nix PVC if it exists
-			nixPVCName := "knight-" + knightName + "-nix"
-			pvc := &corev1.PersistentVolumeClaim{}
-			if err := k8sClient.Get(ctx, types.NamespacedName{
-				Name:      nixPVCName,
-				Namespace: knightNamespace,
-			}, pvc); err == nil {
-				_ = k8sClient.Delete(ctx, pvc)
+			Eventually(func() bool {
+				return errors.IsNotFound(k8sClient.Get(ctx, typeNamespacedName, &aiv1alpha1.Knight{}))
+			}, "5s", "100ms").Should(BeTrue())
+
+			// Delete leftover PVCs. envtest runs no kube-controller-manager,
+			// so the pvc-protection finalizer never clears on its own — strip
+			// finalizers to let terminating PVCs actually go away.
+			for _, name := range []string{knightName, "knight-" + knightName + "-nix"} {
+				key := types.NamespacedName{Name: name, Namespace: knightNamespace}
+				pvc := &corev1.PersistentVolumeClaim{}
+				if err := k8sClient.Get(ctx, key, pvc); err == nil {
+					_ = k8sClient.Delete(ctx, pvc)
+				}
+				Eventually(func() bool {
+					pvc := &corev1.PersistentVolumeClaim{}
+					err := k8sClient.Get(ctx, key, pvc)
+					if errors.IsNotFound(err) {
+						return true
+					}
+					if err == nil && pvc.DeletionTimestamp != nil && len(pvc.Finalizers) > 0 {
+						pvc.Finalizers = nil
+						_ = k8sClient.Update(ctx, pvc)
+					}
+					return false
+				}, "5s", "100ms").Should(BeTrue())
 			}
 		})
 
@@ -420,15 +446,24 @@ var _ = Describe("Knight Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			By("Verifying old PVC was deleted")
-			// The old PVC should be gone (deleted during reconcile)
+			// The old PVC should be gone (deleted during reconcile). envtest
+			// has no kube-controller-manager to clear the pvc-protection
+			// finalizer, so strip finalizers from the terminating PVC to let
+			// the deletion complete.
 			Eventually(func() bool {
 				oldPVC := &corev1.PersistentVolumeClaim{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      nixPVCName,
 					Namespace: knightNamespace,
 				}, oldPVC)
-				// Either not found, or if found, it should be a different PVC (different UID)
-				return errors.IsNotFound(err) || oldPVC.UID != initialUID
+				if errors.IsNotFound(err) || (err == nil && oldPVC.UID != initialUID) {
+					return true
+				}
+				if err == nil && oldPVC.DeletionTimestamp != nil && len(oldPVC.Finalizers) > 0 {
+					oldPVC.Finalizers = nil
+					_ = k8sClient.Update(ctx, oldPVC)
+				}
+				return false
 			}, "10s", "1s").Should(BeTrue())
 		})
 
@@ -478,13 +513,23 @@ var _ = Describe("Knight Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			By("Verifying old PVC was deleted")
+			// envtest has no kube-controller-manager to clear the
+			// pvc-protection finalizer — strip finalizers from the
+			// terminating PVC so the deletion can complete.
 			Eventually(func() bool {
 				oldPVC := &corev1.PersistentVolumeClaim{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      nixPVCName,
 					Namespace: knightNamespace,
 				}, oldPVC)
-				return errors.IsNotFound(err) || oldPVC.UID != initialUID
+				if errors.IsNotFound(err) || (err == nil && oldPVC.UID != initialUID) {
+					return true
+				}
+				if err == nil && oldPVC.DeletionTimestamp != nil && len(oldPVC.Finalizers) > 0 {
+					oldPVC.Finalizers = nil
+					_ = k8sClient.Update(ctx, oldPVC)
+				}
+				return false
 			}, "10s", "1s").Should(BeTrue())
 		})
 
@@ -537,13 +582,23 @@ var _ = Describe("Knight Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			By("Verifying PVC was deleted due to combined hash change")
+			// envtest has no kube-controller-manager to clear the
+			// pvc-protection finalizer — strip finalizers from the
+			// terminating PVC so the deletion can complete.
 			Eventually(func() bool {
 				oldPVC := &corev1.PersistentVolumeClaim{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      nixPVCName,
 					Namespace: knightNamespace,
 				}, oldPVC)
-				return errors.IsNotFound(err) || oldPVC.UID != initialUID
+				if errors.IsNotFound(err) || (err == nil && oldPVC.UID != initialUID) {
+					return true
+				}
+				if err == nil && oldPVC.DeletionTimestamp != nil && len(oldPVC.Finalizers) > 0 {
+					oldPVC.Finalizers = nil
+					_ = k8sClient.Update(ctx, oldPVC)
+				}
+				return false
 			}, "10s", "1s").Should(BeTrue())
 		})
 	})
