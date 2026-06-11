@@ -138,6 +138,16 @@ func (r *KnightReconciler) buildNixBuildJob(knight *aiv1alpha1.Knight, hash, job
 				ObjectMeta: metav1.ObjectMeta{Labels: labels},
 				Spec: corev1.PodSpec{
 					RestartPolicy: corev1.RestartPolicyNever,
+					// Match the knight pods (uid/gid 1000, fsGroup 1000) so the
+					// builder writes shared-store paths the read-only knights can
+					// read, and to satisfy non-root cluster policy.
+					AutomountServiceAccountToken: ptr.To(false),
+					SecurityContext: &corev1.PodSecurityContext{
+						RunAsUser:    ptr.To(int64(1000)),
+						RunAsGroup:   ptr.To(int64(1000)),
+						RunAsNonRoot: ptr.To(true),
+						FSGroup:      ptr.To(int64(1000)),
+					},
 					Containers: []corev1.Container{
 						{
 							Name:    "nixbuild",
@@ -149,6 +159,11 @@ func (r *KnightReconciler) buildNixBuildJob(knight *aiv1alpha1.Knight, hash, job
 								{Name: "KNIGHT_NAME", Value: knight.Name},
 								{Name: "FLAKE_FILE", Value: "/config/flake.nix"},
 								{Name: "TMPDIR", Value: "/scratch"},
+							},
+							SecurityContext: &corev1.SecurityContext{
+								AllowPrivilegeEscalation: ptr.To(false),
+								Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
+								SeccompProfile:           &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
 							},
 							VolumeMounts: []corev1.VolumeMount{
 								{Name: "nix", MountPath: "/nix"},
