@@ -83,6 +83,13 @@ var _ = Describe("Knight Nix build Job", func() {
 			Expect(vols["nix"].PersistentVolumeClaim.ClaimName).To(Equal(sharedNixStorePVCName))
 			Expect(vols["config"].ConfigMap.Name).To(Equal("knight-galahad-config"))
 			Expect(vols["scratch"].EmptyDir).NotTo(BeNil())
+
+			// Runs as 1000:1000/fsGroup 1000 so shared-store files are readable
+			// by the read-only knight pods (which also run as 1000).
+			Expect(*pod.SecurityContext.RunAsUser).To(Equal(int64(1000)))
+			Expect(*pod.SecurityContext.FSGroup).To(Equal(int64(1000)))
+			Expect(*pod.SecurityContext.RunAsNonRoot).To(BeTrue())
+			Expect(*c.SecurityContext.AllowPrivilegeEscalation).To(BeFalse())
 		})
 	})
 
