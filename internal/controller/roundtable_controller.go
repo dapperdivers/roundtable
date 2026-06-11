@@ -514,8 +514,8 @@ func (r *RoundTableReconciler) listWarmPoolKnights(ctx context.Context, rt *aiv1
 		client.InNamespace(rt.Namespace),
 		client.MatchingLabels{
 			aiv1alpha1.LabelWarmPool:        "true",
-			aiv1alpha1.LabelWarmPoolClaimed:  claimedVal,
-			aiv1alpha1.LabelRoundTable:       rt.Name,
+			aiv1alpha1.LabelWarmPoolClaimed: claimedVal,
+			aiv1alpha1.LabelRoundTable:      rt.Name,
 		},
 	); err != nil {
 		return nil, fmt.Errorf("failed to list warm pool knights: %w", err)
@@ -571,7 +571,7 @@ func (r *RoundTableReconciler) createWarmKnight(ctx context.Context, rt *aiv1alp
 			Name:      name,
 			Namespace: rt.Namespace,
 			Labels: map[string]string{
-				aiv1alpha1.LabelWarmPool:       "true",
+				aiv1alpha1.LabelWarmPool:        "true",
 				aiv1alpha1.LabelWarmPoolClaimed: "false",
 				aiv1alpha1.LabelRoundTable:      rt.Name,
 			},

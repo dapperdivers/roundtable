@@ -21,22 +21,22 @@ type PlannerMetadata struct {
 }
 
 type PlannerChain struct {
-	Name        string                      `json:"name"`
-	Description string                      `json:"description,omitempty"`
-	Phase       string                      `json:"phase,omitempty"`
-	Steps       []aiv1alpha1.ChainStep      `json:"steps"`
-	Input       string                      `json:"input,omitempty"`
-	Timeout     *int32                      `json:"timeout,omitempty"`
+	Name        string                       `json:"name"`
+	Description string                       `json:"description,omitempty"`
+	Phase       string                       `json:"phase,omitempty"`
+	Steps       []aiv1alpha1.ChainStep       `json:"steps"`
+	Input       string                       `json:"input,omitempty"`
+	Timeout     *int32                       `json:"timeout,omitempty"`
 	RetryPolicy *aiv1alpha1.ChainRetryPolicy `json:"retryPolicy,omitempty"`
 }
 
 type PlannerKnight struct {
-	Name          string                             `json:"name"`
-	Role          string                             `json:"role,omitempty"`
-	Ephemeral     bool                               `json:"ephemeral"`
-	TemplateRef   string                             `json:"templateRef,omitempty"`
-	EphemeralSpec *aiv1alpha1.KnightSpec             `json:"ephemeralSpec,omitempty"`
-	SpecOverrides *aiv1alpha1.KnightSpecOverrides    `json:"specOverrides,omitempty"`
+	Name          string                          `json:"name"`
+	Role          string                          `json:"role,omitempty"`
+	Ephemeral     bool                            `json:"ephemeral"`
+	TemplateRef   string                          `json:"templateRef,omitempty"`
+	EphemeralSpec *aiv1alpha1.KnightSpec          `json:"ephemeralSpec,omitempty"`
+	SpecOverrides *aiv1alpha1.KnightSpecOverrides `json:"specOverrides,omitempty"`
 }
 
 type PlannerSkill struct {

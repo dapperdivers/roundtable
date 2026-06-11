@@ -68,14 +68,14 @@ func TestConfigValidation(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			client := NewClient(tt.config, logr.Discard())
-			
+
 			// Attempt to connect - expect failure for invalid configs
 			err := client.Connect()
-			
+
 			if tt.wantErr && err == nil {
 				t.Errorf("expected error for config with empty URL, got nil")
 			}
-			
+
 			if !tt.wantErr && tt.config.URL != "" && err != nil {
 				// It's OK to fail connection if NATS server not available
 				// We're just testing that config is accepted
@@ -114,7 +114,7 @@ func TestPublishWithNilConnection(t *testing.T) {
 		RetryOnFailedConnect: false,
 		MaxReconnects:        0,
 	}
-	
+
 	client := &JetStreamClient{
 		config: config,
 		log:    logr.Discard(),
@@ -138,7 +138,7 @@ func TestIsConnected(t *testing.T) {
 	config := Config{
 		URL: "nats://invalid.nonexistent.local:9999",
 	}
-	
+
 	client := &JetStreamClient{
 		config: config,
 		log:    logr.Discard(),
@@ -154,9 +154,9 @@ func TestCloseWithoutConnection(t *testing.T) {
 	config := Config{
 		URL: "nats://localhost:4222",
 	}
-	
+
 	client := NewClient(config, logr.Discard())
-	
+
 	err := client.Close()
 	if err != nil {
 		t.Errorf("expected no error when closing unconnected client, got %v", err)
@@ -655,7 +655,7 @@ func TestJSONPublishErrors(t *testing.T) {
 	config := Config{
 		URL: "nats://invalid.nonexistent.local:9999",
 	}
-	
+
 	client := &JetStreamClient{
 		config: config,
 		log:    logr.Discard(),

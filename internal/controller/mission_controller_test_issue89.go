@@ -43,19 +43,19 @@ func TestConflictErrorsCauseCleanRequeue(t *testing.T) {
 			TTL: 3600,
 		},
 	}
-	
+
 	// Mock client that returns conflict on status update
 	mockClient := &MockClient{
 		UpdateFunc: func(ctx context.Context, obj client.Object, opts ...client.UpdateOption) error {
 			return apierrors.NewConflict(schema.GroupResource{}, "test", nil)
 		},
 	}
-	
+
 	r := &MissionReconciler{Client: mockClient}
-	
+
 	// Execute
 	result, err := r.reconcilePending(ctx, mission)
-	
+
 	// Assert: Should requeue without error
 	assert.Nil(t, err)
 	assert.True(t, result.Requeue)
@@ -83,13 +83,13 @@ func TestMissionWaitsForAllChainsTerminal(t *testing.T) {
 			},
 		},
 	}
-	
+
 	// Mock reconcileMissionChains to return allComplete=true (2/3 complete)
 	// but the guard should catch the running chain
-	
+
 	r := &MissionReconciler{Client: mockClient}
 	result, err := r.reconcileActive(ctx, mission)
-	
+
 	// Assert: Mission should stay Active and requeue
 	assert.Nil(t, err)
 	assert.Equal(t, aiv1alpha1.MissionPhaseActive, mission.Status.Phase)
@@ -105,14 +105,14 @@ func TestChainNamingConsistency(t *testing.T) {
 			MetaMission: true,
 		},
 	}
-	
+
 	// Planner creates chain
 	planner := &mission.Planner{}
 	plannerChainName := fmt.Sprintf("mission-%s-%s", mission.Name, "investigation")
-	
+
 	// Mission controller expects chain
 	missionChainName := fmt.Sprintf("mission-%s-%s", mission.Name, "investigation")
-	
+
 	// Assert: Names match
 	assert.Equal(t, plannerChainName, missionChainName)
 }

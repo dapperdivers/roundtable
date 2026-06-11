@@ -273,7 +273,7 @@ func (a *KnightAssembler) claimWarmKnight(
 	if err := a.Client.List(ctx, knightList,
 		client.InNamespace(mission.Namespace),
 		client.MatchingLabels{
-			aiv1alpha1.LabelWarmPool:       "true",
+			aiv1alpha1.LabelWarmPool:        "true",
 			aiv1alpha1.LabelWarmPoolClaimed: "false",
 			aiv1alpha1.LabelRoundTable:      rt.Name,
 		},

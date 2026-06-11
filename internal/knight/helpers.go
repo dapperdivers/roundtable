@@ -24,8 +24,8 @@ import (
 	"sort"
 	"strings"
 
-	appsv1 "k8s.io/api/apps/v1"
 	aiv1alpha1 "github.com/dapperdivers/roundtable/api/v1alpha1"
+	appsv1 "k8s.io/api/apps/v1"
 )
 
 // NixToolsHash computes a deterministic hash of the Nix tool list.
@@ -33,21 +33,21 @@ import (
 // Includes both knight.Spec.Tools.Nix and knight.Spec.NixPackages.
 func NixToolsHash(knight *aiv1alpha1.Knight) string {
 	var allTools []string
-	
+
 	// Collect from Tools.Nix
 	if knight.Spec.Tools != nil && len(knight.Spec.Tools.Nix) > 0 {
 		allTools = append(allTools, knight.Spec.Tools.Nix...)
 	}
-	
+
 	// Collect from NixPackages (legacy field)
 	if len(knight.Spec.NixPackages) > 0 {
 		allTools = append(allTools, knight.Spec.NixPackages...)
 	}
-	
+
 	if len(allTools) == 0 {
 		return ""
 	}
-	
+
 	// Sort for deterministic hash
 	sorted := make([]string, len(allTools))
 	copy(sorted, allTools)

@@ -354,6 +354,12 @@ type KnightStatus struct {
 	// +optional
 	NATSConsumer string `json:"natsConsumer,omitempty"`
 
+	// nixToolsHash is the tools hash whose flake has been successfully built
+	// and published to the shared Nix store. Empty until the first build
+	// completes; used to avoid rebuilding unchanged tool sets.
+	// +optional
+	NixToolsHash string `json:"nixToolsHash,omitempty"`
+
 	// observedGeneration is the most recent generation observed by the controller.
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`

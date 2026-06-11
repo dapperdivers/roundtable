@@ -147,8 +147,8 @@ var _ = Describe("PodBuilder", func() {
 
 		It("adds writable subpaths correctly", func() {
 			knight.Spec.Vault = &aiv1alpha1.KnightVault{
-				ClaimName: "my-vault",
-				ReadOnly:  true,
+				ClaimName:     "my-vault",
+				ReadOnly:      true,
 				WritablePaths: []string{"logs/", "temp"},
 			}
 			builder.WithVault()

@@ -25,6 +25,10 @@ rules:
   - apiGroups: ["apps"]
     resources: ["deployments"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Managed resources — Nix build Jobs (shared store)
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   # Managed resources — Agent Sandbox
   - apiGroups: ["agents.x-k8s.io"]
     resources: ["sandboxes", "sandboxes/status"]
