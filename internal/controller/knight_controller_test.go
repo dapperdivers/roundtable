@@ -85,8 +85,8 @@ var _ = Describe("Knight Controller", func() {
 		It("should successfully reconcile the resource", func() {
 			By("Reconciling the created resource")
 			controllerReconciler := &KnightReconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
+				Client:   k8sClient,
+				Scheme:   k8sClient.Scheme(),
 				Recorder: record.NewFakeRecorder(100),
 			}
 
@@ -103,8 +103,8 @@ var _ = Describe("Knight Controller", func() {
 
 		It("should create a ConfigMap with knight configuration", func() {
 			controllerReconciler := &KnightReconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
+				Client:   k8sClient,
+				Scheme:   k8sClient.Scheme(),
 				Recorder: record.NewFakeRecorder(100),
 			}
 
@@ -125,8 +125,8 @@ var _ = Describe("Knight Controller", func() {
 
 		It("should create a PVC for the knight workspace", func() {
 			controllerReconciler := &KnightReconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
+				Client:   k8sClient,
+				Scheme:   k8sClient.Scheme(),
 				Recorder: record.NewFakeRecorder(100),
 			}
 
@@ -143,8 +143,8 @@ var _ = Describe("Knight Controller", func() {
 
 		It("should create a Deployment with correct containers", func() {
 			controllerReconciler := &KnightReconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
+				Client:   k8sClient,
+				Scheme:   k8sClient.Scheme(),
 				Recorder: record.NewFakeRecorder(100),
 			}
 
@@ -217,8 +217,8 @@ var _ = Describe("Knight Controller", func() {
 		BeforeEach(func() {
 			ctx = context.Background()
 			reconciler = &KnightReconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
+				Client:   k8sClient,
+				Scheme:   k8sClient.Scheme(),
 				Recorder: record.NewFakeRecorder(100),
 			}
 			knightName = "test-runtime-transition"
@@ -348,8 +348,8 @@ var _ = Describe("Knight Controller", func() {
 		BeforeEach(func() {
 			ctx = context.Background()
 			reconciler = &KnightReconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
+				Client:   k8sClient,
+				Scheme:   k8sClient.Scheme(),
 				Recorder: record.NewFakeRecorder(100),
 			}
 			knightName = "test-nix-cleanup"

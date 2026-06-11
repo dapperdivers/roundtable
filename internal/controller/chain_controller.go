@@ -88,7 +88,7 @@ func (r *ChainReconciler) natsClient() (natspkg.Client, error) {
 
 func (r *ChainReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
-	
+
 	chain := &aiv1alpha1.Chain{}
 	if err := r.Get(ctx, req.NamespacedName, chain); err != nil {
 		if client.IgnoreNotFound(err) == nil {
@@ -481,8 +481,8 @@ func (r *ChainReconciler) reconcileRunning(ctx context.Context, chain *aiv1alpha
 					}
 
 					// Truncate CRD status output to avoid etcd bloat (4000 chars allows
-				// meaningful summaries for template resolution while staying well
-				// under etcd's 1.5MB object limit — 10 steps × 4KB = 40KB max)
+					// meaningful summaries for template resolution while staying well
+					// under etcd's 1.5MB object limit — 10 steps × 4KB = 40KB max)
 					if len(ss.Output) > 4000 {
 						ss.Output = ss.Output[:4000] + "\n\n... [truncated — full output in NATS KV bucket 'chain-outputs', key '" + chain.Name + "." + ss.Name + "']"
 					}

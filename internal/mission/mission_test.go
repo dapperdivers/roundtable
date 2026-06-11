@@ -127,8 +127,8 @@ func TestParsePlannerOutput(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name: "JSON in markdown fence",
-			input: "```json\n" + `{"planVersion":"v1alpha1","metadata":{"objective":"fenced"}}` + "\n```",
+			name:    "JSON in markdown fence",
+			input:   "```json\n" + `{"planVersion":"v1alpha1","metadata":{"objective":"fenced"}}` + "\n```",
 			wantErr: false,
 			check: func(t *testing.T, po *PlannerOutput) {
 				if po.Metadata.Objective != "fenced" {
@@ -137,8 +137,8 @@ func TestParsePlannerOutput(t *testing.T) {
 			},
 		},
 		{
-			name: "minimal valid - empty arrays",
-			input: `{"planVersion":"v1alpha1","metadata":{"objective":"min"}}`,
+			name:    "minimal valid - empty arrays",
+			input:   `{"planVersion":"v1alpha1","metadata":{"objective":"min"}}`,
 			wantErr: false,
 			check: func(t *testing.T, po *PlannerOutput) {
 				if len(po.Chains) != 0 {

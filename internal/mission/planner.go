@@ -13,8 +13,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	aiv1alpha1 "github.com/dapperdivers/roundtable/api/v1alpha1"
@@ -235,10 +235,10 @@ func (p *Planner) ReconcilePlanning(ctx context.Context, mission *aiv1alpha1.Mis
 
 	// Bug #85: Set PlanApplied condition to prevent duplicate applications on retry
 	meta.SetStatusCondition(&mission.Status.Conditions, metav1.Condition{
-		Type:    "PlanApplied",
-		Status:  metav1.ConditionTrue,
-		Reason:  "PlanningComplete",
-		Message: fmt.Sprintf("Generated %d chains, %d knights, %d skills", pr.ChainsGenerated, pr.KnightsGenerated, pr.SkillsGenerated),
+		Type:               "PlanApplied",
+		Status:             metav1.ConditionTrue,
+		Reason:             "PlanningComplete",
+		Message:            fmt.Sprintf("Generated %d chains, %d knights, %d skills", pr.ChainsGenerated, pr.KnightsGenerated, pr.SkillsGenerated),
 		ObservedGeneration: mission.Generation,
 	})
 
@@ -255,16 +255,16 @@ func (p *Planner) ReconcilePlanning(ctx context.Context, mission *aiv1alpha1.Mis
 	if err := p.Client.Update(ctx, mission); err != nil {
 		return ctrl.Result{}, err
 	}
-	
+
 	// Transition to Assembling phase with the PlanApplied condition in one update
 	mission.Status.Phase = aiv1alpha1.MissionPhaseAssembling
 	mission.Status.ObservedGeneration = mission.Generation
-	
+
 	if err := p.Client.Status().Update(ctx, mission); err != nil {
 		// If status update fails, return error for requeue with fresh object
 		return ctrl.Result{}, fmt.Errorf("failed to update mission status after plan application: %w", err)
 	}
-	
+
 	return ctrl.Result{}, nil
 }
 
@@ -312,7 +312,7 @@ func (p *Planner) ensurePlannerKnight(ctx context.Context, mission *aiv1alpha1.M
 		if err != nil {
 			return nil, fmt.Errorf("failed to resolve RoundTable: %w", err)
 		}
-		
+
 		// Check mission templates first (local override)
 		found := false
 		for _, template := range mission.Spec.KnightTemplates {
@@ -323,7 +323,7 @@ func (p *Planner) ensurePlannerKnight(ctx context.Context, mission *aiv1alpha1.M
 				break
 			}
 		}
-		
+
 		// Fall back to RoundTable templates
 		if !found {
 			templateSpec, ok := rt.Spec.KnightTemplates[planner.TemplateRef]
@@ -596,7 +596,7 @@ func (p *Planner) pollPlanningResult(ctx context.Context, mission *aiv1alpha1.Mi
 	}
 
 	resultsStream := plannerKnight.Spec.NATS.ResultsStream
-	
+
 	var subjectPrefix string
 	if len(plannerKnight.Spec.NATS.Subjects) > 0 {
 		parts := strings.SplitN(plannerKnight.Spec.NATS.Subjects[0], ".tasks.", 2)
@@ -604,7 +604,7 @@ func (p *Planner) pollPlanningResult(ctx context.Context, mission *aiv1alpha1.Mi
 			subjectPrefix = parts[0]
 		}
 	}
-	
+
 	if subjectPrefix == "" {
 		return nil, fmt.Errorf("cannot derive NATS subject prefix from planner knight %q subjects: %v",
 			plannerKnight.Name, plannerKnight.Spec.NATS.Subjects)
@@ -899,7 +899,7 @@ func (p *Planner) applyPlan(ctx context.Context, mission *aiv1alpha1.Mission, pl
 		// Build mapping of old names to new sanitized names
 		nameMap := make(map[string]string)
 		sanitizedSteps := make([]aiv1alpha1.ChainStep, len(pc.Steps))
-		
+
 		// Build a set of ephemeral knight names for knightRef prefixing
 		ephemeralKnights := make(map[string]bool)
 		for _, pk := range plan.Knights {
@@ -912,7 +912,7 @@ func (p *Planner) applyPlan(ctx context.Context, mission *aiv1alpha1.Mission, pl
 			oldName := step.Name
 			newName := sanitizeStepName(oldName)
 			nameMap[oldName] = newName
-			
+
 			sanitizedSteps[i] = step
 			sanitizedSteps[i].Name = newName
 
@@ -921,7 +921,7 @@ func (p *Planner) applyPlan(ctx context.Context, mission *aiv1alpha1.Mission, pl
 				sanitizedSteps[i].KnightRef = fmt.Sprintf("%s-%s", mission.Name, step.KnightRef)
 			}
 		}
-		
+
 		// Sanitize dependsOn references and task templates
 		for i := range sanitizedSteps {
 			// Sanitize dependsOn array
@@ -932,7 +932,7 @@ func (p *Planner) applyPlan(ctx context.Context, mission *aiv1alpha1.Mission, pl
 				}
 				sanitizedSteps[i].DependsOn = sanitizedDeps
 			}
-			
+
 			// Replace old hyphenated names in task templates with sanitized versions
 			task := sanitizedSteps[i].Task
 			for oldName, newName := range nameMap {
@@ -967,8 +967,8 @@ func (p *Planner) applyPlan(ctx context.Context, mission *aiv1alpha1.Mission, pl
 				Name:      chainName,
 				Namespace: mission.Namespace,
 				Labels: map[string]string{
-					aiv1alpha1.LabelMission:   mission.Name,
-					aiv1alpha1.LabelEphemeral: "true",
+					aiv1alpha1.LabelMission:         mission.Name,
+					aiv1alpha1.LabelEphemeral:       "true",
 					"ai.roundtable.io/generated-by": "planner",
 				},
 				OwnerReferences: []metav1.OwnerReference{

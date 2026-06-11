@@ -631,6 +631,12 @@ spec:
                 description: natsConsumer is the name of the reconciled NATS durable
                   consumer.
                 type: string
+              nixToolsHash:
+                description: |-
+                  nixToolsHash is the tools hash whose flake has been successfully built
+                  and published to the shared Nix store. Empty until the first build
+                  completes; used to avoid rebuilding unchanged tool sets.
+                type: string
               observedGeneration:
                 description: observedGeneration is the most recent generation observed
                   by the controller.

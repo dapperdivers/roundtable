@@ -22,6 +22,7 @@ import (
 	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -72,6 +73,7 @@ type KnightReconciler struct {
 // +kubebuilder:rbac:groups=ai.roundtable.io,resources=knights/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=ai.roundtable.io,resources=knights/finalizers,verbs=update
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=persistentvolumeclaims,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=configmaps,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=serviceaccounts,verbs=get;list;watch;create;update;patch;delete
@@ -152,6 +154,12 @@ func (r *KnightReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	if err := r.reconcilePVC(ctx, knight); err != nil {
 		reconcileErr = err
 		log.Error(err, "Failed to reconcile PVC")
+	}
+
+	// 2b. Nix build Job (shared store) — no-op unless the shared store exists
+	if err := r.reconcileNixBuildJob(ctx, knight); err != nil {
+		reconcileErr = err
+		log.Error(err, "Failed to reconcile Nix build Job")
 	}
 
 	// 3. Runtime (Deployment or Sandbox, depending on knight.Spec.Runtime)
@@ -723,6 +731,7 @@ func (r *KnightReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&aiv1alpha1.Knight{}).
 		Owns(&appsv1.Deployment{}).
 		Owns(&corev1.PersistentVolumeClaim{}).
+		Owns(&batchv1.Job{}).
 		Owns(&corev1.ConfigMap{}).
 		Owns(&sandboxv1alpha1.Sandbox{}).
 		Named("knight").

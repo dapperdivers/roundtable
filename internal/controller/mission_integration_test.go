@@ -161,9 +161,9 @@ var _ = Describe("Mission Integration Tests", func() {
 
 			// Reconcile until phase transitions from Pending
 			r := &MissionReconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
-				Recorder: record.NewFakeRecorder(100),
+				Client:    k8sClient,
+				Scheme:    k8sClient.Scheme(),
+				Recorder:  record.NewFakeRecorder(100),
 				Assembler: &missionpkg.KnightAssembler{Client: k8sClient, Scheme: k8sClient.Scheme()},
 			}
 
@@ -312,9 +312,9 @@ var _ = Describe("Mission Integration Tests", func() {
 			Expect(k8sClient.Create(ctx, mission)).To(Succeed())
 
 			r := &MissionReconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
-				Recorder: record.NewFakeRecorder(100),
+				Client:    k8sClient,
+				Scheme:    k8sClient.Scheme(),
+				Recorder:  record.NewFakeRecorder(100),
 				Assembler: &missionpkg.KnightAssembler{Client: k8sClient, Scheme: k8sClient.Scheme()},
 			}
 
@@ -467,9 +467,9 @@ var _ = Describe("Mission Integration Tests", func() {
 			Expect(k8sClient.Create(ctx, mission)).To(Succeed())
 
 			r := &MissionReconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
-				Recorder: record.NewFakeRecorder(100),
+				Client:    k8sClient,
+				Scheme:    k8sClient.Scheme(),
+				Recorder:  record.NewFakeRecorder(100),
 				Assembler: &missionpkg.KnightAssembler{Client: k8sClient, Scheme: k8sClient.Scheme()},
 			}
 
@@ -630,9 +630,9 @@ var _ = Describe("Mission Integration Tests", func() {
 			Expect(k8sClient.Create(ctx, mission)).To(Succeed())
 
 			r := &MissionReconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
-				Recorder: record.NewFakeRecorder(100),
+				Client:    k8sClient,
+				Scheme:    k8sClient.Scheme(),
+				Recorder:  record.NewFakeRecorder(100),
 				Assembler: &missionpkg.KnightAssembler{Client: k8sClient, Scheme: k8sClient.Scheme()},
 			}
 
@@ -770,9 +770,9 @@ var _ = Describe("Mission Integration Tests", func() {
 			Expect(k8sClient.Create(ctx, mission)).To(Succeed())
 
 			r := &MissionReconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
-				Recorder: record.NewFakeRecorder(100),
+				Client:    k8sClient,
+				Scheme:    k8sClient.Scheme(),
+				Recorder:  record.NewFakeRecorder(100),
 				Assembler: &missionpkg.KnightAssembler{Client: k8sClient, Scheme: k8sClient.Scheme()},
 			}
 
