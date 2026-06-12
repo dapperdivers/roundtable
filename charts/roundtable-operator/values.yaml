@@ -55,6 +55,33 @@ knightSecurity:
 nixpkgs:
   ref: "9ae611a455b90cf061d8f332b977e387bda8e1ca" # nixos-unstable @ 2026-06-10
 
+# Persistent shared-store builder (the nix-daemon builder). When enabled, a
+# single-replica root Deployment owns the shared Nix store read-write, runs a
+# nix-daemon, and builds knight tools that the operator dispatches through an
+# RWX work-queue PVC — replacing the per-knight build Jobs + global store lock.
+# The operator auto-switches to queue dispatch whenever the queue PVC is mounted
+# into it (mountQueue, below); otherwise it falls back to the legacy build Jobs.
+nixBuilder:
+  enabled: false
+  # Mount the work-queue PVC into the operator so it dispatches via the queue.
+  # Keep in lockstep with enabled; split out only to stage a rollout if needed.
+  mountQueue: true
+  image:
+    # Defaults to images.piKnight when repository/tag are empty.
+    repository: ""
+    tag: ""
+    pullPolicy: Always
+  storeClaimName: roundtable-nix-store        # RWX; mounted read-write (sole writer)
+  queueClaimName: roundtable-nix-buildqueue   # RWX; operator<->builder coordination
+  concurrency: 6                              # concurrent `nix build` clients
+  scratchSizeLimit: 10Gi                      # emptyDir for build scratch (off the store)
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      memory: 4Gi
+
 # Dashboard (Round Table UI) — observability platform
 dashboard:
   enabled: true

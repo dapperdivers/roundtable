@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
@@ -161,10 +162,16 @@ func (r *KnightReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		log.Error(err, "Failed to reconcile PVC")
 	}
 
-	// 2b. Nix build Job (shared store) — no-op unless the shared store exists
-	if err := r.reconcileNixBuildJob(ctx, knight); err != nil {
+	// 2b. Nix build (shared store) — queue-backed nix-daemon builder, or the
+	//     legacy per-knight Job when the queue PVC is not mounted. No-op unless
+	//     a shared store / queue is available. Returns a poll interval while a
+	//     build is pending (queue results are files, not watched objects).
+	var nixRequeue time.Duration
+	if d, err := r.reconcileNixBuild(ctx, knight); err != nil {
 		reconcileErr = err
-		log.Error(err, "Failed to reconcile Nix build Job")
+		log.Error(err, "Failed to reconcile Nix build")
+	} else {
+		nixRequeue = d
 	}
 
 	// 3. Runtime (Deployment or Sandbox, depending on knight.Spec.Runtime)
@@ -188,6 +195,10 @@ func (r *KnightReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 
 	if reconcileErr != nil {
 		return ctrl.Result{RequeueAfter: RequeueSlow}, reconcileErr
+	}
+
+	if nixRequeue > 0 {
+		return ctrl.Result{RequeueAfter: nixRequeue}, nil
 	}
 
 	return ctrl.Result{}, nil
