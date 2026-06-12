@@ -57,6 +57,11 @@ spec:
             # Pinned nixpkgs ref for reproducible knight tool builds.
             - name: KNIGHT_NIXPKGS_REF
               value: "{{ .Values.nixpkgs.ref }}"
+            # Shared Nix store PVC — knights mount it read-only and the legacy
+            # build Job mounts it read-write. Single source of truth for the
+            # store name (the builder Deployment mounts the same value).
+            - name: KNIGHT_NIX_STORE_PVC
+              value: "{{ .Values.nixBuilder.storeClaimName }}"
             {{- if and .Values.nixBuilder.enabled .Values.nixBuilder.mountQueue }}
             # Presence of /queue switches the operator to queue-backed dispatch
             # (the nix-daemon builder) instead of per-knight build Jobs.

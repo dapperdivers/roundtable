@@ -33,11 +33,6 @@ import (
 	knightpkg "github.com/dapperdivers/roundtable/internal/knight"
 )
 
-// sharedNixStorePVCName is the cluster-wide RWX PVC backing the shared Nix
-// store. The build Job mounts it read-write; knight pods mount it read-only.
-// Provisioned out-of-band via GitOps; the build feature is inert until it exists.
-const sharedNixStorePVCName = "roundtable-nix-store"
-
 // nixBuildJobTTL keeps finished build Jobs around briefly for log inspection
 // before Kubernetes garbage-collects them.
 const nixBuildJobTTL int32 = 3600
@@ -63,7 +58,7 @@ func (r *KnightReconciler) reconcileNixBuildJob(ctx context.Context, knight *aiv
 
 	// Feature gate: only act when the shared store exists.
 	shared := &corev1.PersistentVolumeClaim{}
-	if err := r.Get(ctx, types.NamespacedName{Name: sharedNixStorePVCName, Namespace: knight.Namespace}, shared); err != nil {
+	if err := r.Get(ctx, types.NamespacedName{Name: knightpkg.SharedNixStorePVC(), Namespace: knight.Namespace}, shared); err != nil {
 		if apierrors.IsNotFound(err) {
 			return nil // shared store not provisioned yet — legacy per-pod build still applies
 		}
@@ -184,7 +179,7 @@ func (r *KnightReconciler) buildNixBuildJob(knight *aiv1alpha1.Knight, hash, job
 							Name: "nix",
 							VolumeSource: corev1.VolumeSource{
 								PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
-									ClaimName: sharedNixStorePVCName,
+									ClaimName: knightpkg.SharedNixStorePVC(),
 								},
 							},
 						},

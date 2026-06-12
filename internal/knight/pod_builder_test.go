@@ -105,7 +105,7 @@ var _ = Describe("PodBuilder", func() {
 			Expect(builder.mounts).To(BeEmpty())
 		})
 
-		It("adds Nix PVC when tools.nix is configured", func() {
+		It("mounts the shared store read-only when tools.nix is configured", func() {
 			knight.Spec.Tools = &aiv1alpha1.KnightTools{
 				Nix: []string{"kubectl", "helm"},
 			}
@@ -113,11 +113,28 @@ var _ = Describe("PodBuilder", func() {
 
 			Expect(builder.volumes).To(HaveLen(1))
 			Expect(builder.volumes[0].Name).To(Equal("nix"))
-			Expect(builder.volumes[0].PersistentVolumeClaim.ClaimName).To(Equal("knight-test-knight-nix"))
+			Expect(builder.volumes[0].PersistentVolumeClaim.ClaimName).To(Equal("roundtable-nix-store"))
+			Expect(builder.volumes[0].PersistentVolumeClaim.ReadOnly).To(BeTrue())
 
 			Expect(builder.mounts).To(HaveLen(1))
 			Expect(builder.mounts[0].Name).To(Equal("nix"))
 			Expect(builder.mounts[0].MountPath).To(Equal("/nix"))
+			Expect(builder.mounts[0].ReadOnly).To(BeTrue())
+
+			// Points the entrypoint at the knight's published profile.
+			Expect(builder.env).To(ContainElement(corev1.EnvVar{
+				Name:  "KNIGHT_NIX_PROFILE",
+				Value: "/nix/var/nix/profiles/knights/test-knight",
+			}))
+		})
+
+		It("honors KNIGHT_NIX_STORE_PVC override", func() {
+			GinkgoT().Setenv("KNIGHT_NIX_STORE_PVC", "custom-store")
+			knight.Spec.Tools = &aiv1alpha1.KnightTools{Nix: []string{"kubectl"}}
+			builder.WithNixStore()
+
+			Expect(builder.volumes).To(HaveLen(1))
+			Expect(builder.volumes[0].PersistentVolumeClaim.ClaimName).To(Equal("custom-store"))
 		})
 	})
 

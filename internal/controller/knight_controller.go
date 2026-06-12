@@ -386,80 +386,19 @@ func (r *KnightReconciler) reconcileConfigMap(ctx context.Context, knight *aiv1a
 
 // reconcilePVC creates the knight's persistent workspace volume.
 // Skips creation when spec.workspace.existingClaim is set (migration mode).
+//
+// Nix tooling no longer gets a per-knight PVC: knights mount the shared Nix
+// store read-only (see PodBuilder.WithNixStore) and source the profile the
+// nix-builder Deployment publishes. The legacy per-knight knight-<name>-nix
+// PVCs are left in place for rollback and removed by the separate decommission
+// step.
 func (r *KnightReconciler) reconcilePVC(ctx context.Context, knight *aiv1alpha1.Knight) error {
 	// Workspace PVC — skip if using an existing claim (migration mode)
 	if knight.Spec.Workspace != nil && knight.Spec.Workspace.ExistingClaim != "" {
 		logf.FromContext(ctx).Info("Using existing PVC", "claim", knight.Spec.Workspace.ExistingClaim)
-	} else {
-		if err := r.ensureWorkspacePVC(ctx, knight); err != nil {
-			return err
-		}
+		return nil
 	}
-
-	// Create Nix PVC if nix tools are configured, recycle if tools changed
-	hasNixTools := (knight.Spec.Tools != nil && len(knight.Spec.Tools.Nix) > 0) || len(knight.Spec.NixPackages) > 0
-	if hasNixTools {
-		nixPVCName := fmt.Sprintf("knight-%s-nix", knight.Name)
-		currentHash := knightpkg.NixToolsHash(knight)
-		nixPVC := &corev1.PersistentVolumeClaim{}
-		err := r.Get(ctx, types.NamespacedName{Name: nixPVCName, Namespace: knight.Namespace}, nixPVC)
-
-		if err == nil {
-			// PVC exists — check if tools changed
-			existingHash := nixPVC.Annotations[nixToolsHashAnnotation]
-			if existingHash != "" && existingHash != currentHash {
-				logf.FromContext(ctx).Info("Nix tools changed — recycling PVC",
-					"name", nixPVCName,
-					"oldHash", existingHash,
-					"newHash", currentHash)
-				r.Recorder.Event(knight, corev1.EventTypeNormal, "NixPVCCleaned", "Stale Nix PVC deleted due to tools change")
-				if err := r.Delete(ctx, nixPVC); err != nil {
-					return fmt.Errorf("Nix PVC delete for recycle failed: %w", err)
-				}
-				// Return early — next reconcile will create the fresh PVC
-				// The Deployment will be updated with the new hash annotation,
-				// triggering a rolling restart that waits for the new PVC.
-				return nil
-			}
-		}
-
-		if apierrors.IsNotFound(err) {
-			nixPVC = &corev1.PersistentVolumeClaim{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      nixPVCName,
-					Namespace: knight.Namespace,
-					Labels: map[string]string{
-						"app.kubernetes.io/name":       "knight",
-						"app.kubernetes.io/instance":   knight.Name,
-						"app.kubernetes.io/managed-by": "roundtable-operator",
-						"roundtable.io/purpose":        "nix-store",
-					},
-					Annotations: map[string]string{
-						nixToolsHashAnnotation: currentHash,
-					},
-				},
-				Spec: corev1.PersistentVolumeClaimSpec{
-					AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
-					Resources: corev1.VolumeResourceRequirements{
-						Requests: corev1.ResourceList{
-							corev1.ResourceStorage: resource.MustParse("5Gi"),
-						},
-					},
-				},
-			}
-			if err := controllerutil.SetControllerReference(knight, nixPVC, r.Scheme); err != nil {
-				return err
-			}
-			if err := r.Create(ctx, nixPVC); err != nil {
-				return fmt.Errorf("Nix PVC create failed: %w", err)
-			}
-			logf.FromContext(ctx).Info("Nix PVC created", "name", nixPVCName, "toolsHash", currentHash)
-		} else if err != nil {
-			return fmt.Errorf("Nix PVC get failed: %w", err)
-		}
-	}
-
-	return nil
+	return r.ensureWorkspacePVC(ctx, knight)
 }
 
 // ensureWorkspacePVC creates a new workspace PVC if one doesn't exist.

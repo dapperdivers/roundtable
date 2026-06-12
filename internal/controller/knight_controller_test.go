@@ -336,7 +336,7 @@ var _ = Describe("Knight Controller", func() {
 		})
 	})
 
-	Describe("Nix PVC Cleanup", func() {
+	Describe("Nix store (shared read-only cutover)", func() {
 		var (
 			ctx                context.Context
 			reconciler         *KnightReconciler
@@ -352,17 +352,12 @@ var _ = Describe("Knight Controller", func() {
 				Scheme:   k8sClient.Scheme(),
 				Recorder: record.NewFakeRecorder(100),
 			}
-			knightName = "test-nix-cleanup"
+			knightName = "test-nix-shared"
 			knightNamespace = "default"
-			typeNamespacedName = types.NamespacedName{
-				Name:      knightName,
-				Namespace: knightNamespace,
-			}
+			typeNamespacedName = types.NamespacedName{Name: knightName, Namespace: knightNamespace}
 		})
 
 		AfterEach(func() {
-			// Delete the knight and reconcile once so the controller removes
-			// its finalizer — no manager is running reconciles for us here.
 			knight := &aiv1alpha1.Knight{}
 			if err := k8sClient.Get(ctx, typeNamespacedName, knight); err == nil {
 				_ = k8sClient.Delete(ctx, knight)
@@ -372,37 +367,30 @@ var _ = Describe("Knight Controller", func() {
 				return errors.IsNotFound(k8sClient.Get(ctx, typeNamespacedName, &aiv1alpha1.Knight{}))
 			}, "5s", "100ms").Should(BeTrue())
 
-			// Delete leftover PVCs. envtest runs no kube-controller-manager,
-			// so the pvc-protection finalizer never clears on its own — strip
-			// finalizers to let terminating PVCs actually go away.
-			for _, name := range []string{knightName, "knight-" + knightName + "-nix"} {
-				key := types.NamespacedName{Name: name, Namespace: knightNamespace}
-				pvc := &corev1.PersistentVolumeClaim{}
-				if err := k8sClient.Get(ctx, key, pvc); err == nil {
-					_ = k8sClient.Delete(ctx, pvc)
-				}
-				Eventually(func() bool {
-					pvc := &corev1.PersistentVolumeClaim{}
-					err := k8sClient.Get(ctx, key, pvc)
-					if errors.IsNotFound(err) {
-						return true
-					}
-					if err == nil && pvc.DeletionTimestamp != nil && len(pvc.Finalizers) > 0 {
-						pvc.Finalizers = nil
-						_ = k8sClient.Update(ctx, pvc)
-					}
-					return false
-				}, "5s", "100ms").Should(BeTrue())
+			// Strip the pvc-protection finalizer (no kube-controller-manager in
+			// envtest) so the workspace PVC actually gets deleted.
+			key := types.NamespacedName{Name: knightName, Namespace: knightNamespace}
+			if pvc := (&corev1.PersistentVolumeClaim{}); k8sClient.Get(ctx, key, pvc) == nil {
+				_ = k8sClient.Delete(ctx, pvc)
 			}
+			Eventually(func() bool {
+				pvc := &corev1.PersistentVolumeClaim{}
+				err := k8sClient.Get(ctx, key, pvc)
+				if errors.IsNotFound(err) {
+					return true
+				}
+				if err == nil && pvc.DeletionTimestamp != nil && len(pvc.Finalizers) > 0 {
+					pvc.Finalizers = nil
+					_ = k8sClient.Update(ctx, pvc)
+				}
+				return false
+			}, "5s", "100ms").Should(BeTrue())
 		})
 
-		It("should delete Nix PVC when knight nix tools change", func() {
-			By("Creating a knight with initial Nix tools")
+		It("does not provision a per-knight Nix PVC (knights mount the shared store)", func() {
+			By("Creating a knight with Nix tools")
 			knight := &aiv1alpha1.Knight{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      knightName,
-					Namespace: knightNamespace,
-				},
+				ObjectMeta: metav1.ObjectMeta{Name: knightName, Namespace: knightNamespace},
 				Spec: aiv1alpha1.KnightSpec{
 					Domain: "devops",
 					Model:  "claude-sonnet-4-20250514",
@@ -413,193 +401,25 @@ var _ = Describe("Knight Controller", func() {
 						Stream:        "test_tasks",
 						ResultsStream: "test_results",
 					},
-					Tools: &aiv1alpha1.KnightTools{
-						Nix: []string{"nmap", "curl"},
-					},
+					Tools: &aiv1alpha1.KnightTools{Nix: []string{"nmap", "curl"}},
 				},
 			}
 			Expect(k8sClient.Create(ctx, knight)).To(Succeed())
 
-			By("Reconciling to create initial Nix PVC")
+			By("Reconciling")
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
 			Expect(err).NotTo(HaveOccurred())
 
-			By("Verifying Nix PVC was created with initial hash")
-			nixPVCName := "knight-" + knightName + "-nix"
-			pvc := &corev1.PersistentVolumeClaim{}
-			Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name:      nixPVCName,
+			By("Verifying the workspace PVC exists but no per-knight Nix PVC was created")
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: knightName, Namespace: knightNamespace},
+				&corev1.PersistentVolumeClaim{})).To(Succeed())
+
+			err = k8sClient.Get(ctx, types.NamespacedName{
+				Name:      "knight-" + knightName + "-nix",
 				Namespace: knightNamespace,
-			}, pvc)).To(Succeed())
-
-			initialHash := pvc.Annotations["roundtable.io/nix-tools-hash"]
-			Expect(initialHash).NotTo(BeEmpty())
-			initialUID := pvc.UID
-
-			By("Changing the knight's Nix tools")
-			Expect(k8sClient.Get(ctx, typeNamespacedName, knight)).To(Succeed())
-			knight.Spec.Tools.Nix = []string{"nmap", "curl", "wget"}
-			Expect(k8sClient.Update(ctx, knight)).To(Succeed())
-
-			By("Reconciling after tool change")
-			_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
-			Expect(err).NotTo(HaveOccurred())
-
-			By("Verifying old PVC was deleted")
-			// The old PVC should be gone (deleted during reconcile). envtest
-			// has no kube-controller-manager to clear the pvc-protection
-			// finalizer, so strip finalizers from the terminating PVC to let
-			// the deletion complete.
-			Eventually(func() bool {
-				oldPVC := &corev1.PersistentVolumeClaim{}
-				err := k8sClient.Get(ctx, types.NamespacedName{
-					Name:      nixPVCName,
-					Namespace: knightNamespace,
-				}, oldPVC)
-				if errors.IsNotFound(err) || (err == nil && oldPVC.UID != initialUID) {
-					return true
-				}
-				if err == nil && oldPVC.DeletionTimestamp != nil && len(oldPVC.Finalizers) > 0 {
-					oldPVC.Finalizers = nil
-					_ = k8sClient.Update(ctx, oldPVC)
-				}
-				return false
-			}, "10s", "1s").Should(BeTrue())
-		})
-
-		It("should delete Nix PVC when knight nixPackages change", func() {
-			By("Creating a knight with initial nixPackages")
-			knight := &aiv1alpha1.Knight{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      knightName,
-					Namespace: knightNamespace,
-				},
-				Spec: aiv1alpha1.KnightSpec{
-					Domain:      "devops",
-					Model:       "claude-sonnet-4-20250514",
-					Skills:      []string{"shared"},
-					NixPackages: []string{"git", "jq"},
-					NATS: aiv1alpha1.KnightNATS{
-						URL:           "nats://nats.test:4222",
-						Subjects:      []string{"test.tasks.devops.>"},
-						Stream:        "test_tasks",
-						ResultsStream: "test_results",
-					},
-				},
-			}
-			Expect(k8sClient.Create(ctx, knight)).To(Succeed())
-
-			By("Reconciling to create initial Nix PVC")
-			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
-			Expect(err).NotTo(HaveOccurred())
-
-			By("Verifying Nix PVC was created")
-			nixPVCName := "knight-" + knightName + "-nix"
-			pvc := &corev1.PersistentVolumeClaim{}
-			Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name:      nixPVCName,
-				Namespace: knightNamespace,
-			}, pvc)).To(Succeed())
-
-			initialUID := pvc.UID
-
-			By("Changing the knight's nixPackages")
-			Expect(k8sClient.Get(ctx, typeNamespacedName, knight)).To(Succeed())
-			knight.Spec.NixPackages = []string{"git", "jq", "kubectl"}
-			Expect(k8sClient.Update(ctx, knight)).To(Succeed())
-
-			By("Reconciling after nixPackages change")
-			_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
-			Expect(err).NotTo(HaveOccurred())
-
-			By("Verifying old PVC was deleted")
-			// envtest has no kube-controller-manager to clear the
-			// pvc-protection finalizer — strip finalizers from the
-			// terminating PVC so the deletion can complete.
-			Eventually(func() bool {
-				oldPVC := &corev1.PersistentVolumeClaim{}
-				err := k8sClient.Get(ctx, types.NamespacedName{
-					Name:      nixPVCName,
-					Namespace: knightNamespace,
-				}, oldPVC)
-				if errors.IsNotFound(err) || (err == nil && oldPVC.UID != initialUID) {
-					return true
-				}
-				if err == nil && oldPVC.DeletionTimestamp != nil && len(oldPVC.Finalizers) > 0 {
-					oldPVC.Finalizers = nil
-					_ = k8sClient.Update(ctx, oldPVC)
-				}
-				return false
-			}, "10s", "1s").Should(BeTrue())
-		})
-
-		It("should handle both Tools.Nix and NixPackages in hash", func() {
-			By("Creating a knight with both Tools.Nix and NixPackages")
-			knight := &aiv1alpha1.Knight{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      knightName,
-					Namespace: knightNamespace,
-				},
-				Spec: aiv1alpha1.KnightSpec{
-					Domain:      "devops",
-					Model:       "claude-sonnet-4-20250514",
-					Skills:      []string{"shared"},
-					NixPackages: []string{"git"},
-					Tools: &aiv1alpha1.KnightTools{
-						Nix: []string{"curl"},
-					},
-					NATS: aiv1alpha1.KnightNATS{
-						URL:           "nats://nats.test:4222",
-						Subjects:      []string{"test.tasks.devops.>"},
-						Stream:        "test_tasks",
-						ResultsStream: "test_results",
-					},
-				},
-			}
-			Expect(k8sClient.Create(ctx, knight)).To(Succeed())
-
-			By("Reconciling to create Nix PVC")
-			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
-			Expect(err).NotTo(HaveOccurred())
-
-			By("Verifying Nix PVC was created")
-			nixPVCName := "knight-" + knightName + "-nix"
-			pvc := &corev1.PersistentVolumeClaim{}
-			Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name:      nixPVCName,
-				Namespace: knightNamespace,
-			}, pvc)).To(Succeed())
-
-			initialUID := pvc.UID
-
-			By("Changing only nixPackages while keeping Tools.Nix same")
-			Expect(k8sClient.Get(ctx, typeNamespacedName, knight)).To(Succeed())
-			knight.Spec.NixPackages = []string{"git", "jq"}
-			Expect(k8sClient.Update(ctx, knight)).To(Succeed())
-
-			By("Reconciling after change")
-			_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
-			Expect(err).NotTo(HaveOccurred())
-
-			By("Verifying PVC was deleted due to combined hash change")
-			// envtest has no kube-controller-manager to clear the
-			// pvc-protection finalizer — strip finalizers from the
-			// terminating PVC so the deletion can complete.
-			Eventually(func() bool {
-				oldPVC := &corev1.PersistentVolumeClaim{}
-				err := k8sClient.Get(ctx, types.NamespacedName{
-					Name:      nixPVCName,
-					Namespace: knightNamespace,
-				}, oldPVC)
-				if errors.IsNotFound(err) || (err == nil && oldPVC.UID != initialUID) {
-					return true
-				}
-				if err == nil && oldPVC.DeletionTimestamp != nil && len(oldPVC.Finalizers) > 0 {
-					oldPVC.Finalizers = nil
-					_ = k8sClient.Update(ctx, oldPVC)
-				}
-				return false
-			}, "10s", "1s").Should(BeTrue())
+			}, &corev1.PersistentVolumeClaim{})
+			Expect(errors.IsNotFound(err)).To(BeTrue(),
+				"per-knight Nix PVC must not be created after the shared-store cutover")
 		})
 	})
 })
