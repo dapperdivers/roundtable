@@ -42,6 +42,16 @@ func NewProvider(config Config, log logr.Logger) *Provider {
 	}
 }
 
+// NewProviderWithClient creates a Provider that wraps an existing client.
+// Intended for tests that need to inject a fake NATS client; the client
+// is returned as-is from Client() while it reports IsConnected.
+func NewProviderWithClient(client Client, log logr.Logger) *Provider {
+	return &Provider{
+		client: client,
+		log:    log,
+	}
+}
+
 // Client returns the shared NATS client, connecting lazily on first call.
 // Subsequent calls return the same client instance if still connected.
 // Thread-safe for concurrent access from multiple controllers.
