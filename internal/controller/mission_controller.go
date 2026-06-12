@@ -46,14 +46,6 @@ const (
 	missionFinalizer = "ai.roundtable.io/mission-finalizer"
 )
 
-// BriefingPayload is the JSON payload published to NATS for mission briefings.
-type BriefingPayload struct {
-	MissionName string   `json:"missionName"`
-	Objective   string   `json:"objective"`
-	Briefing    string   `json:"briefing"`
-	Knights     []string `json:"knights"`
-}
-
 // MissionReconciler reconciles a Mission object.
 type MissionReconciler struct {
 	client.Client
@@ -901,54 +893,63 @@ func (r *MissionReconciler) updateKnightStatuses(ctx context.Context, mission *a
 	}
 }
 
-// publishBriefing publishes the mission briefing to NATS.
+// publishBriefing delivers the mission briefing to each named knight's task subject.
+//
+// There is deliberately no broadcast publish to "<prefix>.briefing": no JetStream
+// stream covers that subject on any provisioning path (RoundTable streams only
+// capture "<prefix>.tasks.>" and "<prefix>.results.>") and nothing subscribes to
+// it, so a JetStream publish there can never be acked. It wedged every briefed
+// mission at BriefingPublished=False/PublishFailed.
 func (r *MissionReconciler) publishBriefing(ctx context.Context, mission *aiv1alpha1.Mission) error {
+	log := logf.FromContext(ctx)
+
 	client, err := r.natsClient()
 	if err != nil {
 		return err
 	}
 
-	knightNames := make([]string, 0, len(mission.Spec.Knights))
-	for _, mk := range mission.Spec.Knights {
-		knightNames = append(knightNames, mk.Name)
+	// Fallback subject prefix for knights whose own subjects can't be parsed:
+	// prefer the referenced RoundTable's prefix (covered by its tasks stream)
+	// over the mission-scoped prefix, which only exists for ephemeral tables.
+	fallbackPrefix := natsPrefix(mission)
+	if mission.Spec.RoundTableRef != "" {
+		rt := &aiv1alpha1.RoundTable{}
+		if err := r.Get(ctx, types.NamespacedName{
+			Name:      mission.Spec.RoundTableRef,
+			Namespace: mission.Namespace,
+		}, rt); err == nil && rt.Spec.NATS.SubjectPrefix != "" {
+			fallbackPrefix = rt.Spec.NATS.SubjectPrefix
+		}
 	}
 
-	payload := BriefingPayload{
-		MissionName: mission.Name,
-		Objective:   mission.Spec.Objective,
-		Briefing:    mission.Spec.Briefing,
-		Knights:     knightNames,
-	}
-
-	// Publish to mission briefing subject
-	prefix := natsPrefix(mission)
-	subject := fmt.Sprintf("%s.briefing", prefix)
-	if err := client.PublishJSON(subject, payload); err != nil {
-		return err
-	}
-
-	// Also publish briefing as a task to each knight's normal task subject
+	attempted := 0
+	published := 0
 	for _, mk := range mission.Spec.Knights {
 		if mk.Ephemeral {
 			continue
 		}
+		attempted++
+
 		knight := &aiv1alpha1.Knight{}
 		if err := r.Get(ctx, types.NamespacedName{
 			Name:      mk.Name,
 			Namespace: mission.Namespace,
 		}, knight); err != nil {
+			log.Error(err, "Failed to get knight for briefing", "knight", mk.Name)
 			continue
 		}
 
 		taskPayload := natspkg.TaskPayload{
-			TaskID:    fmt.Sprintf("mission-%s-briefing-%d", mission.Name, time.Now().UnixMilli()),
+			// Generation-based TaskID so a retried publish carries the same ID
+			// (same idempotency pattern as the planner's dispatchPlanningTask).
+			TaskID:    fmt.Sprintf("mission-%s-briefing-%s-gen%d", mission.Name, mk.Name, mission.Generation),
 			ChainName: fmt.Sprintf("mission-%s", mission.Name),
 			StepName:  "briefing",
 			Task:      fmt.Sprintf("[Mission: %s]\nObjective: %s\n\n%s", mission.Name, mission.Spec.Objective, mission.Spec.Briefing),
 		}
 
 		// Derive subject prefix from the knight's NATS config
-		briefingPrefix := natsPrefix(mission)
+		briefingPrefix := fallbackPrefix
 		if len(knight.Spec.NATS.Subjects) > 0 {
 			parts := strings.SplitN(knight.Spec.NATS.Subjects[0], ".tasks.", 2)
 			if len(parts) == 2 {
@@ -957,10 +958,19 @@ func (r *MissionReconciler) publishBriefing(ctx context.Context, mission *aiv1al
 		}
 		taskSubject := natspkg.TaskSubject(briefingPrefix, knight.Spec.Domain, mk.Name)
 		if err := client.PublishJSON(taskSubject, taskPayload); err != nil {
-			logf.FromContext(ctx).Error(err, "Failed to publish briefing to knight", "knight", mk.Name)
+			log.Error(err, "Failed to publish briefing to knight", "knight", mk.Name, "subject", taskSubject)
+			continue
 		}
+		published++
 	}
 
+	if attempted > 0 && published == 0 {
+		return fmt.Errorf("briefing not delivered to any of %d knights", attempted)
+	}
+	if published < attempted {
+		r.Recorder.Eventf(mission, corev1.EventTypeWarning, "BriefingPartialDelivery",
+			"Briefing delivered to %d of %d knights", published, attempted)
+	}
 	return nil
 }
 
