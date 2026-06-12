@@ -287,6 +287,22 @@ var _ = Describe("PodBuilder", func() {
 			Expect(*spec.AutomountServiceAccountToken).To(BeTrue())
 		})
 
+		It("sets a container PATH env exposing nix/mise tools to all processes", func() {
+			builder.WithWorkspace().WithConfig("test-config")
+			spec := builder.Build(context.Background())
+
+			var path string
+			for _, e := range spec.Containers[0].Env {
+				if e.Name == "PATH" {
+					path = e.Value
+				}
+			}
+			Expect(path).To(ContainSubstring("/home/node/.nix-profile/bin"))
+			Expect(path).To(ContainSubstring("/nix/var/nix/profiles/knights/test-knight/bin"))
+			Expect(path).To(ContainSubstring("/data/.mise/shims"))
+			Expect(path).To(ContainSubstring("/usr/local/bin")) // base PATH preserved
+		})
+
 		It("creates main container with proper configuration", func() {
 			builder.WithWorkspace()
 			spec := builder.Build(context.Background())

@@ -31,6 +31,23 @@ import (
 	"github.com/dapperdivers/roundtable/internal/util"
 )
 
+// knightToolPATH returns the container PATH for a knight, set as a pod-spec env
+// var so EVERY process — kubectl exec shells, the agent, and any subprocess —
+// resolves the knight's tools, not just the entrypoint's exec'd process tree.
+// Includes both the legacy per-pod nix dir and the shared-store profile so it
+// works before and after the read-only cutover (missing dirs are ignored).
+func knightToolPATH(name string) string {
+	return strings.Join([]string{
+		"/home/node/.nix-profile/bin",
+		"/data/nix-env/bin",
+		"/nix/var/nix/profiles/knights/" + name + "/bin",
+		"/data/bin",
+		"/data/.mise/shims",
+		"/app/.mise/shims",
+		"/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin",
+	}, ":")
+}
+
 // PodBuilder provides a composable way to build Knight pod specs.
 // Each With* method adds its own volumes, mounts, and/or containers.
 type PodBuilder struct {
@@ -437,6 +454,9 @@ func (b *PodBuilder) Build(ctx context.Context) corev1.PodSpec {
 		{Name: "METRICS_PORT", Value: "3000"},
 		{Name: "LOG_LEVEL", Value: "info"},
 		{Name: "TZ", Value: "America/Chicago"},
+		// PATH at the container level so exec shells and all subprocesses see
+		// the knight's nix/mise tools (not just the entrypoint's process tree).
+		{Name: "PATH", Value: knightToolPATH(b.knight.Name)},
 	}
 
 	// Browser capability
