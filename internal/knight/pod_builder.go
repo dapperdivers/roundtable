@@ -19,6 +19,7 @@ package knight
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
@@ -127,21 +128,49 @@ func (b *PodBuilder) WithConfig(configMapName string) *PodBuilder {
 	return b
 }
 
-// WithNixStore adds the Nix PVC mount at /nix if tools.nix is configured.
+// defaultSharedNixStorePVC is the fallback name of the cluster-wide RWX Nix
+// store when KNIGHT_NIX_STORE_PVC is unset.
+const defaultSharedNixStorePVC = "roundtable-nix-store"
+
+// SharedNixStorePVC returns the name of the shared Nix store PVC. It is
+// configurable via the KNIGHT_NIX_STORE_PVC env, which the chart sets from
+// nixBuilder.storeClaimName — the same value the builder Deployment mounts — so
+// the writer (builder) and readers (knights, legacy build Job) never drift.
+func SharedNixStorePVC() string {
+	if v := os.Getenv("KNIGHT_NIX_STORE_PVC"); v != "" {
+		return v
+	}
+	return defaultSharedNixStorePVC
+}
+
+// WithNixStore mounts the shared Nix store read-only at /nix when the knight has
+// nix tools, and points the entrypoint at its published profile. The store is
+// built by the operator's nix-builder; the knight never writes to it — a
+// read-only mount also makes kubelet skip the fsGroup chown of the large store.
+// Tools resolve via the profile's bin dir, already on the container PATH
+// (knightToolPATH). The entrypoint detects the read-only /nix and sources the
+// profile instead of bootstrapping a per-pod store.
 func (b *PodBuilder) WithNixStore() *PodBuilder {
 	if b.knight.Spec.Tools != nil && len(b.knight.Spec.Tools.Nix) > 0 {
-		nixPVCName := fmt.Sprintf("knight-%s-nix", b.knight.Name)
 		b.volumes = append(b.volumes, corev1.Volume{
 			Name: "nix",
 			VolumeSource: corev1.VolumeSource{
 				PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
-					ClaimName: nixPVCName,
+					ClaimName: SharedNixStorePVC(),
+					ReadOnly:  true,
 				},
 			},
 		})
 		b.mounts = append(b.mounts, corev1.VolumeMount{
 			Name:      "nix",
 			MountPath: "/nix",
+			ReadOnly:  true,
+		})
+		// CR names are RFC1123 lowercase — matches the profile key the builder
+		// publishes (and the entrypoint's KNIGHT_NAME-derived default).
+		b.env = append(b.env, corev1.EnvVar{
+			Name:  "KNIGHT_NIX_PROFILE",
+			Value: "/nix/var/nix/profiles/knights/" + b.knight.Name,
 		})
 	}
 	return b

@@ -80,7 +80,7 @@ var _ = Describe("Knight Nix build Job", func() {
 			for _, v := range pod.Volumes {
 				vols[v.Name] = v
 			}
-			Expect(vols["nix"].PersistentVolumeClaim.ClaimName).To(Equal(sharedNixStorePVCName))
+			Expect(vols["nix"].PersistentVolumeClaim.ClaimName).To(Equal(knightpkg.SharedNixStorePVC()))
 			Expect(vols["config"].ConfigMap.Name).To(Equal("knight-galahad-config"))
 			Expect(vols["scratch"].EmptyDir).NotTo(BeNil())
 
@@ -122,7 +122,7 @@ var _ = Describe("Knight Nix build Job", func() {
 
 		It("creates a build Job once the shared store exists", func() {
 			pvc := &corev1.PersistentVolumeClaim{
-				ObjectMeta: metav1.ObjectMeta{Name: sharedNixStorePVCName, Namespace: "default"},
+				ObjectMeta: metav1.ObjectMeta{Name: knightpkg.SharedNixStorePVC(), Namespace: "default"},
 				Spec: corev1.PersistentVolumeClaimSpec{
 					AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteMany},
 					Resources: corev1.VolumeResourceRequirements{
