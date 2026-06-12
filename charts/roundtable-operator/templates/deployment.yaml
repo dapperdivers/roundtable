@@ -54,6 +54,9 @@ spec:
               value: "{{ .Values.knightSecurity.fsGroup }}"
             - name: KNIGHT_FS_GROUP_CHANGE_POLICY
               value: "{{ .Values.knightSecurity.fsGroupChangePolicy }}"
+            # Pinned nixpkgs ref for reproducible knight tool builds.
+            - name: KNIGHT_NIXPKGS_REF
+              value: "{{ .Values.nixpkgs.ref }}"
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           securityContext:

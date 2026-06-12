@@ -49,6 +49,12 @@ knightSecurity:
   fsGroup: 1000
   fsGroupChangePolicy: OnRootMismatch
 
+# Pinned nixpkgs ref for knight tool flakes — an immutable commit for
+# reproducible builds. Bump to roll the whole fleet's tooling forward (changing
+# this triggers a one-time rebuild of every knight's Nix tools).
+nixpkgs:
+  ref: "9ae611a455b90cf061d8f332b977e387bda8e1ca" # nixos-unstable @ 2026-06-10
+
 # Dashboard (Round Table UI) — observability platform
 dashboard:
   enabled: true
