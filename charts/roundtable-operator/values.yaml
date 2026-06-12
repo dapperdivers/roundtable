@@ -39,6 +39,16 @@ images:
     repository: ghcr.io/dapperdivers/roundtable-ui
     tag: latest
 
+# Pod-level security context for all knight-owned pods — knight Deployments
+# AND the shared Nix store build Jobs. Set once here; the operator applies it
+# everywhere. OnRootMismatch is important: it stops kubelet from recursively
+# chowning the (large) shared Nix store on every pod mount.
+knightSecurity:
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
+  fsGroupChangePolicy: OnRootMismatch
+
 # Dashboard (Round Table UI) — observability platform
 dashboard:
   enabled: true

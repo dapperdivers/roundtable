@@ -66,7 +66,9 @@ func GenerateFlakeNix(knight *aiv1alpha1.Knight) string {
 	sb.WriteString("  outputs = { self, nixpkgs }:\n")
 	sb.WriteString("    let\n")
 	sb.WriteString("      system = \"x86_64-linux\";\n")
-	sb.WriteString("      pkgs = nixpkgs.legacyPackages.${system};\n")
+	// allowUnfree: many security/pentest tools (wpscan, burpsuite, …) are
+	// unfree and otherwise fail the build with an allowUnfree error.
+	sb.WriteString("      pkgs = import nixpkgs { inherit system; config.allowUnfree = true; };\n")
 	sb.WriteString("    in {\n")
 	sb.WriteString("      packages.${system}.default = pkgs.buildEnv {\n")
 	sb.WriteString("        name = \"knight-" + knight.Name + "-tools\";\n")

@@ -138,16 +138,12 @@ func (r *KnightReconciler) buildNixBuildJob(knight *aiv1alpha1.Knight, hash, job
 				ObjectMeta: metav1.ObjectMeta{Labels: labels},
 				Spec: corev1.PodSpec{
 					RestartPolicy: corev1.RestartPolicyNever,
-					// Match the knight pods (uid/gid 1000, fsGroup 1000) so the
-					// builder writes shared-store paths the read-only knights can
-					// read, and to satisfy non-root cluster policy.
+					// Shared with the knight pods (uid/gid/fsGroup + OnRootMismatch)
+					// so the builder writes shared-store paths the read-only
+					// knights can read, kubelet doesn't recursively chown the
+					// large store on every mount, and non-root policy is met.
 					AutomountServiceAccountToken: ptr.To(false),
-					SecurityContext: &corev1.PodSecurityContext{
-						RunAsUser:    ptr.To(int64(1000)),
-						RunAsGroup:   ptr.To(int64(1000)),
-						RunAsNonRoot: ptr.To(true),
-						FSGroup:      ptr.To(int64(1000)),
-					},
+					SecurityContext:              r.KnightSecurity.PodSecurityContext(),
 					Containers: []corev1.Container{
 						{
 							Name:    "nixbuild",

@@ -44,6 +44,16 @@ spec:
           env:
             - name: DEFAULT_KNIGHT_IMAGE
               value: "{{ .Values.images.piKnight.repository }}:{{ .Values.images.piKnight.tag }}"
+            # Pod security context applied to knight Deployments and Nix build
+            # Jobs alike (set once here, reused by the operator).
+            - name: KNIGHT_RUN_AS_USER
+              value: "{{ .Values.knightSecurity.runAsUser }}"
+            - name: KNIGHT_RUN_AS_GROUP
+              value: "{{ .Values.knightSecurity.runAsGroup }}"
+            - name: KNIGHT_FS_GROUP
+              value: "{{ .Values.knightSecurity.fsGroup }}"
+            - name: KNIGHT_FS_GROUP_CHANGE_POLICY
+              value: "{{ .Values.knightSecurity.fsGroupChangePolicy }}"
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           securityContext:

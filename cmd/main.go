@@ -40,6 +40,7 @@ import (
 
 	aiv1alpha1 "github.com/dapperdivers/roundtable/api/v1alpha1"
 	"github.com/dapperdivers/roundtable/internal/controller"
+	knightpkg "github.com/dapperdivers/roundtable/internal/knight"
 	"github.com/dapperdivers/roundtable/internal/mission"
 	natspkg "github.com/dapperdivers/roundtable/pkg/nats"
 	rtruntime "github.com/dapperdivers/roundtable/pkg/runtime"
@@ -203,11 +204,13 @@ func main() {
 	}()
 
 	defaultImage := os.Getenv("DEFAULT_KNIGHT_IMAGE")
+	knightSecurity := knightpkg.PodSecurityFromEnv()
 	knightReconciler := &controller.KnightReconciler{
-		Client:       mgr.GetClient(),
-		Scheme:       mgr.GetScheme(),
-		Recorder:     mgr.GetEventRecorderFor("knight-controller"),
-		DefaultImage: defaultImage,
+		Client:         mgr.GetClient(),
+		Scheme:         mgr.GetScheme(),
+		Recorder:       mgr.GetEventRecorderFor("knight-controller"),
+		DefaultImage:   defaultImage,
+		KnightSecurity: knightSecurity,
 	}
 
 	// Create runtime backends
