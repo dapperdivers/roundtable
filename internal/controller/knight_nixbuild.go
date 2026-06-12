@@ -138,12 +138,21 @@ func (r *KnightReconciler) buildNixBuildJob(knight *aiv1alpha1.Knight, hash, job
 				ObjectMeta: metav1.ObjectMeta{Labels: labels},
 				Spec: corev1.PodSpec{
 					RestartPolicy: corev1.RestartPolicyNever,
-					// Shared with the knight pods (uid/gid/fsGroup + OnRootMismatch)
-					// so the builder writes shared-store paths the read-only
-					// knights can read, kubelet doesn't recursively chown the
-					// large store on every mount, and non-root policy is met.
+					// The builder runs as ROOT — deliberately diverging from the
+					// non-root knight pods. Nix is designed to build as root (the
+					// nix-daemon's whole job); building source derivations
+					// unprivileged with sandbox=false fails on permission ops
+					// (e.g. Ruby gem unpackPhase: "chmod: Operation not
+					// permitted"). This pod is ephemeral and isolated. The shared
+					// store stays readable by the uid-1000 knights because nix
+					// store paths are world-readable (0555). No fsGroup: root
+					// accesses the store directly, which also avoids a recursive
+					// chown of the large store on mount.
 					AutomountServiceAccountToken: ptr.To(false),
-					SecurityContext:              r.KnightSecurity.PodSecurityContext(),
+					SecurityContext: &corev1.PodSecurityContext{
+						RunAsUser:  ptr.To(int64(0)),
+						RunAsGroup: ptr.To(int64(0)),
+					},
 					Containers: []corev1.Container{
 						{
 							Name:    "nixbuild",
@@ -156,9 +165,11 @@ func (r *KnightReconciler) buildNixBuildJob(knight *aiv1alpha1.Knight, hash, job
 								{Name: "FLAKE_FILE", Value: "/config/flake.nix"},
 								{Name: "TMPDIR", Value: "/scratch"},
 							},
+							// Default capability set (no Drop ALL) so source builds
+							// can chown/chmod/setuid as Nix expects.
 							SecurityContext: &corev1.SecurityContext{
-								AllowPrivilegeEscalation: ptr.To(false),
-								Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
+								AllowPrivilegeEscalation: ptr.To(true),
+								RunAsNonRoot:             ptr.To(false),
 								SeccompProfile:           &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
 							},
 							VolumeMounts: []corev1.VolumeMount{

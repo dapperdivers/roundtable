@@ -86,13 +86,13 @@ var _ = Describe("Knight Nix build Job", func() {
 
 			// Runs as 1000:1000/fsGroup 1000 so shared-store files are readable
 			// by the read-only knight pods (which also run as 1000).
-			Expect(*pod.SecurityContext.RunAsUser).To(Equal(int64(1000)))
-			Expect(*pod.SecurityContext.FSGroup).To(Equal(int64(1000)))
-			Expect(*pod.SecurityContext.RunAsNonRoot).To(BeTrue())
-			// OnRootMismatch — without it kubelet recursively chowns the whole
-			// shared store on every mount (the build-failure root cause).
-			Expect(*pod.SecurityContext.FSGroupChangePolicy).To(Equal(corev1.FSGroupChangeOnRootMismatch))
-			Expect(*c.SecurityContext.AllowPrivilegeEscalation).To(BeFalse())
+			// The builder runs as root (Nix needs privilege for source builds);
+			// no fsGroup so it doesn't recursively chown the large shared store.
+			Expect(*pod.SecurityContext.RunAsUser).To(Equal(int64(0)))
+			Expect(pod.SecurityContext.FSGroup).To(BeNil())
+			Expect(*c.SecurityContext.RunAsNonRoot).To(BeFalse())
+			// Default capabilities (no Drop ALL) so source builds can chmod/chown.
+			Expect(c.SecurityContext.Capabilities).To(BeNil())
 		})
 	})
 
