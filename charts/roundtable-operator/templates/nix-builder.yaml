@@ -1,0 +1,83 @@
+{{- if .Values.nixBuilder.enabled }}
+---
+# Persistent shared-store builder. Single replica, root, the SOLE writer to the
+# shared Nix store: it runs a nix-daemon and processes the operator's build
+# requests off the work-queue PVC (see pi-knight scripts/nix-builder.sh). Strategy
+# Recreate guarantees there are never two writers across a rollout.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "roundtable-operator.fullname" . }}-nix-builder
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "roundtable-operator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: nix-builder
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "roundtable-operator.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: nix-builder
+  template:
+    metadata:
+      labels:
+        {{- include "roundtable-operator.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: nix-builder
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 120
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      # Root, NO fsGroup: the builder writes the store directly (Nix is built to
+      # build as root), and fsGroup would force a recursive chown of the large
+      # store on every mount. Store paths are world-readable (0555) so uid-1000
+      # knights still read the published profiles.
+      securityContext:
+        runAsUser: 0
+        runAsGroup: 0
+      containers:
+        - name: nix-builder
+          image: "{{ .Values.nixBuilder.image.repository | default .Values.images.piKnight.repository }}:{{ .Values.nixBuilder.image.tag | default .Values.images.piKnight.tag }}"
+          imagePullPolicy: {{ .Values.nixBuilder.image.pullPolicy | default "Always" }}
+          command: ["/app/scripts/nix-builder.sh"]
+          env:
+            - name: BUILD_QUEUE_DIR
+              value: /queue
+            - name: NIX_BUILD_CONCURRENCY
+              value: "{{ .Values.nixBuilder.concurrency }}"
+            - name: TMPDIR
+              value: /scratch
+          resources:
+            {{- toYaml .Values.nixBuilder.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: true
+            runAsNonRoot: false
+            readOnlyRootFilesystem: false
+            seccompProfile:
+              type: RuntimeDefault
+          volumeMounts:
+            - name: nix
+              mountPath: /nix
+            - name: queue
+              mountPath: /queue
+            - name: scratch
+              mountPath: /scratch
+      volumes:
+        - name: nix
+          persistentVolumeClaim:
+            claimName: {{ .Values.nixBuilder.storeClaimName }}
+        - name: queue
+          persistentVolumeClaim:
+            claimName: {{ .Values.nixBuilder.queueClaimName }}
+        - name: scratch
+          emptyDir:
+            sizeLimit: {{ .Values.nixBuilder.scratchSizeLimit }}
+{{- end }}

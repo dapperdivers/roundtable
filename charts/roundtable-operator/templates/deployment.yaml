@@ -57,6 +57,12 @@ spec:
             # Pinned nixpkgs ref for reproducible knight tool builds.
             - name: KNIGHT_NIXPKGS_REF
               value: "{{ .Values.nixpkgs.ref }}"
+            {{- if and .Values.nixBuilder.enabled .Values.nixBuilder.mountQueue }}
+            # Presence of /queue switches the operator to queue-backed dispatch
+            # (the nix-daemon builder) instead of per-knight build Jobs.
+            - name: BUILD_QUEUE_DIR
+              value: /queue
+            {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           securityContext:
@@ -66,3 +72,14 @@ spec:
             capabilities:
               drop:
                 - ALL
+          {{- if and .Values.nixBuilder.enabled .Values.nixBuilder.mountQueue }}
+          volumeMounts:
+            - name: build-queue
+              mountPath: /queue
+          {{- end }}
+      {{- if and .Values.nixBuilder.enabled .Values.nixBuilder.mountQueue }}
+      volumes:
+        - name: build-queue
+          persistentVolumeClaim:
+            claimName: {{ .Values.nixBuilder.queueClaimName }}
+      {{- end }}
