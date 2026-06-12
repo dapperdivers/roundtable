@@ -89,6 +89,9 @@ var _ = Describe("Knight Nix build Job", func() {
 			Expect(*pod.SecurityContext.RunAsUser).To(Equal(int64(1000)))
 			Expect(*pod.SecurityContext.FSGroup).To(Equal(int64(1000)))
 			Expect(*pod.SecurityContext.RunAsNonRoot).To(BeTrue())
+			// OnRootMismatch — without it kubelet recursively chowns the whole
+			// shared store on every mount (the build-failure root cause).
+			Expect(*pod.SecurityContext.FSGroupChangePolicy).To(Equal(corev1.FSGroupChangeOnRootMismatch))
 			Expect(*c.SecurityContext.AllowPrivilegeEscalation).To(BeFalse())
 		})
 	})

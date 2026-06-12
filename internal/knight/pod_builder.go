@@ -40,6 +40,7 @@ type PodBuilder struct {
 	sidecars   []corev1.Container
 	env        []corev1.EnvVar
 	defaultImg string
+	security   PodSecurity
 	reader     client.Reader
 }
 
@@ -52,7 +53,15 @@ func NewPodBuilder(k *aiv1alpha1.Knight, defaultImage string) *PodBuilder {
 		sidecars:   []corev1.Container{},
 		env:        []corev1.EnvVar{},
 		defaultImg: defaultImage,
+		security:   DefaultPodSecurity(),
 	}
+}
+
+// WithSecurity sets the pod-level security context (shared with the Nix build
+// Jobs). Defaults to DefaultPodSecurity when not called.
+func (b *PodBuilder) WithSecurity(s PodSecurity) *PodBuilder {
+	b.security = s.OrDefault()
+	return b
 }
 
 // WithReader sets the client reader for looking up resources.
@@ -489,21 +498,11 @@ func (b *PodBuilder) Build(ctx context.Context) corev1.PodSpec {
 	containers := []corev1.Container{knightContainer}
 	containers = append(containers, b.sidecars...)
 
-	// Pod security context
-	fsGroup := int64(1000)
-	runAsUser := int64(1000)
-	runAsGroup := int64(1000)
-
 	return corev1.PodSpec{
-		Containers:         containers,
-		Volumes:            b.volumes,
-		EnableServiceLinks: util.BoolPtr(false),
-		SecurityContext: &corev1.PodSecurityContext{
-			RunAsUser:           &runAsUser,
-			RunAsGroup:          &runAsGroup,
-			FSGroup:             &fsGroup,
-			FSGroupChangePolicy: util.FSGroupChangePolicyPtr(corev1.FSGroupChangeOnRootMismatch),
-		},
+		Containers:                   containers,
+		Volumes:                      b.volumes,
+		EnableServiceLinks:           util.BoolPtr(false),
+		SecurityContext:              b.security.PodSecurityContext(),
 		ServiceAccountName:           b.knight.Spec.ServiceAccountName,
 		AutomountServiceAccountToken: util.BoolPtr(true),
 	}

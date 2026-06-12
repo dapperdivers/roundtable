@@ -57,6 +57,11 @@ type KnightReconciler struct {
 	Recorder     record.EventRecorder
 	DefaultImage string // Default pi-knight image (set via DEFAULT_KNIGHT_IMAGE env var)
 
+	// KnightSecurity is the pod-level security context applied to both knight
+	// Deployments and Nix build Jobs. Chart-driven (KNIGHT_* env vars); zero
+	// value falls back to DefaultPodSecurity.
+	KnightSecurity knightpkg.PodSecurity
+
 	// RuntimeBackend abstracts the lifecycle of Knight runtime resources.
 	// When set, the controller delegates Deployment reconciliation and
 	// suspend/resume to this backend. When nil, falls back to the
@@ -621,6 +626,7 @@ func (r *KnightReconciler) BuildPodSpec(ctx context.Context, k *aiv1alpha1.Knigh
 	configMapName := fmt.Sprintf("knight-%s-config", k.Name)
 
 	builder := knightpkg.NewPodBuilder(k, r.DefaultImage).
+		WithSecurity(r.KnightSecurity).
 		WithReader(r.Client).
 		WithWorkspace().
 		WithConfig(configMapName).
