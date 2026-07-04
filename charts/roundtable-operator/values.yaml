@@ -39,7 +39,7 @@ images:
     tag: 7abd75f6ce2141cf554a9be97ef79f05f4fd0336
   dashboard:
     repository: ghcr.io/dapperdivers/roundtable-ui
-    tag: 12a92251764f03f3cab2ebe3668a648cad7b740d
+    tag: f7fccb6d2318eca1250f0655a53a4f67a4855415
 
 # Pod-level security context for all knight-owned pods — knight Deployments
 # AND the shared Nix store build Jobs. Set once here; the operator applies it
