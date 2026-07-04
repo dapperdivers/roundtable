@@ -535,7 +535,6 @@ func (p *Planner) buildPlanningPrompt(ctx context.Context, mission *aiv1alpha1.M
       "specOverrides": {
         "domain": "the-knights-domain",
         "skills": ["shared", "relevant-skill"],
-        "model": "anthropic/claude-sonnet-4-5",
         "tools": {
           "nix": ["specific", "nixpkgs", "this", "knight", "needs"]
         }
@@ -566,6 +565,7 @@ func (p *Planner) buildPlanningPrompt(ctx context.Context, mission *aiv1alpha1.M
 	sb.WriteString("1. All knightRef values in chain steps must match knight names in the knights array\n")
 	sb.WriteString("2. When recruitExisting=true, prefer ephemeral=false to use existing knights when they fit the task\n")
 	sb.WriteString("3. For ephemeral knights, ALWAYS use templateRef=\"base\" and customize via specOverrides\n")
+	sb.WriteString("3b. Do NOT set specOverrides.model unless the task truly needs a stronger model — omitting it inherits the base template's cheap default\n")
 	sb.WriteString("4. Design each ephemeral knight's tools.nix for its specific role — pick the right nixpkgs (e.g. go, python3, nmap, gh, nodejs_22, ripgrep, gopls, golangci-lint, kubectl, terraform)\n")
 	sb.WriteString("5. Chain phases can be: Setup, Active, or Teardown\n")
 	sb.WriteString("6. Steps can use Go template syntax like {{ .Steps.step_name.Output }} to pass data between steps\n")
