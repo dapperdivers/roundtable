@@ -233,15 +233,6 @@ func (p *Planner) ReconcilePlanning(ctx context.Context, mission *aiv1alpha1.Mis
 	pr.SkillsGenerated = int32(len(plan.Skills))
 	pr.RawOutput = util.Truncate(output, 10000)
 
-	// Bug #85: Set PlanApplied condition to prevent duplicate applications on retry
-	meta.SetStatusCondition(&mission.Status.Conditions, metav1.Condition{
-		Type:               "PlanApplied",
-		Status:             metav1.ConditionTrue,
-		Reason:             "PlanningComplete",
-		Message:            fmt.Sprintf("Generated %d chains, %d knights, %d skills", pr.ChainsGenerated, pr.KnightsGenerated, pr.SkillsGenerated),
-		ObservedGeneration: mission.Generation,
-	})
-
 	log.Info("Planning completed successfully",
 		"chains", pr.ChainsGenerated,
 		"knights", pr.KnightsGenerated,
@@ -255,6 +246,21 @@ func (p *Planner) ReconcilePlanning(ctx context.Context, mission *aiv1alpha1.Mis
 	if err := p.Client.Update(ctx, mission); err != nil {
 		return ctrl.Result{}, err
 	}
+
+	// The spec update decoded the server response into `mission`, replacing
+	// Status with the server's copy (spec updates ignore status) — restore the
+	// completed planning result before persisting status, or the counters and
+	// CompletedAt are silently lost.
+	mission.Status.PlanningResult = pr
+
+	// Bug #85: Set PlanApplied condition to prevent duplicate applications on retry
+	meta.SetStatusCondition(&mission.Status.Conditions, metav1.Condition{
+		Type:               "PlanApplied",
+		Status:             metav1.ConditionTrue,
+		Reason:             "PlanningComplete",
+		Message:            fmt.Sprintf("Generated %d chains, %d knights, %d skills", pr.ChainsGenerated, pr.KnightsGenerated, pr.SkillsGenerated),
+		ObservedGeneration: mission.Generation,
+	})
 
 	// Transition to Assembling phase with the PlanApplied condition in one update
 	mission.Status.Phase = aiv1alpha1.MissionPhaseAssembling

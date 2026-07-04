@@ -1502,14 +1502,24 @@ var _ = Describe("Mission Controller - Warm Pool", func() {
 				Assembler: &missionpkg.KnightAssembler{Client: k8sClient, Scheme: k8sClient.Scheme()},
 			}
 
-			// Drive to assembling phase
+			// Drive through Assembling — the warm pool claim recreates the knight
+			// under its mission-prefixed name, which starts not-ready; mark it
+			// ready as it appears so the mission can advance.
 			for i := 0; i < 10; i++ {
 				_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: missionNN})
 				Expect(err).NotTo(HaveOccurred())
+				// Mark the recreated mission knight ready once it appears
+				claimKnight := &aiv1alpha1.Knight{}
+				if err := k8sClient.Get(ctx, types.NamespacedName{
+					Name:      missionName + "-knight1",
+					Namespace: namespace,
+				}, claimKnight); err == nil && !claimKnight.Status.Ready {
+					claimKnight.Status.Phase = aiv1alpha1.KnightPhaseReady
+					claimKnight.Status.Ready = true
+					_ = k8sClient.Status().Update(ctx, claimKnight)
+				}
 				mission := &aiv1alpha1.Mission{}
 				_ = k8sClient.Get(ctx, missionNN, mission)
-				// Keep reconciling through Assembling — the warm pool claim
-				// happens during the Assembling reconcile, not on entry to it.
 				if mission.Status.Phase == aiv1alpha1.MissionPhaseBriefing ||
 					mission.Status.Phase == aiv1alpha1.MissionPhaseActive {
 					break
@@ -1517,15 +1527,24 @@ var _ = Describe("Mission Controller - Warm Pool", func() {
 				time.Sleep(100 * time.Millisecond)
 			}
 
-			By("Verifying the warm knight was claimed")
-			claimedKnight := &aiv1alpha1.Knight{}
+			By("Verifying the claim created the mission-prefixed knight")
+			// Chain steps reference "<mission>-<knight>", so the claimed knight
+			// must exist under that name.
+			missionKnight := &aiv1alpha1.Knight{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      missionName + "-knight1",
+				Namespace: namespace,
+			}, missionKnight)).To(Succeed())
+			Expect(missionKnight.Labels[aiv1alpha1.LabelMission]).To(Equal(missionName))
+			Expect(missionKnight.Labels[aiv1alpha1.LabelEphemeral]).To(Equal("true"))
+
+			By("Verifying the warm knight was consumed")
+			warmGone := &aiv1alpha1.Knight{}
+			err := k8sClient.Get(ctx, types.NamespacedName{
 				Name:      rtName + "-warm-ready",
 				Namespace: namespace,
-			}, claimedKnight)).To(Succeed())
-
-			Expect(claimedKnight.Labels[aiv1alpha1.LabelWarmPoolClaimed]).To(Equal("true"))
-			Expect(claimedKnight.Labels[aiv1alpha1.LabelMission]).To(Equal(missionName))
+			}, warmGone)
+			Expect(errors.IsNotFound(err)).To(BeTrue(), "warm knight should be deleted after claim")
 
 			By("Verifying mission status shows warm start")
 			mission = &aiv1alpha1.Mission{}
@@ -1820,10 +1839,12 @@ var _ = Describe("Mission Controller - Warm Pool", func() {
 				time.Sleep(100 * time.Millisecond)
 			}
 
-			By("Verifying spec overrides were applied")
+			By("Verifying spec overrides were applied to the mission-prefixed knight")
+			// The claim recreates the knight under "<mission>-<knight>" (the name
+			// chain steps reference); overrides land on that CR.
 			claimedKnight := &aiv1alpha1.Knight{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name:      rtName + "-warm-override",
+				Name:      missionName + "-knight1",
 				Namespace: namespace,
 			}, claimedKnight)).To(Succeed())
 
