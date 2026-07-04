@@ -30,14 +30,16 @@ affinity: {}
 # Additional args to pass to the manager
 extraArgs: []
 
-# Global image settings for managed components
+# Global image settings for managed components — pinned to git SHAs of each
+# repo's main; bump here (with a chart version bump), then update the chart
+# version in dapper-cluster
 images:
   piKnight:
     repository: ghcr.io/dapperdivers/pi-knight
-    tag: latest
+    tag: 7abd75f6ce2141cf554a9be97ef79f05f4fd0336
   dashboard:
     repository: ghcr.io/dapperdivers/roundtable-ui
-    tag: latest
+    tag: 12a92251764f03f3cab2ebe3668a648cad7b740d
 
 # Pod-level security context for all knight-owned pods — knight Deployments
 # AND the shared Nix store build Jobs. Set once here; the operator applies it
