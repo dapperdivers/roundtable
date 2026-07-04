@@ -856,6 +856,36 @@ var _ = Describe("Mission Controller", func() {
 			Expect(condition).NotTo(BeNil())
 			Expect(condition.Status).To(Equal(metav1.ConditionTrue))
 		})
+
+		It("should keep a Failed phase through cleanup", func() {
+			r := newReconciler()
+
+			driveToPhase(r, aiv1alpha1.MissionPhaseActive, 10, readyOnProvisioning(), readyOnAssembling())
+
+			// Fail the mission the way the assembly timeout does: phase Failed
+			// with a result message, but no Complete condition. The result
+			// deliberately doesn't contain "failed" — the old inference marked
+			// exactly this case Succeeded after cleanup.
+			mission := &aiv1alpha1.Mission{}
+			Expect(k8sClient.Get(ctx, missionNN, mission)).To(Succeed())
+			mission.Status.Phase = aiv1alpha1.MissionPhaseFailed
+			mission.Status.Result = "Assembly timeout: knights not ready: [tester]"
+			Expect(k8sClient.Status().Update(ctx, mission)).To(Succeed())
+
+			// First reconcile: Failed -> CleaningUp (records the outcome),
+			// second: runs cleanup and restores the terminal phase.
+			_, _ = r.Reconcile(ctx, reconcile.Request{NamespacedName: missionNN})
+			_, _ = r.Reconcile(ctx, reconcile.Request{NamespacedName: missionNN})
+
+			mission = &aiv1alpha1.Mission{}
+			Expect(k8sClient.Get(ctx, missionNN, mission)).To(Succeed())
+			Expect(mission.Status.Phase).To(Equal(aiv1alpha1.MissionPhaseFailed))
+			Expect(mission.Status.Result).To(ContainSubstring("Assembly timeout"))
+
+			condition := meta.FindStatusCondition(mission.Status.Conditions, aiv1alpha1.ConditionMissionComplete)
+			Expect(condition).NotTo(BeNil())
+			Expect(condition.Reason).To(Equal(aiv1alpha1.ReasonMissionFailed))
+		})
 	})
 
 	Context("Knight Templates", func() {

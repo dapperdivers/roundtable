@@ -156,6 +156,10 @@ const (
 	// ReasonMissionChainFailed indicates one or more mission chains failed.
 	ReasonMissionChainFailed = "ChainFailed"
 
+	// ReasonMissionFailed indicates the mission failed before its chains could
+	// complete (e.g. assembly timeout or planning failure).
+	ReasonMissionFailed = "Failed"
+
 	// ReasonMissionTimeout indicates the mission exceeded its timeout.
 	ReasonMissionTimeout = "Timeout"
 

@@ -28,6 +28,12 @@ type KnightAssembler struct {
 	Scheme *runtime.Scheme
 }
 
+// minAssemblyTimeout floors the assembly window. Ephemeral knights always
+// start cold (PVC provisioning, Nix tool builds, image pulls), which
+// legitimately takes a couple of minutes — a short mission timeout must not
+// fail assembly before the pod has a chance to become ready.
+const minAssemblyTimeout = 3 * time.Minute
+
 // ReconcileAssembling handles the Assembling phase - creates ephemeral knights and waits for readiness.
 func (a *KnightAssembler) ReconcileAssembling(ctx context.Context, mission *aiv1alpha1.Mission) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
@@ -204,8 +210,11 @@ func (a *KnightAssembler) ReconcileAssembling(ctx context.Context, mission *aiv1
 
 	// Note: Caller should update status
 
-	// Check assembly timeout (Timeout/3)
+	// Check assembly timeout (Timeout/3, floored at minAssemblyTimeout)
 	assemblyTimeout := time.Duration(mission.Spec.Timeout/3) * time.Second
+	if assemblyTimeout < minAssemblyTimeout {
+		assemblyTimeout = minAssemblyTimeout
+	}
 	if mission.Status.StartedAt != nil && time.Since(mission.Status.StartedAt.Time) > assemblyTimeout {
 		log.Info("Assembly timeout exceeded",
 			"timeout", assemblyTimeout,
