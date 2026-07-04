@@ -146,12 +146,15 @@ func (a *KnightAssembler) ReconcileAssembling(ctx context.Context, mission *aiv1
 
 			if claimed {
 				log.Info("Claimed warm pool knight for mission", "missionKnight", mk.Name)
-				// Warm knight is already running and ready
+				// The claim recreated the knight under its mission-prefixed name;
+				// wait for the new knight to become ready like a cold start.
 				knightStatuses[mk.Name] = aiv1alpha1.MissionKnightStatus{
 					Name:      mk.Name,
 					Ephemeral: true,
-					Ready:     true,
+					Ready:     false,
 				}
+				allReady = false
+				notReadyKnights = append(notReadyKnights, mk.Name)
 				continue
 			}
 
@@ -251,8 +254,10 @@ func (a *KnightAssembler) ReconcileAssembling(ctx context.Context, mission *aiv1
 }
 
 // claimWarmKnight attempts to claim an available warm pool knight for a mission.
-// It finds an unclaimed, ready warm knight, patches its spec for the mission, and
-// renames it by creating a new knight with the mission name and deleting the warm one.
+// It reserves an unclaimed, ready warm knight, creates the mission knight under
+// its mission-prefixed name ("<mission>-<knight>" — the name chain steps
+// reference), and deletes the warm knight so the pool replenishes. The mission
+// knight starts fresh, so the caller must treat it as not-ready and wait.
 // Returns true if a knight was successfully claimed.
 func (a *KnightAssembler) claimWarmKnight(
 	ctx context.Context,
@@ -301,86 +306,11 @@ func (a *KnightAssembler) claimWarmKnight(
 			"mission", mission.Name,
 			"missionKnight", mk.Name)
 
-		// Resolve the desired spec for this mission knight
-		spec, err := a.resolveKnightSpec(mission, mk, rt)
-		if err != nil {
-			return false, fmt.Errorf("failed to resolve knight spec: %w", err)
-		}
-
-		// Patch the warm knight's spec with mission-specific config
-		natsPrefix := rt.Spec.NATS.SubjectPrefix
-		warmKnight.Spec.Domain = spec.Domain
-		warmKnight.Spec.Model = spec.Model
-		warmKnight.Spec.Skills = spec.Skills
-		warmKnight.Spec.NATS = aiv1alpha1.KnightNATS{
-			URL:           rt.Spec.NATS.URL,
-			Stream:        rt.Spec.NATS.TasksStream,
-			ResultsStream: rt.Spec.NATS.ResultsStream,
-			Subjects: []string{
-				fmt.Sprintf("%s.tasks.%s.>", natsPrefix, spec.Domain),
-			},
-			ConsumerName: fmt.Sprintf("msn-%s-%s", mission.Name, mk.Name),
-			MaxDeliver:   1,
-		}
-		if spec.Prompt != nil {
-			warmKnight.Spec.Prompt = spec.Prompt
-		}
-		if spec.Tools != nil {
-			warmKnight.Spec.Tools = spec.Tools
-		}
-		if spec.Env != nil {
-			warmKnight.Spec.Env = spec.Env
-		}
-		if spec.Concurrency > 0 {
-			warmKnight.Spec.Concurrency = spec.Concurrency
-		}
-		if spec.TaskTimeout > 0 {
-			warmKnight.Spec.TaskTimeout = spec.TaskTimeout
-		}
-		if spec.GeneratedSkills != nil {
-			warmKnight.Spec.GeneratedSkills = spec.GeneratedSkills
-		}
-		if spec.NixPackages != nil {
-			warmKnight.Spec.NixPackages = spec.NixPackages
-		}
-
-		// Inject mission secrets
-		if len(mission.Spec.Secrets) > 0 {
-			for _, secretRef := range mission.Spec.Secrets {
-				warmKnight.Spec.EnvFrom = append(warmKnight.Spec.EnvFrom, corev1.EnvFromSource{
-					SecretRef: &corev1.SecretEnvSource{
-						LocalObjectReference: secretRef,
-					},
-				})
-			}
-		}
-
-		// Use mission-scoped ServiceAccount
-		warmKnight.Spec.ServiceAccountName = fmt.Sprintf("mission-%s", mission.Name)
-
-		// Update labels: mark as claimed, link to mission
+		// Reserve the warm knight: mark as claimed and link to the mission.
+		// The knight is replaced (not patched) below — chain steps reference the
+		// mission-prefixed name, and CR names are immutable.
 		warmKnight.Labels[aiv1alpha1.LabelWarmPoolClaimed] = "true"
 		warmKnight.Labels[aiv1alpha1.LabelMission] = mission.Name
-		warmKnight.Labels[aiv1alpha1.LabelEphemeral] = "true"
-		if mk.Role != "" {
-			sanitized := sanitizeLabelValue(mk.Role)
-			if sanitized != "" {
-				warmKnight.Labels[aiv1alpha1.LabelRole] = sanitized
-			}
-		}
-
-		// Add mission as a NON-CONTROLLER owner reference.
-		// RoundTable is already the controller owner — only one controller is allowed.
-		warmKnight.OwnerReferences = append(warmKnight.OwnerReferences,
-			metav1.OwnerReference{
-				APIVersion:         aiv1alpha1.GroupVersion.String(),
-				Kind:               "Mission",
-				Name:               mission.Name,
-				UID:                mission.UID,
-				Controller:         ptrBool(false),
-				BlockOwnerDeletion: ptrBool(true),
-			},
-		)
 
 		// Attempt update — resourceVersion provides optimistic locking.
 		// If another mission claimed this knight, we get a Conflict and try the next candidate.
@@ -396,10 +326,30 @@ func (a *KnightAssembler) claimWarmKnight(
 		// Mark as claimed in this cycle to avoid double-claiming
 		alreadyClaimed[warmKnight.Name] = true
 
+		// Create the mission knight under its prefixed name so chain steps
+		// (which reference "<mission>-<knight>") resolve to a real CR.
+		missionKnight, err := a.buildEphemeralKnight(ctx, mission, mk, rt)
+		if err != nil {
+			return false, fmt.Errorf("failed to build mission knight for warm claim: %w", err)
+		}
+		if err := a.Client.Create(ctx, missionKnight); err != nil && !apierrors.IsAlreadyExists(err) {
+			// Warm knight stays reserved; the caller falls back to cold start,
+			// which retries the same create on the next reconcile.
+			return false, fmt.Errorf("failed to create mission knight %q from warm claim: %w", missionKnight.Name, err)
+		}
+
+		// Delete the warm knight — its capacity is consumed by the mission knight,
+		// and the RoundTable controller will replenish the pool.
+		if err := a.Client.Delete(ctx, warmKnight); err != nil && !apierrors.IsNotFound(err) {
+			log.Error(err, "Failed to delete claimed warm knight; pool controller will reap it",
+				"warmKnight", warmKnight.Name)
+		}
+
 		log.Info("Successfully claimed warm pool knight",
 			"warmKnight", warmKnight.Name,
+			"missionKnight", missionKnight.Name,
 			"mission", mission.Name,
-			"domain", spec.Domain)
+			"domain", missionKnight.Spec.Domain)
 
 		return true, nil
 	}
@@ -836,9 +786,4 @@ func sanitizeLabelValue(s string) string {
 
 func isAlphanumeric(c byte) bool {
 	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
-}
-
-// ptrBool returns a pointer to a bool value.
-func ptrBool(b bool) *bool {
-	return &b
 }
