@@ -165,6 +165,26 @@ func (r *MissionReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		if meta.IsStatusConditionTrue(mission.Status.Conditions, aiv1alpha1.ConditionCleanupComplete) {
 			return ctrl.Result{}, nil
 		}
+		// Record the outcome in the Complete condition before overwriting the
+		// phase — paths like the assembly timeout set Failed without one, and
+		// cleanup needs it to restore the right terminal phase afterwards.
+		if !meta.IsStatusConditionTrue(mission.Status.Conditions, aiv1alpha1.ConditionMissionComplete) {
+			reason := aiv1alpha1.ReasonMissionSucceeded
+			if mission.Status.Phase == aiv1alpha1.MissionPhaseFailed {
+				reason = aiv1alpha1.ReasonMissionFailed
+			}
+			message := mission.Status.Result
+			if message == "" {
+				message = fmt.Sprintf("Mission %s", mission.Status.Phase)
+			}
+			meta.SetStatusCondition(&mission.Status.Conditions, metav1.Condition{
+				Type:               aiv1alpha1.ConditionMissionComplete,
+				Status:             metav1.ConditionTrue,
+				Reason:             reason,
+				Message:            message,
+				ObservedGeneration: mission.Generation,
+			})
+		}
 		mission.Status.Phase = aiv1alpha1.MissionPhaseCleaningUp
 		mission.Status.ObservedGeneration = mission.Generation
 		err := r.Status().Update(ctx, mission)
@@ -824,29 +844,7 @@ func (r *MissionReconciler) transitionToTerminalPhase(ctx context.Context, missi
 	log := logf.FromContext(ctx)
 
 	// Transition to terminal phase based on original outcome
-	if mission.Status.Phase != aiv1alpha1.MissionPhaseSucceeded &&
-		mission.Status.Phase != aiv1alpha1.MissionPhaseFailed &&
-		mission.Status.Phase != aiv1alpha1.MissionPhaseExpired {
-		// Determine terminal phase from chain results and planning outcome
-		allSucceeded := true
-
-		// Check if planning failed
-		if mission.Status.Result != "" && strings.Contains(mission.Status.Result, "failed") {
-			allSucceeded = false
-		}
-
-		for _, cs := range mission.Status.ChainStatuses {
-			if cs.Phase == aiv1alpha1.ChainPhaseFailed {
-				allSucceeded = false
-				break
-			}
-		}
-		if allSucceeded {
-			mission.Status.Phase = aiv1alpha1.MissionPhaseSucceeded
-		} else {
-			mission.Status.Phase = aiv1alpha1.MissionPhaseFailed
-		}
-	}
+	mission.Status.Phase = terminalOutcome(mission)
 
 	mission.Status.ObservedGeneration = mission.Generation
 	if err := r.Status().Update(ctx, mission); err != nil {
@@ -1311,6 +1309,40 @@ func (r *MissionReconciler) updateChainStatus(mission *aiv1alpha1.Mission, chain
 	})
 }
 
+// terminalOutcome returns the mission's terminal phase. The phase itself is
+// overwritten to CleaningUp while cleanup runs, so the outcome is read from
+// the Complete condition (recorded before cleanup starts); missions that
+// reach cleanup without one fall back to inferring from result and chains.
+func terminalOutcome(mission *aiv1alpha1.Mission) aiv1alpha1.MissionPhase {
+	switch mission.Status.Phase {
+	case aiv1alpha1.MissionPhaseSucceeded, aiv1alpha1.MissionPhaseFailed, aiv1alpha1.MissionPhaseExpired:
+		return mission.Status.Phase
+	}
+
+	if cond := meta.FindStatusCondition(mission.Status.Conditions, aiv1alpha1.ConditionMissionComplete); cond != nil &&
+		cond.Status == metav1.ConditionTrue {
+		switch cond.Reason {
+		case aiv1alpha1.ReasonMissionSucceeded:
+			return aiv1alpha1.MissionPhaseSucceeded
+		case aiv1alpha1.ReasonMissionExpired:
+			return aiv1alpha1.MissionPhaseExpired
+		default: // Failed, ChainFailed, Timeout, OverBudget, ...
+			return aiv1alpha1.MissionPhaseFailed
+		}
+	}
+
+	// Legacy inference for missions completed before the condition was recorded.
+	if mission.Status.Result != "" && strings.Contains(mission.Status.Result, "failed") {
+		return aiv1alpha1.MissionPhaseFailed
+	}
+	for _, cs := range mission.Status.ChainStatuses {
+		if cs.Phase == aiv1alpha1.ChainPhaseFailed {
+			return aiv1alpha1.MissionPhaseFailed
+		}
+	}
+	return aiv1alpha1.MissionPhaseSucceeded
+}
+
 // shouldDeleteResources determines if resources should be deleted based on cleanup policy and mission outcome.
 func (r *MissionReconciler) shouldDeleteResources(mission *aiv1alpha1.Mission) bool {
 	switch mission.Spec.CleanupPolicy {
@@ -1319,9 +1351,9 @@ func (r *MissionReconciler) shouldDeleteResources(mission *aiv1alpha1.Mission) b
 	case "Retain":
 		return false
 	case "OnSuccess":
-		return mission.Status.Phase == aiv1alpha1.MissionPhaseSucceeded
+		return terminalOutcome(mission) == aiv1alpha1.MissionPhaseSucceeded
 	case "OnFailure":
-		return mission.Status.Phase == aiv1alpha1.MissionPhaseFailed
+		return terminalOutcome(mission) == aiv1alpha1.MissionPhaseFailed
 	default:
 		return true // Default to Delete
 	}
