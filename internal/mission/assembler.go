@@ -738,7 +738,7 @@ func (a *KnightAssembler) BuildEphemeralRoundTable(
 		rt.Spec.Defaults = parentDefaults
 	} else {
 		rt.Spec.Defaults = &aiv1alpha1.RoundTableDefaults{
-			Model:       "claude-sonnet-4-20250514",
+			Model:       "openrouter/deepseek/deepseek-v3.2",
 			Concurrency: 3,
 			TaskTimeout: 300,
 		}

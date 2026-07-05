@@ -36,10 +36,10 @@ extraArgs: []
 images:
   piKnight:
     repository: ghcr.io/dapperdivers/pi-knight
-    tag: 7abd75f6ce2141cf554a9be97ef79f05f4fd0336
+    tag: fb42daedc97e845b049a2855a78d731b125d80d9
   dashboard:
     repository: ghcr.io/dapperdivers/roundtable-ui
-    tag: f7fccb6d2318eca1250f0655a53a4f67a4855415
+    tag: 630f8dfc80532139211896a67f3c9635aa0928b0
 
 # Pod-level security context for all knight-owned pods — knight Deployments
 # AND the shared Nix store build Jobs. Set once here; the operator applies it
@@ -113,7 +113,7 @@ dashboard:
 # knights:
 #   galahad:
 #     domain: security
-#     model: claude-sonnet-4-20250514
+#     model: openrouter/deepseek/deepseek-v3.2
 #     skills: [security, opencti, shared]
 #     tools:
 #       apt: [nmap, whois, dnsutils]

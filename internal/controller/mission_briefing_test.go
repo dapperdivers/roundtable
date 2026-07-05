@@ -24,10 +24,10 @@ import (
 	"sync"
 	"time"
 
-	. "github.com/onsi/ginkgo/v2"
-	. "github.com/onsi/gomega"
 	"github.com/go-logr/logr"
 	"github.com/nats-io/nats.go"
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/tools/record"
 
@@ -57,9 +57,9 @@ func (f *fakeNATSClient) subjects() []string {
 	return out
 }
 
-func (f *fakeNATSClient) Connect() error     { return nil }
-func (f *fakeNATSClient) Close() error       { return nil }
-func (f *fakeNATSClient) IsConnected() bool  { return true }
+func (f *fakeNATSClient) Connect() error    { return nil }
+func (f *fakeNATSClient) Close() error      { return nil }
+func (f *fakeNATSClient) IsConnected() bool { return true }
 
 func (f *fakeNATSClient) Publish(subject string, data []byte) error {
 	if f.failSubject != nil && f.failSubject(subject) {
@@ -96,8 +96,8 @@ func (f *fakeNATSClient) KVPut(string, string, []byte) error { return nil }
 func (f *fakeNATSClient) KVGet(string, string) ([]byte, error) {
 	return nil, fmt.Errorf("not found")
 }
-func (f *fakeNATSClient) KVDelete(string, string) error    { return nil }
-func (f *fakeNATSClient) KVKeys(string) ([]string, error)  { return nil, nil }
+func (f *fakeNATSClient) KVDelete(string, string) error   { return nil }
+func (f *fakeNATSClient) KVKeys(string) ([]string, error) { return nil, nil }
 
 var _ = Describe("MissionReconciler.publishBriefing", func() {
 	const namespace = "default"
