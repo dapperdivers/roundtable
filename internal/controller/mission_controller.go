@@ -1181,19 +1181,15 @@ func (r *MissionReconciler) aggregateMissionCost(ctx context.Context, mission *a
 func (r *MissionReconciler) ensureMissionChain(ctx context.Context, mission *aiv1alpha1.Mission, chainRef aiv1alpha1.MissionChainRef) error {
 	log := logf.FromContext(ctx)
 
-	// Fetch the source chain template
-	sourceChain := &aiv1alpha1.Chain{}
-	if err := r.Get(ctx, types.NamespacedName{
-		Name:      chainRef.Name,
-		Namespace: mission.Namespace,
-	}, sourceChain); err != nil {
-		return fmt.Errorf("source chain %q not found: %w", chainRef.Name, err)
-	}
-
 	// Build the mission-scoped chain name
 	missionChainName := fmt.Sprintf("mission-%s-%s", mission.Name, chainRef.Name)
 
-	// Check if it already exists
+	// If the mission-scoped chain already exists, there is nothing to do.
+	// Meta-mission chains are created directly by the planner (applyPlan), so
+	// there is no standalone source-chain template to copy from — this
+	// short-circuits before the source lookup below, which would otherwise
+	// fail with "source chain not found" and mark the mission Failed even
+	// though its chain ran successfully.
 	existingChain := &aiv1alpha1.Chain{}
 	err := r.Get(ctx, types.NamespacedName{
 		Name:      missionChainName,
@@ -1205,6 +1201,15 @@ func (r *MissionReconciler) ensureMissionChain(ctx context.Context, mission *aiv
 	}
 	if client.IgnoreNotFound(err) != nil {
 		return err
+	}
+
+	// Fetch the source chain template (template-based missions only)
+	sourceChain := &aiv1alpha1.Chain{}
+	if err := r.Get(ctx, types.NamespacedName{
+		Name:      chainRef.Name,
+		Namespace: mission.Namespace,
+	}, sourceChain); err != nil {
+		return fmt.Errorf("source chain %q not found: %w", chainRef.Name, err)
 	}
 
 	// Get RoundTable reference for this mission
