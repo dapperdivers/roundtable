@@ -2109,5 +2109,45 @@ var _ = Describe("Mission Controller - Generated Chains", func() {
 			Expect(chain.Spec.MissionRef).To(Equal(missionName),
 				"Planner-generated chain should have missionRef set")
 		})
+
+		It("ensureMissionChain is a no-op when the planner already created the chain (no source template)", func() {
+			// Regression: meta-mission chains are created directly by the planner
+			// as mission-<mission>-<chain>; there is no standalone source-chain
+			// template. ensureMissionChain must short-circuit on the existing
+			// chain instead of failing with "source chain not found" (which
+			// marked the mission Failed even though its chain succeeded).
+			mission := &aiv1alpha1.Mission{
+				ObjectMeta: metav1.ObjectMeta{Name: missionName, Namespace: namespace},
+				Spec: aiv1alpha1.MissionSpec{
+					Objective:     "Test meta-mission chain wiring",
+					RoundTableRef: rtName,
+				},
+			}
+
+			By("Pre-creating the mission-scoped chain as the planner would")
+			missionChainName := fmt.Sprintf("mission-%s-haiku-generation", missionName)
+			plannerChain := &aiv1alpha1.Chain{
+				ObjectMeta: metav1.ObjectMeta{Name: missionChainName, Namespace: namespace},
+				Spec: aiv1alpha1.ChainSpec{
+					Description:   "Planner-created chain",
+					Steps:         []aiv1alpha1.ChainStep{{Name: "write_haiku", KnightRef: "haiku-writer", Task: "Write a haiku"}},
+					MissionRef:    missionName,
+					RoundTableRef: rtName,
+				},
+			}
+			Expect(k8sClient.Create(ctx, plannerChain)).To(Succeed())
+			defer func() { _ = k8sClient.Delete(ctx, plannerChain) }()
+
+			By("Calling ensureMissionChain with only the bare chain name and no source template")
+			reconciler := &MissionReconciler{
+				Client:   k8sClient,
+				Scheme:   k8sClient.Scheme(),
+				Recorder: record.NewFakeRecorder(100),
+			}
+			err := reconciler.ensureMissionChain(ctx, mission,
+				aiv1alpha1.MissionChainRef{Name: "haiku-generation", Phase: "Active"})
+			Expect(err).NotTo(HaveOccurred(),
+				"should short-circuit on the existing planner chain, not require a source template")
+		})
 	})
 })
