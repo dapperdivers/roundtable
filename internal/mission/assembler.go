@@ -20,6 +20,7 @@ import (
 
 	aiv1alpha1 "github.com/dapperdivers/roundtable/api/v1alpha1"
 	"github.com/dapperdivers/roundtable/internal/status"
+	natspkg "github.com/dapperdivers/roundtable/pkg/nats"
 )
 
 // KnightAssembler handles knight assembly and provisioning for missions.
@@ -445,6 +446,22 @@ func (a *KnightAssembler) applySpecOverrides(
 	}
 }
 
+// appendSecretEnvFrom adds a secret-backed EnvFrom source to a KnightSpec,
+// skipping secrets already referenced (template, RoundTable, and mission
+// lists may overlap).
+func appendSecretEnvFrom(spec *aiv1alpha1.KnightSpec, secretRef corev1.LocalObjectReference) {
+	for _, existing := range spec.EnvFrom {
+		if existing.SecretRef != nil && existing.SecretRef.Name == secretRef.Name {
+			return
+		}
+	}
+	spec.EnvFrom = append(spec.EnvFrom, corev1.EnvFromSource{
+		SecretRef: &corev1.SecretEnvSource{
+			LocalObjectReference: secretRef,
+		},
+	})
+}
+
 // buildEphemeralKnight creates a Knight CR for an ephemeral mission knight.
 func (a *KnightAssembler) buildEphemeralKnight(
 	ctx context.Context,
@@ -461,28 +478,30 @@ func (a *KnightAssembler) buildEphemeralKnight(
 	// Generate knight name
 	knightName := fmt.Sprintf("%s-%s", mission.Name, mk.Name)
 
-	// Override NATS config to point at mission streams
+	// Override NATS config to point at mission streams. Subscribe to this
+	// knight's exact task subject (chains dispatch via TaskSubject to
+	// {prefix}.tasks.{domain}.{knightName}); a domain wildcard would replay
+	// retained tasks from other missions in the same domain.
 	natsPrefix := rt.Spec.NATS.SubjectPrefix
 	spec.NATS = aiv1alpha1.KnightNATS{
 		URL:           rt.Spec.NATS.URL,
 		Stream:        rt.Spec.NATS.TasksStream,
 		ResultsStream: rt.Spec.NATS.ResultsStream,
 		Subjects: []string{
-			fmt.Sprintf("%s.tasks.%s.>", natsPrefix, spec.Domain),
+			natspkg.TaskSubject(natsPrefix, spec.Domain, knightName),
 		},
 		ConsumerName: fmt.Sprintf("msn-%s-%s", mission.Name, mk.Name),
 		MaxDeliver:   1, // Exactly-once delivery for mission tasks
 	}
 
-	// Inject mission secrets (if any)
-	if len(mission.Spec.Secrets) > 0 {
-		for _, secretRef := range mission.Spec.Secrets {
-			spec.EnvFrom = append(spec.EnvFrom, corev1.EnvFromSource{
-				SecretRef: &corev1.SecretEnvSource{
-					LocalObjectReference: secretRef,
-				},
-			})
-		}
+	// Inject RoundTable-shared secrets, then mission-specific ones. Warm
+	// knights reference these secrets in their own manifests; ephemeral
+	// knights only get what we inject here (model API keys live in these).
+	for _, secretRef := range rt.Spec.Secrets {
+		appendSecretEnvFrom(spec, secretRef)
+	}
+	for _, secretRef := range mission.Spec.Secrets {
+		appendSecretEnvFrom(spec, secretRef)
 	}
 
 	// Ephemeral knights don't get persistent workspace
