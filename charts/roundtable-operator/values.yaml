@@ -113,7 +113,7 @@ dashboard:
 # knights:
 #   galahad:
 #     domain: security
-#     model: claude-sonnet-4-20250514
+#     model: openrouter/deepseek/deepseek-v3.2
 #     skills: [security, opencti, shared]
 #     tools:
 #       apt: [nmap, whois, dnsutils]

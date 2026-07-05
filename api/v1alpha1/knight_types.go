@@ -62,8 +62,8 @@ type KnightSpec struct {
 	// +kubebuilder:validation:MinLength=1
 	Domain string `json:"domain"`
 
-	// model is the AI model to use (e.g., "claude-sonnet-4-20250514", "claude-haiku-35-20241022").
-	// +kubebuilder:default="claude-sonnet-4-20250514"
+	// model is the AI model to use (e.g., "openrouter/deepseek/deepseek-v3.2", "claude-sonnet-4-20250514").
+	// +kubebuilder:default="openrouter/deepseek/deepseek-v3.2"
 	// +optional
 	Model string `json:"model,omitempty"`
 

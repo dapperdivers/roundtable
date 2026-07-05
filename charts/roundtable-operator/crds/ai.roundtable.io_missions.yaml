@@ -560,9 +560,9 @@ spec:
                               type: string
                           type: object
                         model:
-                          default: claude-sonnet-4-20250514
-                          description: model is the AI model to use (e.g., "claude-sonnet-4-20250514",
-                            "claude-haiku-35-20241022").
+                          default: openrouter/deepseek/deepseek-v3.2
+                          description: model is the AI model to use (e.g., "openrouter/deepseek/deepseek-v3.2",
+                            "claude-sonnet-4-20250514").
                           type: string
                         nats:
                           description: nats configures the knight's NATS JetStream
@@ -1332,9 +1332,9 @@ spec:
                               type: string
                           type: object
                         model:
-                          default: claude-sonnet-4-20250514
-                          description: model is the AI model to use (e.g., "claude-sonnet-4-20250514",
-                            "claude-haiku-35-20241022").
+                          default: openrouter/deepseek/deepseek-v3.2
+                          description: model is the AI model to use (e.g., "openrouter/deepseek/deepseek-v3.2",
+                            "claude-sonnet-4-20250514").
                           type: string
                         nats:
                           description: nats configures the knight's NATS JetStream
@@ -1863,9 +1863,9 @@ spec:
                               type: string
                           type: object
                         model:
-                          default: claude-sonnet-4-20250514
-                          description: model is the AI model to use (e.g., "claude-sonnet-4-20250514",
-                            "claude-haiku-35-20241022").
+                          default: openrouter/deepseek/deepseek-v3.2
+                          description: model is the AI model to use (e.g., "openrouter/deepseek/deepseek-v3.2",
+                            "claude-sonnet-4-20250514").
                           type: string
                         nats:
                           description: nats configures the knight's NATS JetStream
@@ -2654,9 +2654,9 @@ spec:
                             type: string
                         type: object
                       model:
-                        default: claude-sonnet-4-20250514
-                        description: model is the AI model to use (e.g., "claude-sonnet-4-20250514",
-                          "claude-haiku-35-20241022").
+                        default: openrouter/deepseek/deepseek-v3.2
+                        description: model is the AI model to use (e.g., "openrouter/deepseek/deepseek-v3.2",
+                          "claude-sonnet-4-20250514").
                         type: string
                       nats:
                         description: nats configures the knight's NATS JetStream consumer
