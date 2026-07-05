@@ -77,6 +77,64 @@ spec:
                   missionRef is set by the mission controller when creating mission-scoped chains.
                   The chain controller uses this to resolve NATS config from the mission's RoundTable.
                 type: string
+              notify:
+                description: |-
+                  notify configures a completion notification fired exactly once per run
+                  when the chain reaches a terminal phase (Succeeded, Failed,
+                  PartiallySucceeded).
+                properties:
+                  webhook:
+                    description: |-
+                      webhook posts a roundtable.notify/v1 JSON payload to an HTTP endpoint.
+                      The URL must match one of the operator's allowed URL prefixes
+                      (notify.allowedURLPrefixes Helm value); non-matching URLs are rejected
+                      with a NotificationSent=False condition and a warning Event.
+                    properties:
+                      context:
+                        additionalProperties:
+                          type: string
+                        description: |-
+                          context is an opaque map echoed verbatim in the payload, letting the
+                          caller correlate the completion back to its origin (e.g. a chat
+                          session or channel).
+                        type: object
+                      tokenSecretRef:
+                        description: |-
+                          tokenSecretRef references a Secret key (in the resource's namespace)
+                          holding a bearer token sent in the Authorization header. Never inline
+                          tokens in the spec.
+                        properties:
+                          key:
+                            description: The key of the secret to select from.  Must
+                              be a valid secret key.
+                            type: string
+                          name:
+                            default: ""
+                            description: |-
+                              Name of the referent.
+                              This field is effectively required, but due to backwards compatibility is
+                              allowed to be empty. Instances of this type with an empty value here are
+                              almost certainly wrong.
+                              More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                            type: string
+                          optional:
+                            description: Specify whether the Secret or its key must
+                              be defined
+                            type: boolean
+                        required:
+                        - key
+                        type: object
+                        x-kubernetes-map-type: atomic
+                      url:
+                        description: url is the endpoint to POST the completion payload
+                          to.
+                        minLength: 1
+                        pattern: ^https?://
+                        type: string
+                    required:
+                    - url
+                    type: object
+                type: object
               outputKnight:
                 default: gawain
                 description: |-

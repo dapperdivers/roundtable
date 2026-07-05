@@ -39,6 +39,10 @@ rules:
   - apiGroups: [""]
     resources: ["persistentvolumeclaims", "configmaps", "serviceaccounts"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Notification webhook bearer tokens (spec.notify.webhook.tokenSecretRef)
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "watch"]
   # Leader election
   - apiGroups: ["coordination.k8s.io"]
     resources: ["leases"]

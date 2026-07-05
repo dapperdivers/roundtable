@@ -79,6 +79,16 @@ const (
 	// Status=True means all ephemeral resources were deleted.
 	// Status=False means cleanup is in progress.
 	ConditionCleanupComplete = "CleanupComplete"
+
+	// ===== Shared Condition Types (Chain + Mission) =====
+
+	// ConditionNotificationSent indicates the state of the spec.notify
+	// completion webhook for the current run.
+	// Status=True means the notification was delivered (2xx) — never fired again.
+	// Status=Unknown means delivery failed and is being retried with backoff.
+	// Status=False means delivery permanently failed (retry window exhausted)
+	// or the URL was rejected by the operator allowlist.
+	ConditionNotificationSent = "NotificationSent"
 )
 
 const (
@@ -177,4 +187,20 @@ const (
 
 	// ReasonCleanupComplete indicates mission cleanup finished successfully.
 	ReasonCleanupComplete = "CleanedUp"
+
+	// ===== Notification Condition Reasons =====
+
+	// ReasonNotifyDelivered indicates the completion webhook was delivered.
+	ReasonNotifyDelivered = "Delivered"
+
+	// ReasonNotifyRetrying indicates delivery failed and will be retried.
+	ReasonNotifyRetrying = "DeliveryRetrying"
+
+	// ReasonNotifyDeliveryFailed indicates delivery permanently failed after
+	// the bounded retry window.
+	ReasonNotifyDeliveryFailed = "DeliveryFailed"
+
+	// ReasonNotifyURLNotAllowed indicates the webhook URL did not match the
+	// operator's allowed URL prefixes (SSRF guard) and was rejected.
+	ReasonNotifyURLNotAllowed = "URLNotAllowed"
 )

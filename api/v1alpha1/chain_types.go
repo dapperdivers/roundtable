@@ -81,6 +81,12 @@ type ChainSpec struct {
 	// The chain controller uses this to resolve NATS config from the mission's RoundTable.
 	// +optional
 	MissionRef string `json:"missionRef,omitempty"`
+
+	// notify configures a completion notification fired exactly once per run
+	// when the chain reaches a terminal phase (Succeeded, Failed,
+	// PartiallySucceeded).
+	// +optional
+	Notify *NotifySpec `json:"notify,omitempty"`
 }
 
 // ChainStep defines a single step in the pipeline.
