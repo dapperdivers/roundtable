@@ -22,6 +22,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -323,6 +324,128 @@ var _ = Describe("Chain Controller", func() {
 				NamespacedName: types.NamespacedName{Name: "nonexistent", Namespace: namespace},
 			})
 			Expect(err).NotTo(HaveOccurred())
+		})
+	})
+
+	Context("Mission cleanup noise suppression", func() {
+		const missionName = "meta-mission"
+		missionNN := types.NamespacedName{Name: missionName, Namespace: namespace}
+
+		// A mission-scoped chain whose step references an ephemeral knight
+		// that no longer exists (deleted by mission cleanup).
+		makeMissionChain := func() *aiv1alpha1.Chain {
+			return &aiv1alpha1.Chain{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      chainName,
+					Namespace: namespace,
+					Labels:    map[string]string{aiv1alpha1.LabelMission: missionName},
+				},
+				Spec: aiv1alpha1.ChainSpec{
+					RoundTableRef: roundTableName,
+					Steps: []aiv1alpha1.ChainStep{
+						{Name: "scan", KnightRef: "mission-" + missionName + "-ghost", Task: "scan"},
+					},
+					Timeout: 600,
+				},
+			}
+		}
+
+		createMission := func(phase aiv1alpha1.MissionPhase) {
+			mission := &aiv1alpha1.Mission{
+				ObjectMeta: metav1.ObjectMeta{Name: missionName, Namespace: namespace},
+				Spec:       aiv1alpha1.MissionSpec{Objective: "test objective"},
+			}
+			Expect(k8sClient.Create(ctx, mission)).To(Succeed())
+			if phase != "" {
+				mission.Status.Phase = phase
+				Expect(k8sClient.Status().Update(ctx, mission)).To(Succeed())
+			}
+		}
+
+		// First reconcile adds the finalizer (and already runs validation);
+		// the second is the steady-state pass whose outcome we assert on.
+		reconcileTwice := func(r *ChainReconciler) (reconcile.Result, error) {
+			_, _ = r.Reconcile(ctx, reconcile.Request{NamespacedName: chainNN})
+			return r.Reconcile(ctx, reconcile.Request{NamespacedName: chainNN})
+		}
+
+		BeforeEach(func() {
+			ensureRoundTable()
+		})
+
+		AfterEach(func() {
+			chain := &aiv1alpha1.Chain{}
+			if err := k8sClient.Get(ctx, chainNN, chain); err == nil {
+				chain.Finalizers = nil
+				_ = k8sClient.Update(ctx, chain)
+				k8sClient.Delete(ctx, chain)
+			}
+			mission := &aiv1alpha1.Mission{}
+			if err := k8sClient.Get(ctx, missionNN, mission); err == nil {
+				k8sClient.Delete(ctx, mission)
+			}
+		})
+
+		It("should stop quietly when the knight is missing and the mission is CleaningUp", func() {
+			createMission(aiv1alpha1.MissionPhaseCleaningUp)
+			Expect(k8sClient.Create(ctx, makeMissionChain())).To(Succeed())
+
+			r := newReconciler()
+			result, err := reconcileTwice(r)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(Equal(reconcile.Result{}))
+
+			updated := &aiv1alpha1.Chain{}
+			Expect(k8sClient.Get(ctx, chainNN, updated)).To(Succeed())
+			Expect(apimeta.FindStatusCondition(updated.Status.Conditions, aiv1alpha1.ConditionChainValid)).To(BeNil())
+		})
+
+		It("should stop quietly when the knight is missing and the mission is terminal", func() {
+			createMission(aiv1alpha1.MissionPhaseFailed)
+			Expect(k8sClient.Create(ctx, makeMissionChain())).To(Succeed())
+
+			r := newReconciler()
+			result, err := reconcileTwice(r)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(Equal(reconcile.Result{}))
+
+			updated := &aiv1alpha1.Chain{}
+			Expect(k8sClient.Get(ctx, chainNN, updated)).To(Succeed())
+			Expect(apimeta.FindStatusCondition(updated.Status.Conditions, aiv1alpha1.ConditionChainValid)).To(BeNil())
+		})
+
+		It("should stop quietly when the knight is missing and the mission is gone", func() {
+			// No mission created — it was deleted entirely.
+			Expect(k8sClient.Create(ctx, makeMissionChain())).To(Succeed())
+
+			r := newReconciler()
+			result, err := reconcileTwice(r)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(Equal(reconcile.Result{}))
+
+			updated := &aiv1alpha1.Chain{}
+			Expect(k8sClient.Get(ctx, chainNN, updated)).To(Succeed())
+			Expect(apimeta.FindStatusCondition(updated.Status.Conditions, aiv1alpha1.ConditionChainValid)).To(BeNil())
+		})
+
+		It("should still report InvalidKnightRef while the mission is active", func() {
+			// Pre-dispatch: a missing knight while the mission is still
+			// assembling is a real error and must keep being reported
+			// (regression guard for the #136 class of bugs).
+			createMission(aiv1alpha1.MissionPhaseAssembling)
+			Expect(k8sClient.Create(ctx, makeMissionChain())).To(Succeed())
+
+			r := newReconciler()
+			_, err := reconcileTwice(r)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("non-existent knight"))
+
+			updated := &aiv1alpha1.Chain{}
+			Expect(k8sClient.Get(ctx, chainNN, updated)).To(Succeed())
+			cond := apimeta.FindStatusCondition(updated.Status.Conditions, aiv1alpha1.ConditionChainValid)
+			Expect(cond).NotTo(BeNil())
+			Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+			Expect(cond.Reason).To(Equal(aiv1alpha1.ReasonInvalidKnightRef))
 		})
 	})
 

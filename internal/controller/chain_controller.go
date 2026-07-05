@@ -83,6 +83,7 @@ func (r *ChainReconciler) natsClient() (natspkg.Client, error) {
 // +kubebuilder:rbac:groups=ai.roundtable.io,resources=chains/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=ai.roundtable.io,resources=chains/finalizers,verbs=update
 // +kubebuilder:rbac:groups=ai.roundtable.io,resources=knights,verbs=get;list;watch
+// +kubebuilder:rbac:groups=ai.roundtable.io,resources=missions,verbs=get;list;watch
 // +kubebuilder:rbac:groups=ai.roundtable.io,resources=roundtables,verbs=get;list;watch
 // +kubebuilder:rbac:groups=core,resources=events,verbs=create;patch
 
@@ -136,6 +137,17 @@ func (r *ChainReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 
 	// Validate knight refs
 	if err := r.validateKnightRefs(ctx, chain); err != nil {
+		// A knight that disappears after the owning mission started cleanup
+		// (or is gone / terminal) was deleted BY that cleanup — mission-scoped
+		// ephemeral knights are removed before the chain itself is
+		// garbage-collected. Reporting InvalidKnightRef then is post-cleanup
+		// noise that looks like the dispatch failure cause, so stop
+		// reconciling quietly instead of setting conditions and requeuing.
+		if apierrors.IsNotFound(err) && r.owningMissionInactive(ctx, chain) {
+			log.V(1).Info("Knight missing after owning mission cleanup, stopping reconcile",
+				"mission", chain.Labels[aiv1alpha1.LabelMission])
+			return ctrl.Result{}, nil
+		}
 		meta.SetStatusCondition(&chain.Status.Conditions, metav1.Condition{
 			Type:               aiv1alpha1.ConditionChainValid,
 			Status:             metav1.ConditionFalse,
@@ -275,6 +287,36 @@ func (r *ChainReconciler) validateKnightRefs(ctx context.Context, chain *aiv1alp
 		}
 	}
 	return nil
+}
+
+// owningMissionInactive reports whether the chain belongs to a mission that no
+// longer needs it reconciled: the mission is gone, being deleted, cleaning up,
+// or already in a terminal phase (Succeeded/Failed/Expired). Mission cleanup
+// deletes the mission's ephemeral knights before the chain is garbage-collected,
+// so a chain can transiently reference knights that were legitimately removed.
+// A missing knight while the mission is still active (pre-dispatch) is a real
+// error and is NOT covered here.
+func (r *ChainReconciler) owningMissionInactive(ctx context.Context, chain *aiv1alpha1.Chain) bool {
+	missionName := chain.Labels[aiv1alpha1.LabelMission]
+	if missionName == "" {
+		return false
+	}
+	mission := &aiv1alpha1.Mission{}
+	if err := r.Get(ctx, types.NamespacedName{Name: missionName, Namespace: chain.Namespace}, mission); err != nil {
+		// Mission deleted entirely — the chain is an orphan awaiting GC.
+		return apierrors.IsNotFound(err)
+	}
+	if mission.DeletionTimestamp != nil {
+		return true
+	}
+	switch mission.Status.Phase {
+	case aiv1alpha1.MissionPhaseCleaningUp,
+		aiv1alpha1.MissionPhaseSucceeded,
+		aiv1alpha1.MissionPhaseFailed,
+		aiv1alpha1.MissionPhaseExpired:
+		return true
+	}
+	return false
 }
 
 // validateDAG performs topological sort to detect cycles.
