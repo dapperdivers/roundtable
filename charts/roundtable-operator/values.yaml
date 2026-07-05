@@ -36,7 +36,7 @@ extraArgs: []
 images:
   piKnight:
     repository: ghcr.io/dapperdivers/pi-knight
-    tag: fb42daedc97e845b049a2855a78d731b125d80d9
+    tag: f2ab01a9c2a5a0f215bf8c996f7c689aceee085c
   dashboard:
     repository: ghcr.io/dapperdivers/roundtable-ui
     tag: 630f8dfc80532139211896a67f3c9635aa0928b0
