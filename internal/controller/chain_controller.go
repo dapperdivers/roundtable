@@ -43,6 +43,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 
 	aiv1alpha1 "github.com/dapperdivers/roundtable/api/v1alpha1"
+	"github.com/dapperdivers/roundtable/internal/notify"
 	"github.com/dapperdivers/roundtable/pkg/metrics"
 	natspkg "github.com/dapperdivers/roundtable/pkg/nats"
 )
@@ -64,9 +65,10 @@ type ChainReconciler struct {
 	Scheme   *runtime.Scheme
 	Recorder record.EventRecorder
 
-	NATS *natspkg.Provider
-	cron *cron.Cron
-	mu   sync.Mutex
+	NATS   *natspkg.Provider
+	Notify *notify.Notifier
+	cron   *cron.Cron
+	mu     sync.Mutex
 	// cronEntries maps chain namespace/name to cron entry ID
 	cronEntries map[string]cron.EntryID
 }
@@ -85,6 +87,7 @@ func (r *ChainReconciler) natsClient() (natspkg.Client, error) {
 // +kubebuilder:rbac:groups=ai.roundtable.io,resources=knights,verbs=get;list;watch
 // +kubebuilder:rbac:groups=ai.roundtable.io,resources=missions,verbs=get;list;watch
 // +kubebuilder:rbac:groups=ai.roundtable.io,resources=roundtables,verbs=get;list;watch
+// +kubebuilder:rbac:groups=core,resources=secrets,verbs=get;list;watch
 // +kubebuilder:rbac:groups=core,resources=events,verbs=create;patch
 
 func (r *ChainReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -232,6 +235,8 @@ func (r *ChainReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 			"newGen", chain.Generation)
 		chain.Status.Phase = aiv1alpha1.ChainPhaseIdle
 		r.initStepStatuses(chain)
+		// A new run gets its own completion notification.
+		meta.RemoveStatusCondition(&chain.Status.Conditions, aiv1alpha1.ConditionNotificationSent)
 
 		// Attempt to restore completed steps from NATS KV (resume capability)
 		restored := r.restoreStepOutputsFromKV(ctx, chain)
@@ -252,7 +257,14 @@ func (r *ChainReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		return r.reconcileRunning(ctx, chain)
 
 	case aiv1alpha1.ChainPhaseSucceeded, aiv1alpha1.ChainPhaseFailed, aiv1alpha1.ChainPhasePartiallySucceeded:
-		// Terminal — no requeue
+		// Terminal — only a pending completion notification still needs work.
+		// Notification state never affects the phase itself.
+		if notificationPending(chain.Spec.Notify, chain.Status.Conditions) {
+			completedAt := notifyCompletedAt(chain.Status.CompletedAt, chain.Status.Conditions, aiv1alpha1.ConditionChainComplete)
+			requeue := deliverNotification(ctx, r.Client, r.Recorder, r.Notify, chain,
+				&chain.Status.Conditions, chain.Generation, completedAt, chainNotifyPayload(chain))
+			return r.updateStatus(ctx, chain, requeue)
+		}
 		return ctrl.Result{}, nil
 
 	case aiv1alpha1.ChainPhaseSuspended:
@@ -389,6 +401,8 @@ func (r *ChainReconciler) reconcileRunning(ctx context.Context, chain *aiv1alpha
 	if len(chain.Status.StepStatuses) == 0 {
 		log.Info("Initializing step statuses for manually triggered chain")
 		r.initStepStatuses(chain)
+		// A new run gets its own completion notification.
+		meta.RemoveStatusCondition(&chain.Status.Conditions, aiv1alpha1.ConditionNotificationSent)
 
 		// A manual trigger starts a new run with its own identity, so KV
 		// restore below only picks up outputs this run produced (none yet) —
@@ -978,6 +992,8 @@ func (r *ChainReconciler) triggerChain(ctx context.Context, nn types.NamespacedN
 		}
 
 		r.initStepStatuses(chain)
+		// A new run gets its own completion notification.
+		meta.RemoveStatusCondition(&chain.Status.Conditions, aiv1alpha1.ConditionNotificationSent)
 		now := metav1.Now()
 		chain.Status.RunID = string(uuid.NewUUID())
 		chain.Status.Phase = aiv1alpha1.ChainPhaseRunning

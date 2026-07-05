@@ -57,6 +57,12 @@ spec:
             # Pinned nixpkgs ref for reproducible knight tool builds.
             - name: KNIGHT_NIXPKGS_REF
               value: "{{ .Values.nixpkgs.ref }}"
+            {{- if .Values.notify.allowedURLPrefixes }}
+            # SSRF allowlist for spec.notify completion webhooks; unset means
+            # the operator rejects all notification URLs.
+            - name: NOTIFY_ALLOWED_URL_PREFIXES
+              value: "{{ join "," .Values.notify.allowedURLPrefixes }}"
+            {{- end }}
             # Shared Nix store PVC — knights mount it read-only and the legacy
             # build Job mounts it read-write. Single source of truth for the
             # store name (the builder Deployment mounts the same value).

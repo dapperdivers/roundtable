@@ -135,6 +135,11 @@ type MissionSpec struct {
 	// These knights are added to the knights list during Planning phase.
 	// +optional
 	GeneratedKnights []MissionKnight `json:"generatedKnights,omitempty"`
+
+	// notify configures a completion notification fired exactly once when the
+	// mission reaches a terminal outcome (Succeeded, Failed, Expired).
+	// +optional
+	Notify *NotifySpec `json:"notify,omitempty"`
 }
 
 // MissionKnight references a knight participating in a mission.

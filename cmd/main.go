@@ -20,6 +20,7 @@ import (
 	"crypto/tls"
 	"flag"
 	"os"
+	"strings"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
@@ -42,6 +43,7 @@ import (
 	"github.com/dapperdivers/roundtable/internal/controller"
 	knightpkg "github.com/dapperdivers/roundtable/internal/knight"
 	"github.com/dapperdivers/roundtable/internal/mission"
+	notifypkg "github.com/dapperdivers/roundtable/internal/notify"
 	natspkg "github.com/dapperdivers/roundtable/pkg/nats"
 	rtruntime "github.com/dapperdivers/roundtable/pkg/runtime"
 	sandboxv1alpha1 "sigs.k8s.io/agent-sandbox/api/v1alpha1"
@@ -196,6 +198,19 @@ func main() {
 	natsProvider := natspkg.NewProvider(natsConfig, ctrl.Log.WithName("nats"))
 	setupLog.Info("NATS provider initialized", "url", natsConfig.URL)
 
+	// Completion webhook notifier (spec.notify on Chains/Missions). The URL
+	// allowlist is the SSRF guard — with no prefixes configured, every
+	// notification is rejected and the feature is effectively disabled.
+	var notifyPrefixes []string
+	for p := range strings.SplitSeq(os.Getenv("NOTIFY_ALLOWED_URL_PREFIXES"), ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			notifyPrefixes = append(notifyPrefixes, p)
+		}
+	}
+	notifier := notifypkg.NewNotifier(notifyPrefixes)
+	setupLog.Info("Completion webhook notifier initialized",
+		"allowedURLPrefixes", notifyPrefixes, "enabled", len(notifyPrefixes) > 0)
+
 	// Ensure cleanup on shutdown
 	defer func() {
 		if err := natsProvider.Close(); err != nil {
@@ -243,6 +258,7 @@ func main() {
 		Scheme:   mgr.GetScheme(),
 		Recorder: mgr.GetEventRecorderFor("chain-controller"),
 		NATS:     natsProvider,
+		Notify:   notifier,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "Chain")
 		os.Exit(1)
@@ -266,6 +282,7 @@ func main() {
 		Scheme:   mgr.GetScheme(),
 		Recorder: mgr.GetEventRecorderFor("mission-controller"),
 		NATS:     natsProvider,
+		Notify:   notifier,
 		Planner:  missionPlanner,
 		Assembler: &mission.KnightAssembler{
 			Client: mgr.GetClient(),

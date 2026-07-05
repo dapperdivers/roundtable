@@ -38,6 +38,7 @@ import (
 
 	aiv1alpha1 "github.com/dapperdivers/roundtable/api/v1alpha1"
 	"github.com/dapperdivers/roundtable/internal/mission"
+	"github.com/dapperdivers/roundtable/internal/notify"
 	"github.com/dapperdivers/roundtable/internal/status"
 	natspkg "github.com/dapperdivers/roundtable/pkg/nats"
 )
@@ -53,6 +54,7 @@ type MissionReconciler struct {
 	Recorder record.EventRecorder
 
 	NATS      *natspkg.Provider
+	Notify    *notify.Notifier
 	Planner   *mission.Planner
 	Assembler *mission.KnightAssembler
 	mu        sync.Mutex
@@ -127,24 +129,14 @@ func (r *MissionReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	}
 
 	// Check TTL expiration in any non-terminal phase
-	if mission.Status.ExpiresAt != nil && time.Now().After(mission.Status.ExpiresAt.Time) {
-		if mission.Status.Phase != aiv1alpha1.MissionPhaseCleaningUp &&
-			mission.Status.Phase != aiv1alpha1.MissionPhaseExpired {
-			log.Info("Mission TTL expired", "mission", mission.Name)
-			// Go straight to CleaningUp in a single status update to avoid
-			// double-update conflicts (the old code set Expired then immediately
-			// overwrote to CleaningUp — the second update stomped the first).
-			err := status.ForMission(mission).
-				Complete("Mission expired (TTL exceeded)", aiv1alpha1.MissionPhaseCleaningUp).
-				Condition(aiv1alpha1.ConditionMissionComplete, aiv1alpha1.ReasonMissionExpired, "Mission TTL expired", metav1.ConditionTrue).
-				Apply(ctx, r.Client)
-			if apierrors.IsConflict(err) {
-				return ctrl.Result{Requeue: true}, nil
-			}
-			r.Recorder.Event(mission, corev1.EventTypeWarning, "Timeout", "Mission exceeded TTL")
-			r.Recorder.Eventf(mission, corev1.EventTypeNormal, "PhaseTransition", "Mission transitioned to %s", aiv1alpha1.MissionPhaseCleaningUp)
-			return ctrl.Result{RequeueAfter: RequeueDefault}, err
-		}
+	if res, handled, err := r.reconcileTTLExpiry(ctx, mission); handled {
+		return res, err
+	}
+
+	// Fire the completion webhook once the terminal outcome is recorded —
+	// before the phase switch, so it lands ahead of cleanup/self-deletion.
+	if res, handled := r.reconcileNotification(ctx, mission); handled {
+		return res, nil
 	}
 
 	switch mission.Status.Phase {
@@ -205,6 +197,64 @@ func (r *MissionReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	}
 
 	return ctrl.Result{}, nil
+}
+
+// reconcileTTLExpiry moves a mission whose TTL has lapsed into CleaningUp,
+// recording the Expired outcome. Returns handled=false when the TTL has not
+// expired (or the mission is already cleaning up / expired) and the caller
+// should continue reconciling.
+func (r *MissionReconciler) reconcileTTLExpiry(ctx context.Context, mission *aiv1alpha1.Mission) (ctrl.Result, bool, error) {
+	if mission.Status.ExpiresAt == nil || !time.Now().After(mission.Status.ExpiresAt.Time) {
+		return ctrl.Result{}, false, nil
+	}
+	if mission.Status.Phase == aiv1alpha1.MissionPhaseCleaningUp ||
+		mission.Status.Phase == aiv1alpha1.MissionPhaseExpired {
+		return ctrl.Result{}, false, nil
+	}
+
+	logf.FromContext(ctx).Info("Mission TTL expired", "mission", mission.Name)
+	// Go straight to CleaningUp in a single status update to avoid
+	// double-update conflicts (the old code set Expired then immediately
+	// overwrote to CleaningUp — the second update stomped the first).
+	err := status.ForMission(mission).
+		Complete("Mission expired (TTL exceeded)", aiv1alpha1.MissionPhaseCleaningUp).
+		Condition(aiv1alpha1.ConditionMissionComplete, aiv1alpha1.ReasonMissionExpired, "Mission TTL expired", metav1.ConditionTrue).
+		Apply(ctx, r.Client)
+	if apierrors.IsConflict(err) {
+		return ctrl.Result{Requeue: true}, true, nil
+	}
+	r.Recorder.Event(mission, corev1.EventTypeWarning, "Timeout", "Mission exceeded TTL")
+	r.Recorder.Eventf(mission, corev1.EventTypeNormal, "PhaseTransition", "Mission transitioned to %s", aiv1alpha1.MissionPhaseCleaningUp)
+	return ctrl.Result{RequeueAfter: RequeueDefault}, true, err
+}
+
+// reconcileNotification runs the completion-webhook pass for a mission whose
+// terminal outcome has been recorded. It keys off the Complete condition, not
+// the phase, because the phase passes through CleaningUp (and is only
+// restored to Succeeded/Failed/Expired afterwards) — and running before the
+// phase machine gets the notification out before a short-TTL mission
+// self-deletes. Notification state never gates the phase machine; a changed
+// condition gets its own status update, and the requeue (backoff on failure,
+// RequeueFast otherwise) resumes normal reconciliation.
+func (r *MissionReconciler) reconcileNotification(ctx context.Context, mission *aiv1alpha1.Mission) (ctrl.Result, bool) {
+	if !meta.IsStatusConditionTrue(mission.Status.Conditions, aiv1alpha1.ConditionMissionComplete) ||
+		!notificationPending(mission.Spec.Notify, mission.Status.Conditions) {
+		return ctrl.Result{}, false
+	}
+
+	completedAt := notifyCompletedAt(mission.Status.CompletedAt, mission.Status.Conditions, aiv1alpha1.ConditionMissionComplete)
+	requeue := deliverNotification(ctx, r.Client, r.Recorder, r.Notify, mission,
+		&mission.Status.Conditions, mission.Generation, completedAt, missionNotifyPayload(mission))
+	if err := r.Status().Update(ctx, mission); err != nil {
+		// Conflict or transient — retry the whole pass; the delivery guard is
+		// the (unpersisted) condition, so the next attempt re-evaluates it.
+		logf.FromContext(ctx).Error(err, "Failed to update status after notification attempt")
+		return ctrl.Result{RequeueAfter: RequeueFast}, true
+	}
+	if requeue == 0 {
+		requeue = RequeueFast
+	}
+	return ctrl.Result{RequeueAfter: requeue}, true
 }
 
 // initKnightStatuses initializes knight status entries.

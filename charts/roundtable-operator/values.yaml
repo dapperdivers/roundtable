@@ -30,6 +30,16 @@ affinity: {}
 # Additional args to pass to the manager
 extraArgs: []
 
+# Completion webhook notifications (spec.notify on Chains/Missions). The
+# operator only POSTs to URLs matching one of these prefixes — this is the
+# SSRF guard, since anyone who can create a Chain controls notify.url. An
+# empty list rejects every notification (feature disabled).
+# Example:
+#   allowedURLPrefixes:
+#     - http://molt.ai.svc:18789/
+notify:
+  allowedURLPrefixes: []
+
 # Global image settings for managed components — pinned to git SHAs of each
 # repo's main; bump here (with a chart version bump), then update the chart
 # version in dapper-cluster
