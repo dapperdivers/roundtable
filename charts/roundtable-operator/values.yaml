@@ -46,10 +46,10 @@ notify:
 images:
   piKnight:
     repository: ghcr.io/dapperdivers/pi-knight
-    tag: 4d747ff6a701e8b27897bf96f70902a442debc3e
+    tag: a220890c7271135da415d7ebfabe9b08df2a711b
   dashboard:
     repository: ghcr.io/dapperdivers/roundtable-ui
-    tag: 12be217a8f6688f803a40ea3dbb5650a7091fe55
+    tag: 5d8702fa9e45701834b516e45e6bf020bb5a1d07
 
 # Pod-level security context for all knight-owned pods — knight Deployments
 # AND the shared Nix store build Jobs. Set once here; the operator applies it
